@@ -47,6 +47,8 @@ The chat interface and the design documents are in Russian; the entries below de
 
 ### Changed
 
+- Agent folder template: notes are written as blocks — a `---` line and a `## № N · DD.MM HH:MM · <label> · kind: <kind>`
+  heading — so that a `№ 7` inside a note is not taken for a note boundary.
 - Database schema v12: the `events` table is rebuilt for the new event kind `instructions` (column
   `instructions_json`), the `deletions` table is rebuilt for the new reason `topic` (column `fallback_text`), and a new
   table `conversations` holds the confirmed rules version per agent conversation. Going back to 0.3.4 is possible only
