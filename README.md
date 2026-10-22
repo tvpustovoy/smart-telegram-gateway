@@ -55,6 +55,7 @@ The chat interface (gateway lines, `/help`, command names) and the agent's instr
 | 0.3.2 | 👀 / 👌 only, reply-source marks, relayed replies (`↪ Name:`), channel check only for a new session |
 | 0.3.3 | Parcels: the agent sends files with `send_file` |
 | 0.3.4 | Transcripts as quotes, owner reactions reach the agent, with an undo window |
+| 0.3.5 | Current channel rules reach a resumed conversation; the confirmed topic line is deleted from the chat |
 
 Details are in [CHANGELOG.md](CHANGELOG.md).
 
@@ -103,7 +104,9 @@ Then finish the setup:
    service with the `launchctl kickstart -k …` command printed by the installer.
 4. **Agent session.** Run `<agent folder>/start.sh` in a separate terminal window or in `tmux`, confirm the development
    channel prompt and, the first time, sign in with `/login`. The gateway sends a check event; the agent answers it by
-   itself.
+   itself. A conversation continued with `start.sh --continue` does not get updated channel instructions from Claude
+   Code, so the gateway sends them as a "channel rules" event (once per conversation and version); the agent marks it
+   done.
 5. `stg doctor` — every check should pass. `stg status` and `stg where` show what the gateway is doing.
 
 ## Agent folder template
@@ -138,6 +141,8 @@ What you see in the chat:
   weekly usage limits.
 - `⚙ …` — a line from the gateway. A transcript comes as a quote in reply to your voice message. `↪ Name: …` — the
   agent relays someone else's words; `💬` marks an agent reply that would otherwise look like a gateway line.
+- `⚙ ↪ #N · topic` with [верно] [не то] — the agent named or changed the topic. [верно] removes the line (the topic
+  stays in the pinned line; `ui.delete_confirmed_topic`), [не то] brings the previous topic back.
 - A reaction on an agent reply (👍, ❤, …) is passed to the agent after a short undo window.
 
 The agent's tools (MCP): `reply`, `done`, `episode`, `episode_summary`, `where`, `rule`, `media`, `send_file`.
@@ -174,6 +179,7 @@ reactions:
 
 ui:
   where_ttl_minutes: 5           # how long the "where" answer stays in the chat
+  delete_confirmed_topic: true   # [верно] under the topic line deletes the line; false = keep it as "… — верно"
 ```
 
 Other providers:
@@ -192,8 +198,9 @@ Keychain. `stg doctor` shows the provider, model and whether the key is present,
 
 Further settings with defaults: `episode_idle_minutes` (33), `agent_offline_notice_minutes` (10),
 `redeliver_after_minutes` (10), `closed_topics` and `closed_marker` (messages that never reach the agent), `retention`
-(`owner_voice_days` 30, `untrusted_days` 90, `logs_days` 90, `closed_days` 30), `ui.role_short`. The full reference is
-in [docs/TECH-SPEC.md](docs/TECH-SPEC.md), section 5.1.
+(`owner_voice_days` 30, `untrusted_days` 90, `logs_days` 90, `closed_days` 30), `ui.role_short`. If Telegram refuses to
+delete a confirmed topic line (older than 48 hours), the line is edited to "… — верно" without buttons instead. The full
+reference is in [docs/TECH-SPEC.md](docs/TECH-SPEC.md), section 5.1.
 
 **Access rules.** `rules.yaml` in the same directory lists subjects (people and their Telegram ids) and chats with
 their space and role. The gateway writes it; your manual edits are read on restart and reported back to you in the chat.
@@ -265,7 +272,7 @@ The design documents are in Russian for now.
 
 ## Status
 
-Version 0.3.4, pre-1.0. It is built for one owner, one bot and one agent on one Mac. Groups and other people are
+Version 0.3.5, pre-1.0. It is built for one owner, one bot and one agent on one Mac. Groups and other people are
 modelled in the data and the access rules, but there is no interface for them yet. The agent runs without a sandbox
 (see the threat model). Expect breaking changes before 1.0; database migrations run automatically, and rolling back
 needs a backup (`stg backup`).

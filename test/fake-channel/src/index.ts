@@ -63,10 +63,17 @@ export class FakeChannel {
     return this.closed;
   }
 
-  /** События для агента, которые прислал шлюз (по порядку прихода), — без проверочных probe. */
+  /** События для агента, которые прислал шлюз (по порядку прихода), — без проверочных probe и правил канала (0.3.5). */
   events(): Array<Extract<GatewayMessage, { type: 'event' }>> {
     const out: Array<Extract<GatewayMessage, { type: 'event' }>> = [];
-    for (const r of this.received) if (r.message?.type === 'event' && r.message.kind !== 'probe') out.push(r.message);
+    for (const r of this.received) if (r.message?.type === 'event' && r.message.kind !== 'probe' && r.message.kind !== 'instructions') out.push(r.message);
+    return out;
+  }
+
+  /** События «правила канала» (0.3.5, issue #47) — только если hello назвал версию правил. */
+  instructions(): Array<Extract<GatewayMessage, { type: 'event' }>> {
+    const out: Array<Extract<GatewayMessage, { type: 'event' }>> = [];
+    for (const r of this.received) if (r.message?.type === 'event' && r.message.kind === 'instructions') out.push(r.message);
     return out;
   }
 
@@ -188,7 +195,9 @@ export class FakeChannel {
    * hello. instanceId и prevLease (0.3.2, R-4 а) — как у переходника 0.3.2: ключ процесса и аренда до обрыва; без них —
    * как переходник до 0.3.2. cwd — каталог сессии (session_hint.cwd); по умолчанию — каталог процесса теста.
    */
-  hello(opts: { adapter?: string; version?: number; role?: 'adapter' | 'cli'; instanceId?: string; prevLease?: string; cwd?: string } = {}): Promise<GatewayMessage> {
+  hello(
+    opts: { adapter?: string; version?: number; role?: 'adapter' | 'cli'; instanceId?: string; prevLease?: string; cwd?: string; instructionsVersion?: string } = {},
+  ): Promise<GatewayMessage> {
     return this.request('hello', {
       adapter: opts.adapter ?? 'fake-channel',
       version: opts.version ?? PROTOCOL_VERSION,
@@ -196,6 +205,8 @@ export class FakeChannel {
       session_hint: { cwd: opts.cwd ?? process.cwd(), pid: process.pid },
       ...(opts.instanceId !== undefined ? { instance_id: opts.instanceId } : {}),
       ...(opts.prevLease !== undefined ? { prev_lease: opts.prevLease } : {}),
+      // Версия правил канала (0.3.5, issue #47): с ней шлюз присылает событие «правила канала» разговору, который их не получал.
+      ...(opts.instructionsVersion !== undefined ? { instructions_version: opts.instructionsVersion } : {}),
     });
   }
 

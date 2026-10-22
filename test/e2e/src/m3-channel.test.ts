@@ -15,7 +15,7 @@ import { OTHER, OWNER, inReactionOrder, reactionsOf, setup, statusLineOf, waitRe
 import { keyboardOrPlaceholder, press, waitSent } from './m2-common.js';
 import { jpegBytes } from './m7-common.js';
 
-const META_KEYS = new Set(['seq', 'kind', 'trust', 'mixed', 'redelivery', 'reply_to', 'episode', 'topic', 'role', 'chat', 'edit_of', 'state', 'media', 'reaction']);
+const META_KEYS = new Set(['seq', 'kind', 'trust', 'mixed', 'redelivery', 'reply_to', 'episode', 'topic', 'role', 'chat', 'edit_of', 'state', 'media', 'reaction', 'version']);
 
 describe('M3 · канал под поддельным Claude Code', () => {
   let s: Setup;

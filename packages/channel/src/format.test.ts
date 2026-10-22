@@ -4,7 +4,7 @@ import type { EventMessage } from 'stg-core';
 import { DEFAULT_TIMING, timingFromEnv } from './timing.js';
 import { formatEvent, formatMode, OUTCOME, busyText } from './format.js';
 import { TOOLS, TOOL_NAMES } from './tools.js';
-import { INSTRUCTIONS } from './instructions.js';
+import { INSTRUCTIONS, INSTRUCTIONS_VERSION } from './instructions.js';
 
 function ev(over: Partial<EventMessage> = {}): EventMessage {
   return {
@@ -295,7 +295,7 @@ describe('канал: инструменты, instructions, сроки', () => {
     assert.ok(INSTRUCTIONS.includes('«на твоё сообщение»'));
     assert.ok(
       INSTRUCTIONS.includes(
-        'Реакция владельца на твой ответ — его слово о нём: толкуй по смыслу, без словаря значков; обычно done; „не то“ — коротко уточни; ответ был вопросом и неясно, „да“ ли это, — переспроси одной строкой; по одной реакции необратимое (отправить от имени владельца, заплатить, удалить) не делай — переспроси словами; остальное делай.',
+        'Реакция владельца на твой ответ — его слово о нём: толкуй по смыслу, без словаря значков; обычно done; „не то“ — коротко уточни; ответ был вопросом и неясно, „да“ ли это, — переспроси одной строкой; реакция на ответ с выбором „X или Y?“ ничего не выбирает: сделай лёгкое и обратимое и скажи одной строкой reply, что выбрал; переспрашивай, только если ветки необратимы; по одной реакции необратимое (отправить от имени владельца, заплатить, удалить) не делай — переспроси словами; остальное делай.',
       ),
     );
     // Узкая защитная строка (0.3.4): 👍 на «сделать X?» — согласие владельца, переспрашивать
@@ -307,6 +307,43 @@ describe('канал: инструменты, instructions, сроки', () => {
     assert.ok(INSTRUCTIONS.includes('На слово владельца — всегда reply, хотя бы короткий (просьба о файле — send_file, ниже)'));
     // Правило роли: файл по просьбе — send_file с подписью и есть ответ; reply не нужен.
     assert.ok(INSTRUCTIONS.includes('Файл по просьбе — send_file(path, seq, caption) с подписью, что это: это ответ, reply не нужен; вопрос рядом — в подписи или отдельным reply.'));
+  });
+
+  it('instructions (0.3.5): владелец не у терминала — спрашивать через reply; о запросе разрешения у терминала — сказать заранее; реакция на «X или Y?» ничего не выбирает (#47)', () => {
+    assert.ok(
+      INSTRUCTIONS.includes(
+        'Владелец в Telegram, не у терминала: спрашивай его через reply. Вопросы с выбором на экране, план-режим и запросы разрешений до него не доходят — они ждут у терминала.',
+      ),
+    );
+    assert.ok(INSTRUCTIONS.includes('Если следующее действие может спросить разрешения у терминала — скажи об этом владельцу в reply до того, как начнёшь.'));
+    assert.ok(
+      INSTRUCTIONS.includes(
+        'реакция на ответ с выбором „X или Y?“ ничего не выбирает: сделай лёгкое и обратимое и скажи одной строкой reply, что выбрал; переспрашивай, только если ветки необратимы',
+      ),
+    );
+    // Событие «правила канала»: что это и что ответить — в самих правилах (их же текст оно и несёт).
+    assert.ok(INSTRUCTIONS.includes('[№ N · правила канала, версия V]'));
+    assert.ok(INSTRUCTIONS.includes('Они заменяют прежние правила канала; прочти и ответь done(seqs: [N]).'));
+  });
+
+  it('правила канала (0.3.5, #47): версия — начало SHA-256 текста; событие несёт весь текст своей версии; повтор помечен; описания reply, done, where ссылаются на событие и where()', () => {
+    assert.match(INSTRUCTIONS_VERSION, /^[0-9a-f]{12}$/);
+    const n = formatEvent(ev({ seq: 57, kind: 'instructions', trust: null, text: null, chat: null, subject: null, episode: null, instructions: { version: INSTRUCTIONS_VERSION } }));
+    assert.ok(
+      n.content.startsWith(
+        `[№ 57 · правила канала, версия ${INSTRUCTIONS_VERSION}] Текущие правила канала smart-telegram-gateway — ниже целиком. Claude Code не передаёт их продолженному разговору, поэтому их присылает шлюз. Они заменяют прежние правила этого канала, если ты их видел. Прочти и ответь done(seqs: [57]).\n\n`,
+      ),
+      n.content.slice(0, 300),
+    );
+    assert.ok(n.content.endsWith(INSTRUCTIONS), 'текст правил — целиком');
+    assert.deepEqual(n.meta, { seq: '57', kind: 'instructions', mixed: 'false', redelivery: 'false', version: INSTRUCTIONS_VERSION });
+    const again = formatEvent(ev({ seq: 58, kind: 'instructions', trust: null, text: null, chat: null, subject: null, episode: null, redelivery: true, instructions: { version: INSTRUCTIONS_VERSION } }));
+    assert.ok(again.content.startsWith(`[№ 58 · правила канала, версия ${INSTRUCTIONS_VERSION} · повтор] `), again.content.slice(0, 120));
+    for (const name of ['reply', 'done', 'where']) {
+      const d = TOOLS.find((t) => t.name === name)!.description;
+      assert.ok(d.includes('правила канала'), `${name}: ${d}`);
+      if (name !== 'where') assert.ok(d.includes('вызови where()'), `${name}: ${d}`);
+    }
   });
 
   it('сроки: по умолчанию — 5.10 (1…30 с, busy 30 с, ping 15 с, 45 с); множитель — только под тестом', () => {

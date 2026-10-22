@@ -42,7 +42,9 @@
 //   Поэтому номер ищется, только когда приём догнал закрепление (висит длинный опрос, начатый не меньше 3 с назад, —
 //   reception.quietSince): тогда всё, что владелец написал до закрепления, уже в базе. Не догнал за 5 минут — не удалять.
 // - Удаление сообщений (deletions): команда владельца после исполнения, ответ «где мы» через ui.where_ttl_minutes или при
-//   следующем «где мы», служебное сообщение о закреплении; не удалилось (старое, уже удалено) — в журнал.
+//   следующем «где мы», служебное сообщение о закреплении, строка темы после [верно] (0.3.5, issue #48); не удалилось
+//   (старое, уже удалено) — в журнал. Строка темы не удалилась (Telegram отказал или все попытки кончились) — в той же
+//   записи правка: «… — верно» без кнопок (deletions.fallback_text), чтобы под ней не висели кнопки.
 // - Посылка (0.3.3, parcels.ts; 5.16): строка ответа агента со строкой доставки (deliveries.outbox_id) уходит документом
 //   (sendDocument) — из копии шлюза raw/parcels/<sha256>, а не из папки агента: правка и удаление исходника доставку не
 //   меняют. Подпись — как у голосового: до 1024 знаков с пометками P-26, длиннее — документ без неё и следом текст
@@ -102,7 +104,7 @@ import {
   type TextToSpeech,
   type Timer,
 } from 'stg-core';
-import { enqueueDeletion, enqueueServiceLine, type Ctx } from './context.js';
+import { enqueueDeletion, enqueueEdit, enqueueServiceLine, type Ctx } from './context.js';
 import { ReactionLane } from './reactions.js';
 import { STATUS_LINE_MIN_INTERVAL_MS, StatusLine, type StatusLineSaved } from './statusline.js';
 import { type VoiceKey, VoiceSynth } from './voice.js';
@@ -143,6 +145,8 @@ interface DeletionRow {
   attempts: number;
   next_try_at: number | null;
   created_at: number;
+  /** Строка темы (reason topic, 0.3.5): не удалилась — правка на этот текст без кнопок; null — только кнопки. */
+  fallback_text: string | null;
   o_status: string | null;
   o_ids: string | null;
 }
@@ -1051,11 +1055,18 @@ export class Sender {
 
   // ——— удаление сообщений ———
 
+  /**
+   * Удаление закончено. Строка темы не удалилась (dropped, 0.3.5) — той же записью правка без кнопок: «… — верно»
+   * (fallback_text) или только кнопки; причина — в журнале (delete_dropped.why).
+   */
   private finishDeletion(d: DeletionRow, status: 'sent' | 'dropped', reason?: string): void {
-    this.record([{ id: d.outbox_id ?? 0 }], () =>
-      sql(this.ctx.db, 'UPDATE deletions SET status = ?, attempts = attempts + 1, next_try_at = NULL WHERE id = ?').run(status, d.id),
-    );
+    const keep = status === 'dropped' && d.reason === 'topic' && d.tg_message_id !== null;
+    this.record([{ id: d.outbox_id ?? 0 }], () => {
+      sql(this.ctx.db, 'UPDATE deletions SET status = ?, attempts = attempts + 1, next_try_at = NULL WHERE id = ?').run(status, d.id);
+      if (keep) enqueueEdit(this.ctx, { chatId: d.chat_id, tgMessageId: d.tg_message_id, text: d.fallback_text ?? null, replyMarkup: null });
+    });
     if (status === 'dropped') this.ctx.journal.write('delete_dropped', { deletion_id: d.id, reason: d.reason, why: reason ?? null });
+    if (keep) this.ctx.journal.write('topic_line_kept', { deletion_id: d.id, tg_message_id: d.tg_message_id, edit: d.fallback_text != null ? 'text' : 'buttons' });
   }
 
   /** Номер известен шлюзу: сообщение владельца (событие или обновление, которое ещё принимается) или бота. */
@@ -1124,6 +1135,11 @@ export class Sender {
         const now = ctx.clock.now();
         this.nextAllowed.set(d.chat_id, now + CHAT_SPACING_MS);
         if (err instanceof TelegramApiError && err.errorCode !== 429 && err.errorCode < 500 && err.errorCode !== 401 && err.errorCode !== 404) {
+          // Строка темы, которую Telegram удалить не дал (старше 48 часов и т. п.), — остаётся: правка без кнопок.
+          if (d.reason === 'topic') {
+            this.finishDeletion(d, 'dropped', api.redact(err.description));
+            return;
+          }
           // Сообщения уже нет или его нельзя удалить — не беда.
           gone.push(id);
           ctx.journal.write('delete_failed', { deletion_id: d.id, reason: d.reason, tg_message_id: id, error: api.redact(err.description) });

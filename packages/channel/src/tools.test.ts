@@ -288,8 +288,11 @@ describe('канал: hello с instance_id и prev_lease (0.3.2, R-4 а); шлю
   const dir = fs.mkdtempSync(path.join(os.tmpdir().length > 60 ? '/tmp' : os.tmpdir(), 'stg-ch-'));
   after(() => fs.rmSync(dir, { recursive: true, force: true }));
 
-  /** Подставной шлюз: hello записывает; old — отвечает на instance_id, как шлюз до 0.3.2; после welcome рвёт связь. */
-  async function fakeGateway(sock: string, old: boolean): Promise<{ hellos: Array<Record<string, unknown>>; close: () => Promise<void> }> {
+  /**
+   * Подставной шлюз: hello записывает; old — отвечает на instance_id, как шлюз до 0.3.2; 'rules' — на
+   * instructions_version, как шлюз 0.3.2–0.3.4 (0.3.5, #47); после welcome рвёт связь.
+   */
+  async function fakeGateway(sock: string, old: boolean | 'rules'): Promise<{ hellos: Array<Record<string, unknown>>; close: () => Promise<void> }> {
     const hellos: Array<Record<string, unknown>> = [];
     let n = 0;
     const server = net.createServer((c) => {
@@ -301,8 +304,12 @@ describe('канал: hello с instance_id и prev_lease (0.3.2, R-4 а); шлю
           const m = JSON.parse(f.line) as Record<string, unknown> & { type: string; req_id?: string };
           if (m.type !== 'hello') continue;
           hellos.push(m);
-          if (old && ('instance_id' in m || 'prev_lease' in m)) {
+          if (old === true && ('instance_id' in m || 'prev_lease' in m)) {
             c.write(encodeFrame({ type: 'error', req_id: m.req_id!, code: 'bad_request', text: '(кадр): Нераспознанные ключи: "instance_id", "prev_lease"' }));
+            continue;
+          }
+          if (old === 'rules' && 'instructions_version' in m) {
+            c.write(encodeFrame({ type: 'error', req_id: m.req_id!, code: 'bad_request', text: '(кадр): Нераспознанный ключ: "instructions_version"' }));
             continue;
           }
           c.write(encodeFrame({ type: 'welcome', req_id: m.req_id!, lease_id: `L${++n}`, mode: 'running', turn: 0 }));
@@ -315,11 +322,18 @@ describe('канал: hello с instance_id и prev_lease (0.3.2, R-4 а); шлю
     return { hellos, close: () => new Promise<void>((r) => server.close(() => r())) };
   }
 
-  async function run(sock: string, until: (hellos: Array<Record<string, unknown>>) => boolean, hellos: Array<Record<string, unknown>>, logs: string[]): Promise<void> {
+  async function run(
+    sock: string,
+    until: (hellos: Array<Record<string, unknown>>) => boolean,
+    hellos: Array<Record<string, unknown>>,
+    logs: string[],
+    instructionsVersion?: string,
+  ): Promise<void> {
     const client = new GatewayClient({
       socketPath: sock,
       adapter: 'test',
       instanceId: 'proc-A_123456789',
+      ...(instructionsVersion !== undefined ? { instructionsVersion } : {}),
       timing: { ...DEFAULT_TIMING, reconnectMinMs: 10, reconnectMaxMs: 20 },
       hint: { cwd: dir, pid: process.pid },
       log: (t) => logs.push(t),
@@ -365,6 +379,35 @@ describe('канал: hello с instance_id и prev_lease (0.3.2, R-4 а); шлю
       assert.equal(g.hellos[0]!.instance_id, 'proc-A_123456789');
       for (const h of g.hellos.slice(1)) assert.deepEqual([h.instance_id, h.prev_lease], [undefined, undefined], JSON.stringify(h));
       assert.ok(logs.some((t) => t.includes('шлюз старой версии')), logs.join('\n'));
+    } finally {
+      await g.close();
+    }
+  });
+
+  it('0.3.5 (#47): hello несёт instructions_version; шлюз 0.3.2–0.3.4 («Нераспознанный ключ») — дальше hello без него, instance_id и prev_lease остаются', async () => {
+    const sock = path.join(dir, 'rules.sock');
+    const g = await fakeGateway(sock, 'rules');
+    const logs: string[] = [];
+    try {
+      await run(sock, (h) => h.length >= 3, g.hellos, logs, 'abcdef012345');
+      assert.deepEqual([g.hellos[0]!.instance_id, g.hellos[0]!.instructions_version], ['proc-A_123456789', 'abcdef012345']);
+      for (const h of g.hellos.slice(1)) {
+        assert.equal(h.instructions_version, undefined, JSON.stringify(h));
+        assert.equal(h.instance_id, 'proc-A_123456789', 'ключ процесса — по-прежнему');
+      }
+      assert.equal(g.hellos[2]!.prev_lease, 'L1', 'prev_lease — из welcome');
+      assert.ok(logs.some((t) => t.includes('без instructions_version')), logs.join('\n'));
+    } finally {
+      await g.close();
+    }
+  });
+
+  it('0.3.5: новый шлюз — instructions_version в каждом hello', async () => {
+    const sock = path.join(dir, 'rules-new.sock');
+    const g = await fakeGateway(sock, false);
+    try {
+      await run(sock, (h) => h.length >= 2, g.hellos, [], 'abcdef012345');
+      for (const h of g.hellos) assert.equal(h.instructions_version, 'abcdef012345');
     } finally {
       await g.close();
     }

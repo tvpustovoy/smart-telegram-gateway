@@ -13,7 +13,7 @@ import { CallToolRequestSchema, ListToolsRequestSchema, type ServerNotification 
 import { CHANNEL_SERVER_NAME, PRODUCT_VERSION, type Mode } from 'stg-core';
 import { CHANNEL_NOTIFICATION, formatEvent, formatMode, type ChannelNotice } from './format.js';
 import { GatewayClient } from './gateway-client.js';
-import { INSTRUCTIONS } from './instructions.js';
+import { INSTRUCTIONS, INSTRUCTIONS_VERSION } from './instructions.js';
 import type { ChannelTiming } from './timing.js';
 import { TOOLS, callTool } from './tools.js';
 
@@ -57,6 +57,9 @@ export function createChannel(opts: ChannelOptions): Channel {
     // Ключ процесса канала (0.3.2, R-4 а): тот же процесс — та же сессия Claude Code; шлюз не шлёт пробу при
     // переподключении. Только в памяти — ни в журнал, ни на диск.
     instanceId: opts.instanceId ?? crypto.randomBytes(18).toString('base64url'),
+    // Версия своих instructions (0.3.5, issue #47): продолженному разговору Claude Code их не передаёт — шлюз пришлёт
+    // событием «правила канала», если разговор этой версии не получал.
+    instructionsVersion: INSTRUCTIONS_VERSION,
     log: opts.log,
     onEvent: async (ev) => {
       await push(formatEvent(ev));

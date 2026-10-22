@@ -2,7 +2,8 @@
 // .mcp.json папки агента — `node packages/channel/dist/index.js`, STG_HOME, stdio; ловит уведомления
 // notifications/claude/channel и вызывает инструменты. Настоящий claude не запускается.
 // Поведение «сессии с флагом канала»: на событие probe сам вызывает done (как велят instructions); «без флага» —
-// уведомления копятся, а на probe никто не отвечает (autoProbe: false).
+// уведомления копятся, а на probe никто не отвечает (autoProbe: false). На событие «правила канала» (0.3.5, issue #47)
+// — тоже done сам (autoInstructions: false — молчит, как разговор, который правила не дочитал).
 
 import { createRequire } from 'node:module';
 import path from 'node:path';
@@ -37,6 +38,8 @@ export interface ChannelNotice {
 export interface FakeClaudeOptions {
   /** На probe — done сам (сессия с флагом канала). */
   autoProbe?: boolean;
+  /** На событие «правила канала» — done сам (0.3.5). */
+  autoInstructions?: boolean;
   /** Множитель сроков канала (STG_TEST_CHANNEL_TIME_SCALE). */
   timeScale?: number;
   env?: Record<string, string>;
@@ -45,6 +48,8 @@ export interface FakeClaudeOptions {
 export class FakeClaude {
   readonly notices: ChannelNotice[] = [];
   readonly probeResults: string[] = [];
+  /** Исходы done на события «правила канала» (0.3.5). */
+  readonly instructionsResults: string[] = [];
   stderr = '';
   private closed = false;
 
@@ -87,6 +92,12 @@ export class FakeClaude {
           () => undefined,
         );
       }
+      if (notice.meta.kind === 'instructions' && opts.autoInstructions !== false) {
+        void fc.call('done', { seqs: [Number(notice.meta.seq)] }).then(
+          (t) => fc.instructionsResults.push(t.text),
+          () => undefined,
+        );
+      }
     };
     await client.connect(transport);
     return fc;
@@ -96,13 +107,18 @@ export class FakeClaude {
     return this.transport.pid ?? undefined;
   }
 
-  /** Уведомления о событиях (без probe и без строк режима). */
+  /** Уведомления о событиях (без probe, правил канала и строк режима). */
   events(): ChannelNotice[] {
-    return this.notices.filter((n) => n.meta.kind !== 'probe' && n.meta.kind !== 'mode');
+    return this.notices.filter((n) => n.meta.kind !== 'probe' && n.meta.kind !== 'mode' && n.meta.kind !== 'instructions');
   }
 
   probes(): ChannelNotice[] {
     return this.notices.filter((n) => n.meta.kind === 'probe');
+  }
+
+  /** События «правила канала» (0.3.5). */
+  instructions(): ChannelNotice[] {
+    return this.notices.filter((n) => n.meta.kind === 'instructions');
   }
 
   waitNotice(pred: (n: ChannelNotice) => boolean, timeoutMs = 10_000, what = 'уведомления канала'): Promise<ChannelNotice> {
@@ -111,7 +127,7 @@ export class FakeClaude {
 
   /** Дождаться события с этим №. */
   waitEvent(seq: number, timeoutMs = 10_000): Promise<ChannelNotice> {
-    return this.waitNotice((n) => n.meta.seq === String(seq) && n.meta.kind !== 'probe', timeoutMs, `события № ${seq}`);
+    return this.waitNotice((n) => n.meta.seq === String(seq) && n.meta.kind !== 'probe' && n.meta.kind !== 'instructions', timeoutMs, `события № ${seq}`);
   }
 
   /** Аренда проверена: проба пришла и done на неё прошёл. */

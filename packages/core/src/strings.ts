@@ -356,6 +356,30 @@ export const BUTTON_REFUSALS = { expired: 'истёк срок', used: 'уже �
 // ——— M3: канал Claude Code (5.10, 5.11) ———
 
 /**
+ * Правила канала разговору агента (0.3.5, issue #47): что шлюз знает о них для этого разговора — получил текущую версию
+ * (current), событие «правила канала» отдано и ждёт done (pending), разговор их не получал — событие отдано сейчас
+ * (sent). Строкой — в ответ на where() агента (не владельцу).
+ */
+export interface InstructionsState {
+  state: 'current' | 'pending' | 'sent';
+  version: string;
+  seq: number | null;
+}
+
+/** Строка «где мы» агенту о правилах канала (0.3.5, issue #47) ⟨предл.: текст⟩. */
+export function instructionsWhereLine(o: InstructionsState): string {
+  const n = o.seq !== null ? `№ ${o.seq} ` : '';
+  switch (o.state) {
+    case 'current':
+      return `Правила канала: версия ${o.version} — этот разговор их получил${o.seq !== null ? ` (№ ${o.seq})` : ''}.`;
+    case 'pending':
+      return `Правила канала: версия ${o.version} — событие ${n}«правила канала» отдано и ждёт твоего done.`;
+    case 'sent':
+      return `Правила канала: версия ${o.version} — этот разговор их не получал: шлюз прислал событие ${n}«правила канала», прочти его и ответь done.`;
+  }
+}
+
+/**
  * К-5: событие отдано, повтор отдан, а ответа нет ещё срок — строка владельцу (M3: текст строки). Одна строка на
  * проверку сроков, со всеми № сразу.
  */

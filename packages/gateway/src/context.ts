@@ -167,17 +167,23 @@ export interface DeletionInsert {
   reason: DeletionReason;
   /** Когда удалить (часы шлюза). */
   dueAt: number;
+  /**
+   * Строка темы после [верно] (reason topic, 0.3.5, issue #48): не удалилась — правится на этот текст без кнопок (null —
+   * снимаются только кнопки).
+   */
+  fallbackText?: string | null;
 }
 
 /**
  * Удалить сообщение (чистый чат, J-4: нажатие не оставляет лишнего) — в очередь отправителя, с повтором. Внутри
- * транзакции. Не удалилось (старше 48 часов, уже удалено) — не беда: в журнал.
+ * транзакции. Не удалилось (старше 48 часов, уже удалено) — не беда: в журнал; у строки темы (reason topic) — ещё и
+ * правка без кнопок (sender.ts).
  */
 export function enqueueDeletion(ctx: Ctx, d: DeletionInsert): number {
   if ((d.tgMessageId ?? null) === null && (d.outboxId ?? null) === null) throw new Error('удаление без цели');
   const r = sql(ctx.db,
-    `INSERT INTO deletions(chat_id, tg_message_id, outbox_id, reason, due_at, status, attempts, created_at)
-     VALUES (?, ?, ?, ?, ?, 'pending', 0, ?)`,
-  ).run(d.chatId, d.tgMessageId ?? null, d.outboxId ?? null, d.reason, d.dueAt, ctx.clock.now());
+    `INSERT INTO deletions(chat_id, tg_message_id, outbox_id, reason, due_at, status, attempts, created_at, fallback_text)
+     VALUES (?, ?, ?, ?, ?, 'pending', 0, ?, ?)`,
+  ).run(d.chatId, d.tgMessageId ?? null, d.outboxId ?? null, d.reason, d.dueAt, ctx.clock.now(), d.fallbackText ?? null);
   return Number(r.lastInsertRowid);
 }

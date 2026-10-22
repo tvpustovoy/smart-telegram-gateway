@@ -107,6 +107,13 @@ export const HelloSchema = z.strictObject({
   // 0.3.2 эти поля не знает и отвечает bad_request — переходник тогда повторяет hello без них.
   instance_id: token.optional(),
   prev_lease: z.string().min(1).max(128).optional(),
+  // Версия instructions канала (0.3.5, issue #47; в пределах v1, необязательное): начало SHA-256 текста instructions,
+  // которые этот процесс канала отдал Claude Code. Claude Code передаёт instructions только при первом подключении канала
+  // к разговору — продолженный (--resume) разговор их не получает; шлюз помнит, какую версию получил каждый разговор,
+  // и разговору со старой или неизвестной отдаёт событие «правила канала» (вид instructions). Без поля (канал до
+  // 0.3.5) — событий правил нет, как раньше. Шлюз до 0.3.5 поле не знает и отвечает bad_request — канал повторяет hello
+  // без него.
+  instructions_version: token.optional(),
 });
 
 export const DeliveredSchema = z.strictObject({ type: z.literal('delivered'), req_id: reqId, seq });
@@ -388,6 +395,10 @@ export const EventMessageSchema = z.object({
       excerpt: z.string().max(200).nullable(),
     })
     .optional(),
+  // Только у события «правила канала» (0.3.5, issue #47; вид instructions): какую версию instructions шлюз просит
+  // показать разговору. Текст правил подставляет канал — свой, той же версии (шлюз шлёт это событие только каналу,
+  // который назвал версию в hello: прежний канал вида instructions не получает).
+  instructions: z.object({ version: z.string() }).optional(),
 });
 export type EventMessage = z.infer<typeof EventMessageSchema>;
 

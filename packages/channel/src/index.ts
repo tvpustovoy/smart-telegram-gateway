@@ -14,7 +14,7 @@ import { timingFromEnv } from './timing.js';
 export { createChannel, PACKAGE_NAME, SERVER_NAME } from './server.js';
 export { formatEvent, formatMode, CHANNEL_NOTIFICATION, OUTCOME } from './format.js';
 export { TOOLS, TOOL_NAMES, callTool } from './tools.js';
-export { INSTRUCTIONS } from './instructions.js';
+export { INSTRUCTIONS, INSTRUCTIONS_VERSION } from './instructions.js';
 export { DEFAULT_TIMING, timingFromEnv, type ChannelTiming } from './timing.js';
 export const ADAPTER_PROTOCOL_VERSION = PROTOCOL_VERSION;
 

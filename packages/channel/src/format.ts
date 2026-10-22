@@ -10,9 +10,13 @@
 // Реакция владельца на твой ответ (0.3.4): «[№ 15 · эп. 7 · реакция владельца на твой ответ к № 12: 👍] твой ответ:
 // «…»»; сменил — «❤ (было 👍)», снял — «снял 👍»; meta.kind = reaction, meta.trust = owner. Шлюз шлёт её кадром вида text
 // с полем reaction (прежний канал читает текст); толкование — на стороне агента, ответ не обязателен (instructions).
+// Правила канала (0.3.5, issue #47): «[№ 57 · правила канала, версия 1a2b3c4d5e6f] Текущие правила канала … done(seqs: [57]).»
+// и следом — сами instructions этого канала целиком (свои, той же версии: шлюз шлёт только версию); meta.kind =
+// instructions, meta.version.
 // Здесь же — слова, которыми инструменты возвращают модели исход.
 
 import { cutGraphemes, formatDuration, localTime, ownerReactionChange, ownerReactionTarget, type EventMessage, type Mode } from 'stg-core';
+import { INSTRUCTIONS, INSTRUCTIONS_VERSION } from './instructions.js';
 
 export const CHANNEL_NOTIFICATION = 'notifications/claude/channel';
 
@@ -231,6 +235,19 @@ function formatReaction(ev: EventMessage & { reaction: NonNullable<EventMessage[
   return { content: `[${parts.join(' · ')}] ${body}`, meta };
 }
 
+/**
+ * Правила канала (0.3.5, issue #47): разговору, который их не получал (Claude Code не передаёт instructions
+ * продолженному разговору), — текущие instructions этого канала целиком. Текст — свой: шлюз шлёт только версию, а
+ * событие правил получает лишь канал, который назвал её в hello, — то есть этот же; версия в заголовке — своя.
+ */
+function formatInstructions(ev: EventMessage, meta: Record<string, string>): ChannelNotice {
+  const head = `[№ ${ev.seq} · правила канала, версия ${INSTRUCTIONS_VERSION}${ev.redelivery ? ' · повтор' : ''}]`;
+  const lead =
+    'Текущие правила канала smart-telegram-gateway — ниже целиком. Claude Code не передаёт их продолженному разговору, поэтому их присылает шлюз. ' +
+    `Они заменяют прежние правила этого канала, если ты их видел. Прочти и ответь done(seqs: [${ev.seq}]).`;
+  return { content: `${head} ${lead}\n\n${INSTRUCTIONS}`, meta: { ...meta, version: INSTRUCTIONS_VERSION } };
+}
+
 /** Событие → уведомление канала. */
 export function formatEvent(ev: EventMessage): ChannelNotice {
   const meta = metaOf(ev);
@@ -242,6 +259,7 @@ export function formatEvent(ev: EventMessage): ChannelNotice {
       meta,
     };
   }
+  if (ev.kind === 'instructions') return formatInstructions(ev, meta);
   if (ev.reaction) return formatReaction({ ...ev, reaction: ev.reaction }, meta);
   const ep = ev.episode;
   if (ev.kind === 'episode_closed' && ep) {

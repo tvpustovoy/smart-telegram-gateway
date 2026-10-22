@@ -72,6 +72,20 @@
 // Окно отмены реакции (0.3.4, issue #46; reaction-hold.ts): реакция в окне — held, курсор её не ждёт: сообщения и прочие
 // события идут мимо неё, а сама она, когда окно прошло (held → new), отдаётся вне очереди (lease.skipped — как голосовое,
 // распознававшееся дольше VOICE_HOLD_MS); отменённая в окне (cancelled) не отдаётся вовсе.
+//
+// Правила канала (0.3.5, issue #47). Claude Code передаёт instructions MCP-сервера разговору только при первом
+// подключении канала к нему: продолженный (--resume) разговор новых instructions не получает (описания инструментов
+// обновляются), а разговор, начатый без канала, не получает их вовсе. Канал 0.3.5 называет в hello версию своих
+// instructions (instructions_version — начало SHA-256 текста). Шлюз помнит, какую версию получил каждый разговор агента
+// (таблица conversations; ключ — session_id строки состояния, 5.14, а если сессия неизвестна — SHA-256 instance_id
+// процесса канала), и проверенной аренде, чей разговор не получал этой версии, отдаёт одно событие вида instructions —
+// «правила канала» (offerInstructions): после проверки канала (verify), при той же сессии (grantSameSession), при смене
+// или первой известной сессии у живой аренды (checkSession) и на where() агента. Событие служебное, как probe: мимо
+// курсора, в «стоп» и в паузе тоже; текст правил подставляет канал (шлюз хранит только версию и ключ разговора —
+// events.instructions_json). done на него — версия записана за разговором. Не ответил — повтор по сроку К-5, как у
+// прочих; оборвалась связь — открытое событие правил отдаётся снова тому же разговору (новая аренда, перезапуск шлюза),
+// а событие правил другого разговора закрывается (handled). Новый разговор, которому Claude Code instructions уже дал,
+// шлюз от продолженного не отличает: он тоже получает событие (лишний раз — безвредно) ⟨предл.⟩.
 
 import crypto from 'node:crypto';
 import { performance } from 'node:perf_hooks';
@@ -90,6 +104,7 @@ import {
   readMode,
   readProbesSaved,
   readTurn,
+  instructionsWhereLine,
   ownerReactionText,
   relayNameProblem,
   setMeta,
@@ -101,6 +116,7 @@ import {
   type DeferredRetryResult,
   type EventMessage,
   type ForwardInfo,
+  type InstructionsState,
   type Mode,
   type OwnerReaction,
   type Timer,
@@ -176,6 +192,8 @@ interface Lease {
   session: string | null;
   /** session_id, уже виденные этой арендой (для журнала: вернулась прежняя — seen_before). */
   sessions: Set<string>;
+  /** Версия instructions канала из hello (0.3.5, issue #47); null — канал до 0.3.5: событий правил нет. */
+  instructions: string | null;
 }
 
 /**
@@ -215,6 +233,42 @@ function seenBy(session: string | null): Set<string> {
   return new Set(session ? [session] : []);
 }
 
+/**
+ * Разговор агента (0.3.5, issue #47) — ключ conversations: сессия Claude Code по строке состояния; неизвестна — процесс
+ * канала (SHA-256 instance_id); канал до 0.3.2 себя не называет — null.
+ */
+function conversationKey(lease: { session: string | null; instanceHash: string | null }): string | null {
+  if (lease.session) return `session:${lease.session}`;
+  if (lease.instanceHash) return `instance:${lease.instanceHash}`;
+  return null;
+}
+
+/** Ключ разговора — в журнал: вид и начало (весь не нужен). */
+function conversationTag(key: string | null): string | null {
+  if (key === null) return null;
+  const i = key.indexOf(':');
+  return `${key.slice(0, i)}:${key.slice(i + 1, i + 9)}`;
+}
+
+/** events.instructions_json (0.3.5): какую версию правил несёт событие и какому разговору оно отдано. */
+interface InstructionsInfo {
+  version: string;
+  key: string;
+}
+
+function instructionsInfo(json: string | null | undefined): InstructionsInfo | null {
+  if (!json) return null;
+  try {
+    const v = JSON.parse(json) as Partial<InstructionsInfo>;
+    return typeof v.version === 'string' && typeof v.key === 'string' ? { version: v.version, key: v.key } : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Что шлюз сделал с правилами канала для разговора аренды: none — не к чему (канал без версии, разговор не узнать). */
+type InstructionsOffer = InstructionsState | { state: 'none' };
+
 interface EventRow {
   seq: number;
   update_id: number | null;
@@ -243,10 +297,15 @@ interface EventRow {
   delivered_at?: number | null;
   /** Реакция владельца на ответ агента (схема v11; только у вида reaction). */
   reaction_json?: string | null;
+  /** Правила канала (схема v12; только у вида instructions): {version, key}. */
+  instructions_json?: string | null;
 }
 
-/** Что отдаётся по курсору аренды: probe — нет (он свой у каждой аренды и уходит сразу после welcome). */
-const PUMP_KINDS_SQL = AGENT_EVENT_KINDS.filter((k) => k !== 'probe')
+/**
+ * Что отдаётся по курсору аренды: probe — нет (он свой у каждой аренды и уходит сразу после welcome); правила канала
+ * (0.3.5) — тоже нет: они свои у разговора и уходят сами (offerInstructions).
+ */
+const PUMP_KINDS_SQL = AGENT_EVENT_KINDS.filter((k) => k !== 'probe' && k !== 'instructions')
   .map((k) => `'${k}'`)
   .join(',');
 const MSG_KINDS_SQL = MESSAGE_EVENT_KINDS.map((k) => `'${k}'`).join(',');
@@ -539,10 +598,17 @@ export class AdapterService {
     if (!r.ok) this.hooks.onReplyQueued();
   }
 
-  /** where — только чтение: и переходнику с арендой, и CLI (role cli), и без hello. */
+  /**
+   * where — только чтение: и переходнику с арендой, и CLI (role cli), и без hello. Агенту (проверенная аренда этого
+   * соединения, канал назвал версию правил) — ещё строка о правилах канала (0.3.5, issue #47): этот разговор их получил,
+   * событие ждёт done или — не получал — событие отдано сейчас.
+   */
   private onWhere(msg: Extract<AdapterMessage, { type: 'where' }>, conn: GatewayConnection): void {
     const w = this.control.where();
-    conn.send({ type: 'where_result', req_id: msg.req_id, text: w.text, data: w.data });
+    const lease = this.lease?.conn === conn && this.lease.verified ? this.lease : null;
+    const offer = lease ? this.offerInstructionsSafe(lease, 'where') : ({ state: 'none' } as const);
+    const text = offer.state === 'none' ? w.text : `${w.text}\n${instructionsWhereLine(offer)}`;
+    conn.send({ type: 'where_result', req_id: msg.req_id, text, data: w.data });
   }
 
   /**
@@ -712,7 +778,7 @@ export class AdapterService {
       return { returned: Number(r.changes), probeSeq: Number(p.lastInsertRowid) };
     });
     this.parked = null;
-    const lease = this.newLease(id, conn, msg.adapter, hint, now, instanceHash, false, probeSeq, probeCode);
+    const lease = this.newLease(id, conn, msg.adapter, hint, now, instanceHash, false, probeSeq, probeCode, msg.instructions_version ?? null);
     lease.pushed.add(probeSeq);
     // Сессия, какой её видно сейчас: при проверке пробой — она и записывается.
     lease.session = nowSession?.id ?? null;
@@ -725,6 +791,7 @@ export class AdapterService {
       returned,
       probe: probeSeq,
       probe_reason: probeReason,
+      ...(msg.instructions_version !== undefined ? { instructions: msg.instructions_version } : {}),
       ...(probeReason === 'session_changed' ? { session_from: sessionTag(last?.session_id ?? null), session_to: sessionTag(nowSession?.id ?? null) } : {}),
     });
     conn.send({ type: 'welcome', req_id: msg.req_id, lease_id: id, mode: this.mode(), turn: this.turn() });
@@ -741,6 +808,7 @@ export class AdapterService {
     verified: boolean,
     probeSeq: number | null,
     probeCode: string,
+    instructions: string | null = null,
   ): Lease {
     return {
       id,
@@ -762,6 +830,7 @@ export class AdapterService {
       instanceHash,
       session: null,
       sessions: new Set(),
+      instructions,
     };
   }
 
@@ -780,7 +849,7 @@ export class AdapterService {
   ): void {
     const now = this.ctx.clock.now();
     const hint = msg.session_hint ?? null;
-    const lease = this.newLease(id, conn, msg.adapter, hint, now, instanceHash, true, null, '');
+    const lease = this.newLease(id, conn, msg.adapter, hint, now, instanceHash, true, null, '', msg.instructions_version ?? null);
     lease.session = nowSession?.id ?? last.session_id;
     if (lease.session) lease.sessions.add(lease.session);
     const prev = last.lease_id;
@@ -807,9 +876,21 @@ export class AdapterService {
     }
     this.lease = lease;
     this.sameSessionLease = id;
-    this.ctx.journal.write('lease_granted', { lease: id, adapter: msg.adapter, hint, returned, probe: null, same_session: true, prev_lease: prev, adopted });
+    this.ctx.journal.write('lease_granted', {
+      lease: id,
+      adapter: msg.adapter,
+      hint,
+      returned,
+      probe: null,
+      same_session: true,
+      prev_lease: prev,
+      adopted,
+      ...(msg.instructions_version !== undefined ? { instructions: msg.instructions_version } : {}),
+    });
     conn.send({ type: 'welcome', req_id: msg.req_id, lease_id: id, mode: this.mode(), turn: this.turn() });
     this.ctx.journal.write('lease_verified', { lease: id, adapter: msg.adapter, after_ms: 0, reason: 'same_instance', session: sessionTag(lease.session) });
+    // Правила канала разговору, который их не получал (0.3.5), — раньше накопленного.
+    this.offerInstructionsSafe(lease, 'same_session');
     this.pump();
     this.hooks.onReplyQueued();
   }
@@ -857,6 +938,8 @@ export class AdapterService {
       if (!this.ctx.disk.check(err, 'lease_verify')) throw err;
     }
     this.ctx.journal.write('lease_verified', { lease: lease.id, adapter: lease.adapter, after_ms: this.ctx.clock.now() - lease.since, reason: 'probe', session: sessionTag(lease.session) });
+    // Правила канала разговору, который их не получал (0.3.5), — раньше накопленного.
+    this.offerInstructionsSafe(lease, 'verified');
     this.pump();
     // «агент на связи» — в закреплённой строке.
     this.hooks.onReplyQueued();
@@ -885,10 +968,13 @@ export class AdapterService {
     } catch (err) {
       if (!this.ctx.disk.check(err, 'lease_session')) throw err;
     }
-    // Первая известная сессия аренды (строка состояния ещё не приходила): отданное ушло ей — не повод для повтора.
+    // Первая известная сессия аренды (строка состояния ещё не приходила): отданное ушло ей — не повод для повтора. Правила
+    // канала, отданные процессу (сессии не знали — ключ instance), — тоже её (0.3.5): ключ разговора — теперь сессия.
     if (prev === null) {
       for (const t of lease.track.values()) t.seen.add(s.id);
       this.ctx.journal.write('agent_session', { lease: lease.id, session: sessionTag(s.id) });
+      this.instructionsToSession(lease, s.id);
+      this.offerInstructionsSafe(lease, 'session_known');
       return;
     }
     const resent = this.resendForSession(lease, s.id, s.at);
@@ -900,6 +986,97 @@ export class AdapterService {
       resent,
       ...(seenBefore ? { seen_before: true } : {}),
     });
+    // Другой разговор — свои правила канала (0.3.5): не получал этой версии — событие ему.
+    this.offerInstructionsSafe(lease, 'session_changed');
+  }
+
+  /**
+   * Сессия аренды стала известна (0.3.5): правила канала, записанные за процессом канала (ключ instance), — за этой
+   * сессией, если у неё своей записи нет; открытое событие правил процесса — теперь её. Ошибка записи — не беда:
+   * событие правил придёт ещё раз.
+   */
+  private instructionsToSession(lease: Lease, sessionId: string): void {
+    if (lease.instanceHash === null || lease.instructions === null) return;
+    const from = `instance:${lease.instanceHash}`;
+    const to = `session:${sessionId}`;
+    try {
+      transaction(this.ctx.db, () => {
+        sql(this.ctx.db,
+          'INSERT INTO conversations(key, instructions, seq, at) SELECT ?, instructions, seq, at FROM conversations WHERE key = ? ON CONFLICT(key) DO NOTHING',
+        ).run(to, from);
+        sql(this.ctx.db,
+          `UPDATE events SET instructions_json = json_set(instructions_json, '$.key', ?)
+           WHERE kind = 'instructions' AND status IN ('new', 'delivered') AND json_extract(instructions_json, '$.key') = ?`,
+        ).run(to, from);
+      });
+    } catch (err) {
+      if (!this.ctx.disk.check(err, 'instructions_session')) throw err;
+    }
+  }
+
+  /** Записанные правила канала разговора (0.3.5); нет — null. */
+  private conversationInstructions(key: string): { instructions: string; seq: number | null } | null {
+    return (sql(this.ctx.db, 'SELECT instructions, seq FROM conversations WHERE key = ?').get(key) as { instructions: string; seq: number | null } | undefined) ?? null;
+  }
+
+  /**
+   * Правила канала разговору аренды (0.3.5, issue #47; шапка). Получил эту версию — ничего (current). Открытое событие
+   * правил ему и этой версии уже у аренды — ждёт done (pending); у прежней аренды (обрыв, перезапуск шлюза) — отдать
+   * снова этой, с redelivery. Иначе — новое событие (sent). Открытые события правил другим разговорам или другой версии
+   * закрываются (handled): разговор у аренды один. Проверенной аренде; в «стоп» и паузе — тоже (служебное, как probe).
+   */
+  private offerInstructions(lease: Lease, trigger: string): InstructionsOffer {
+    const version = lease.instructions;
+    const key = conversationKey(lease);
+    if (this.closed || !lease.verified || version === null || key === null) return { state: 'none' };
+    const rec = this.conversationInstructions(key);
+    if (rec?.instructions === version) return { state: 'current', version, seq: rec.seq };
+    const open = sql(this.ctx.db, "SELECT * FROM events WHERE kind = 'instructions' AND status IN ('new', 'delivered') ORDER BY seq").all() as unknown as EventRow[];
+    let same: EventRow | null = null;
+    const stale: number[] = [];
+    for (const ev of open) {
+      const info = instructionsInfo(ev.instructions_json);
+      if (same === null && info?.key === key && info.version === version) same = ev;
+      else stale.push(ev.seq);
+    }
+    const now = this.ctx.clock.now();
+    const seq = transaction(this.ctx.db, () => {
+      if (stale.length) sql(this.ctx.db, "UPDATE events SET status = 'handled' WHERE seq IN (SELECT value FROM json_each(?))").run(JSON.stringify(stale));
+      if (same) return same.seq;
+      const r = sql(this.ctx.db, "INSERT INTO events(kind, status, attempts, created_at, instructions_json) VALUES ('instructions', 'new', 0, ?, ?)").run(
+        now,
+        JSON.stringify({ version, key }),
+      );
+      return Number(r.lastInsertRowid);
+    });
+    for (const st of stale) lease.track.delete(st);
+    if (stale.length) this.ctx.journal.write('instructions_closed', { seqs: stale, lease: lease.id, reason: 'other_conversation_or_version' });
+    if (same && this.ownsEvent(lease, same)) return { state: 'pending', version, seq: same.seq };
+    const ev = this.event(seq);
+    if (!ev) return { state: 'none' };
+    lease.pushed.add(seq);
+    lease.track.set(seq, { calls: lease.calls, due: now + this.redeliverMs, redelivered: false, postponed: 0, seen: seenBy(lease.session) });
+    this.ctx.journal.write('instructions_offered', {
+      seq,
+      lease: lease.id,
+      version,
+      conversation: conversationTag(key),
+      had: rec?.instructions ?? null,
+      trigger,
+      ...(same ? { again: true } : {}),
+    });
+    lease.conn.send(this.frame(ev, same !== null));
+    return { state: 'sent', version, seq };
+  }
+
+  /** offerInstructions из такта аренды: диск полон — не беда, правила придут при следующей возможности. */
+  private offerInstructionsSafe(lease: Lease, trigger: string): InstructionsOffer {
+    try {
+      return this.offerInstructions(lease, trigger);
+    } catch (err) {
+      if (!this.ctx.disk.check(err, 'instructions_offer')) throw err;
+      return { state: 'none' };
+    }
   }
 
   /**
@@ -916,6 +1093,8 @@ export class AdapterService {
         lease.track.delete(seq);
         continue;
       }
+      // Правила канала — свои у каждого разговора (0.3.5): новому — offerInstructions, а не повтор чужих.
+      if (ev.kind === 'instructions') continue;
       if (t.seen.has(sid) || ((ev.delivered_at ?? null) !== null && ev.delivered_at! >= since)) {
         t.seen.add(sid);
         continue;
@@ -1101,6 +1280,15 @@ export class AdapterService {
 
   private frame(ev: EventRow, redelivery?: boolean): EventMessage {
     if (ev.kind === 'probe') return this.probeFrame(ev.seq, this.lease?.probeSeq === ev.seq ? this.lease.probeCode : undefined);
+    if (ev.kind === 'instructions') {
+      // Правила канала (0.3.5): шлюз шлёт только версию — текст своих instructions той же версии подставляет канал.
+      return {
+        ...this.probeFrame(ev.seq, undefined),
+        kind: 'instructions',
+        redelivery: redelivery ?? ev.attempts > 0,
+        instructions: { version: instructionsInfo(ev.instructions_json)?.version ?? '' },
+      };
+    }
     const attachments = ev.attachments_json ? (JSON.parse(ev.attachments_json) as Attachment[]) : [];
     const forward = ev.forward_json ? (JSON.parse(ev.forward_json) as ForwardInfo) : null;
     const replyTo = ev.reply_to ? (JSON.parse(ev.reply_to) as NonNullable<EventMessage['reply_to']>) : null;
@@ -1268,6 +1456,10 @@ export class AdapterService {
       conn.send({ type: 'error', req_id: msg.req_id, code: 'bad_request', text: `№ ${ev.seq} — проверочное событие: на него отвечают done, а не reply` });
       return;
     }
+    if (ev?.kind === 'instructions') {
+      conn.send({ type: 'error', req_id: msg.req_id, code: 'bad_request', text: `№ ${ev.seq} — правила канала: на них отвечают done, а не reply` });
+      return;
+    }
     // Чьи слова агент передаёт (0.3.2, P-26): имя проверяет шлюз — агент не выдаёт чужие слова за строку шлюза ⟨предл.⟩.
     const fromName = msg.from !== undefined ? msg.from.trim() : null;
     if (msg.from !== undefined) {
@@ -1372,6 +1564,10 @@ export class AdapterService {
     }
     if (ev?.kind === 'probe') {
       refuse('probe', `№ ${ev.seq} — проверочное событие: на него отвечают done`);
+      return;
+    }
+    if (ev?.kind === 'instructions') {
+      refuse('instructions', `№ ${ev.seq} — правила канала: на них отвечают done`);
       return;
     }
     const fromName = msg.from !== undefined ? msg.from.trim() : null;
@@ -1481,18 +1677,29 @@ export class AdapterService {
       rows.push(ev);
     }
     const now = this.ctx.clock.now();
+    const learned: Array<{ seq: number } & InstructionsInfo> = [];
     const changed = transaction(this.ctx.db, () => {
       const done: number[] = [];
       for (const ev of rows) {
         if (ev.status === 'processed' || ev.status === 'handled') continue;
         sql(this.ctx.db, "UPDATE events SET status = 'processed', processed_at = ?, processed_silent = 1 WHERE seq = ?").run(now, ev.seq);
         done.push(ev.seq);
+        // Правила канала прочитаны (0.3.5): версия — за разговором, которому событие отдано.
+        const info = ev.kind === 'instructions' ? instructionsInfo(ev.instructions_json) : null;
+        if (info) {
+          sql(this.ctx.db,
+            `INSERT INTO conversations(key, instructions, seq, at) VALUES (?, ?, ?, ?)
+             ON CONFLICT(key) DO UPDATE SET instructions = excluded.instructions, seq = excluded.seq, at = excluded.at`,
+          ).run(info.key, info.version, ev.seq, now);
+          learned.push({ seq: ev.seq, ...info });
+        }
       }
       // 👌 на сообщениях владельца: агент обработал без ответа (материал, пересылка) — тоже 👌.
       requestProcessed(this.ctx, done);
       return done.length;
     });
     this.ctx.journal.write('done', { seqs: msg.seqs, processed: changed });
+    for (const l of learned) this.ctx.journal.write('instructions_received', { seq: l.seq, lease: lease.id, version: l.version, conversation: conversationTag(l.key) });
     for (const ev of rows) lease.track.delete(ev.seq);
     this.typing.stop(msg.seqs);
     conn.send({ type: 'ack', req_id: msg.req_id, result: { processed: changed } });

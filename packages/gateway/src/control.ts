@@ -21,7 +21,10 @@
 //
 // Эпизоды: агент называет тему (episode name) или открывает новую (episode new) — строка `⚙ ↪ #N · тема` с [верно]
 // [не то] (номер — `#N`, роль по умолчанию не показывается, другая — последней: shownRole); после
-// нажатия она правится в одну строку без кнопок. [верно] — отметка в журнале и «— верно». [не то] после new: прежний
+// нажатия она правится в одну строку без кнопок. [верно] — отметка в журнале и строка удаляется (0.3.5, issue #48:
+// тема и так видна в закреплённой строке; ui.delete_confirmed_topic, по умолчанию да; удаление — очередью отправителя,
+// с повтором; Telegram отказал — правка «— верно» без кнопок, sender.ts); ui.delete_confirmed_topic: false — как
+// раньше, «— верно». [не то] после new: прежний
 // эпизод открывается снова, если закрыт меньше 4 часов назад, объявленный закрывается (owner_rejected), строка —
 // «↩ #N · прежняя тема»; если больше — «— не то» и кнопки с темами трёх последних эпизодов за сутки (`#N · тема`)
 // отдельным сообщением (после выбора — тоже одна строка). [не то] после name возвращает прежнюю тему. В обоих случаях
@@ -318,8 +321,9 @@ export class Control {
     const c = checkButton(this.ctx, token, now);
     if (!c.ok) {
       this.ctx.journal.write('button_refused', { kind: c.button?.kind ?? null, reason: c.refusal });
-      // Кнопка больше не действует — убрать её из-под сообщения (M4: правка сообщений бота).
-      if (c.button?.kind !== 'transcript') this.dropButtons(cq);
+      // Кнопка больше не действует — убрать её из-под сообщения (M4: правка сообщений бота). Строку темы, которую уже
+      // удаляют после [верно] (повторное нажатие), не правят: правка удалённого — лишний отказ Telegram.
+      if (c.button?.kind !== 'transcript' && !this.topicDeleting(cq)) this.dropButtons(cq);
       // Срок карточки правил вышел раньше, чем тикер её закрыл, — rules_log expired сейчас.
       if (c.refusal === 'expired' && (c.button?.kind === 'rule_ok' || c.button?.kind === 'rule_no')) this.rules?.expireDue(now);
       return { answer: BUTTON_REFUSALS[c.refusal] };
@@ -327,17 +331,24 @@ export class Control {
     const { button, payload } = c;
     this.ctx.journal.write('button', { kind: button.kind, group: payload.group });
     if (button.kind === 'transcript') return this.pressTranscript(payload);
+    // [верно] под строкой темы — строку удаляют (0.3.5, issue #48): кнопки отдельной правкой не снимаются.
+    const deleteTopic = button.kind === 'episode_ok' && this.ctx.config.ui.delete_confirmed_topic && !!cq.message;
     // Одноразовая кнопка нажата — кнопки сообщения больше не нужны (строку стопа и объявление темы ниже правят в одну
     // строку без кнопок: правка текста заменяет эту).
-    this.dropButtons(cq);
+    if (!deleteTopic) this.dropButtons(cq);
     switch (button.kind) {
       case 'resume':
         return this.pressResume(now, cq);
       case 'episode_ok': {
         useGroup(this.ctx, payload.group, now);
-        this.ctx.journal.write('episode_confirmed', { episode: payload.episode_id, action: payload.action });
         const ep = this.episodes.get(Number(payload.episode_id));
-        if (ep) this.editPressed(cq, episodeConfirmedText(ep.id, typeof payload.topic === 'string' ? payload.topic : ep.topic, shownRole(ep.role)));
+        const text = ep ? episodeConfirmedText(ep.id, typeof payload.topic === 'string' ? payload.topic : ep.topic, shownRole(ep.role)) : null;
+        this.ctx.journal.write('episode_confirmed', { episode: payload.episode_id, action: payload.action, ...(deleteTopic ? { line: 'delete' } : {}) });
+        if (deleteTopic) {
+          // Строка темы своё сделала: тема видна в закреплённой строке. Не удалится — правка на «— верно» без кнопок.
+          const m = cq.message!;
+          enqueueDeletion(this.ctx, { chatId: m.chat.id, tgMessageId: m.message_id, reason: 'topic', dueAt: now, fallbackText: text });
+        } else if (text) this.editPressed(cq, text);
         return { answer: null };
       }
       case 'episode_reject':
@@ -349,6 +360,16 @@ export class Control {
         if (!this.rules) return { answer: BUTTON_REFUSALS.expired };
         return this.rules.press(button.kind, payload, now);
     }
+  }
+
+  /** Строку под нажатием уже удаляют как подтверждённую тему (0.3.5): удаление ждёт или прошло. */
+  private topicDeleting(cq: CallbackQuery): boolean {
+    const m = cq.message;
+    if (!m) return false;
+    return !!sql(this.ctx.db, "SELECT 1 FROM deletions WHERE chat_id = ? AND tg_message_id = ? AND reason = 'topic' AND status IN ('pending', 'sent') LIMIT 1").get(
+      m.chat.id,
+      m.message_id,
+    );
   }
 
   /** Снять встроенные кнопки нажатого сообщения (правка с повтором). Внутри транзакции. */

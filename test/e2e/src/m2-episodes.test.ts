@@ -3,7 +3,8 @@
 // эпизода нет — смена видна в закреплённой строке (закрытый тишиной — «#N · … · закрыт»); нижней клавиатуры и
 // подсказки поля ввода нет (0.3.1, P-18), тема и роль — только в закреплённой строке · A2.9 episode(new) и
 // [не то] через 5 минут · тема от агента (episode name —
-// A3.8 на M2), [верно] и [не то] — объявление правится в одну строку без кнопок, [не то] позже 4 часов — выбор темы ·
+// A3.8 на M2), [верно] — строка темы удаляется (0.3.5, #48; ui.delete_confirmed_topic: false — m2-topic-line), [не то]
+// — объявление правится в одну строку без кнопок, [не то] позже 4 часов — выбор темы ·
 // итог и его метка (A3.9 на M2) · episode в stopped и с role. Интерфейс — J-4. По проверке: после [не то] с
 // возвратом и тишины в строке (и в «где мы») — тот эпизод, к которому вернулись, а не отвергнутый с бо́льшим номером.
 
@@ -219,7 +220,7 @@ describe('M2 · эпизоды от агента: тема, [верно] / [не
   const waitEdited = (m: Parameters<typeof currentText>[0], text: string) =>
     pump(gw, () => (currentText(m) === text && currentButtons(m).length === 0) || null, { what: `правки «${text}»` });
 
-  it('episode(name) — эпизод тот же; объявление с [верно] [не то]; тема — в закреплённой строке, подсказки нет; [верно] — объявление в одну строку (A3.8 на M2)', async () => {
+  it('episode(name) — эпизод тот же; объявление с [верно] [не то]; тема — в закреплённой строке, подсказки нет; [верно] — строка темы удалена (A3.8 на M2; 0.3.5, #48)', async () => {
     const m1 = s.fake.builder.text(OWNER, 'что на завтра?');
     s.fake.push(m1);
     const seq1 = await h.admitted(m1);
@@ -242,13 +243,20 @@ describe('M2 · эпизоды от агента: тема, [верно] / [не
     const rc = await agentReply(seq2, 'записал хлеб');
     noKeyboard(rc, 'подсказки нет: тема — в закреплённой строке (0.3.1)');
     assert.equal(await press(s, line, 'верно'), null);
-    assert.ok(readJournal(s.home).some((l) => l.ev === 'episode_confirmed' && l.episode === epA));
-    await waitEdited(line, `${announce(epA, 'Задачи на завтра')} — верно`);
-    // Нажатие — одна правка (текст без кнопок): снятие кнопок входит в неё, отдельного editMessageReplyMarkup нет.
+    assert.ok(readJournal(s.home).some((l) => l.ev === 'episode_confirmed' && l.episode === epA && l.line === 'delete'));
+    // 0.3.5 (#48; ui.delete_confirmed_topic — по умолчанию да): строка темы своё сделала — удалена; тема видна в
+    // закреплённой строке.
+    await pump(gw, () => s.fake.wasDeleted(OWNER.id, line.message_id) || null, { what: 'удаления строки темы' });
+    const editsOfLine = (): string[] =>
+      s.fake.calls.filter((c) => (c.method === 'editMessageText' || c.method === 'editMessageReplyMarkup') && Number(c.params.message_id) === line.message_id).map((c) => c.method);
     for (let i = 0; i < 3; i++) await gw.advance('1s');
-    const editsOfLine = s.fake.calls.filter((c) => (c.method === 'editMessageText' || c.method === 'editMessageReplyMarkup') && Number(c.params.message_id) === line.message_id);
-    assert.deepEqual(editsOfLine.map((c) => c.method), ['editMessageText']);
+    assert.deepEqual(editsOfLine(), [], 'правок нет: удаление убирает и кнопки');
+    await waitUntil(() => q1<{ status: string }>(s.home, "SELECT status FROM deletions WHERE tg_message_id = ? AND reason = 'topic'", line.message_id)?.status === 'sent' || null, 5000, 'отметки удаления');
     assert.equal(await press(s, line, 'не то'), 'уже использовано', 'кнопки одного объявления гаснут вместе');
+    // Нажатие под удалённой строкой (клиент ещё показывал её) — без правки: править нечего.
+    for (let i = 0; i < 3; i++) await gw.advance('1s');
+    assert.deepEqual(editsOfLine(), [], 'удалённую строку не правят');
+    await waitStatus(s, gw, (t) => t.startsWith(`📍 #${epA} · Задачи на завтра\n`), 'темы в закреплённой строке');
     // Та же тема ещё раз — без объявления.
     const same = await ch.episode('name', 'Задачи на завтра');
     assert.ok(same.type === 'ack' && (same.result as { changed: boolean }).changed === false);

@@ -4,7 +4,10 @@
 
 /**
  * events.kind. reaction (0.3.4, схема v11) — реакция владельца на ответ агента (P-31, issue #34): событие агенту, а не
- * сообщение владельца — 👀 и 👌 на нём нет, «ждут агента» его не считают.
+ * сообщение владельца — 👀 и 👌 на нём нет, «ждут агента» его не считают. instructions (0.3.5, схема v12; issue #47) —
+ * «правила канала»: текущие instructions канала разговору, который их не получал (Claude Code отдаёт instructions
+ * MCP-сервера только при первом подключении канала к разговору; продолженному разговору — нет). Служебное, как probe:
+ * отдаётся аренде само, мимо курсора; ответ — done.
  */
 export const EVENT_KINDS = [
   'text',
@@ -19,6 +22,7 @@ export const EVENT_KINDS = [
   'episode_reopened',
   'probe',
   'reaction',
+  'instructions',
 ] as const;
 export type EventKind = (typeof EVENT_KINDS)[number];
 
@@ -166,8 +170,11 @@ export const META_KEYS = {
   probesSaved: 'probes_saved',
 } as const;
 
-/** События, которые отдаются агенту (5.2): команды, нажатия и закрытая тема — нет; реакция владельца (0.3.4) — да. */
-export const AGENT_EVENT_KINDS = ['text', 'voice', 'photo', 'document', 'edit', 'episode_closed', 'episode_reopened', 'probe', 'reaction'] as const;
+/**
+ * События, которые отдаются агенту (5.2): команды, нажатия и закрытая тема — нет; реакция владельца (0.3.4) — да;
+ * правила канала (0.3.5) — да, как probe: аренде сами, мимо курсора.
+ */
+export const AGENT_EVENT_KINDS = ['text', 'voice', 'photo', 'document', 'edit', 'episode_closed', 'episode_reopened', 'probe', 'reaction', 'instructions'] as const;
 /** События из сообщений владельца, которые «ждут агента» (строка «не на связи», Ш-14). */
 export const MESSAGE_EVENT_KINDS = ['text', 'voice', 'photo', 'document', 'edit'] as const;
 
@@ -603,6 +610,108 @@ CREATE INDEX events_episode ON events(episode_id);
 ALTER TABLE outbox ADD COLUMN quote INTEGER NOT NULL DEFAULT 0 CHECK (quote IN (0,1));
 `;
 
+/**
+ * Версия 12 (0.3.5). Пересборка двух таблиц тем же порядком, что v11 (внешние ключи выключены на время миграции,
+ * foreignKeysOff; счётчики AUTOINCREMENT переносятся — номера не переиспользуются; столбцы копируются явным списком), и
+ * новая таблица.
+ * - events.kind = 'instructions' и events.instructions_json (issue #47) — событие «правила канала»: JSON {version, key} —
+ *   какую версию instructions канала оно несёт (начало SHA-256 их текста, её называет канал в hello) и какому разговору
+ *   агента оно отдано (key — как у conversations). Сам текст правил шлюз не хранит: его подставляет канал (format.ts).
+ * - conversations (issue #47) — какие правила канала получил каждый разговор агента: key — `session:<session_id>`
+ *   (сессия Claude Code по строке состояния, 5.14) или `instance:<SHA-256 instance_id>` (сессия неизвестна — процесс
+ *   канала); instructions — версия, на событие с которой пришёл done (seq); at — когда. Разговор со старой или
+ *   неизвестной версией получает событие «правила канала» один раз при аренде (adapter.ts, offerInstructions).
+ * - deletions.reason = 'topic' и deletions.fallback_text (issue #48) — строка темы `⚙ ↪ #N · тема` удаляется после
+ *   [верно] (ui.delete_confirmed_topic); Telegram отказал в удалении (сообщение старше 48 часов и т. п.) или удаление
+ *   не прошло за все попытки — строка правится на fallback_text без кнопок (NULL — снимаются только кнопки).
+ */
+const SCHEMA_V12 = `
+CREATE TABLE events_v12 (
+  seq               INTEGER PRIMARY KEY AUTOINCREMENT,
+  update_id         INTEGER,
+  message_id        INTEGER,
+  chat_id           INTEGER,
+  thread_id         INTEGER,
+  subject_id        TEXT,
+  trust             TEXT CHECK (trust IN ('owner','untrusted','owner_forward')),
+  mixed             INTEGER NOT NULL DEFAULT 0 CHECK (mixed IN (0,1)),
+  attachments_json  TEXT,
+  kind              TEXT NOT NULL CHECK (kind IN ('text','voice','photo','document','edit','command','callback','closed_topic','episode_closed','episode_reopened','probe','reaction','instructions')),
+  text              TEXT,
+  transcript        TEXT,
+  raw_ref           TEXT,
+  forward_json      TEXT,
+  reply_to          TEXT,
+  edit_of           INTEGER REFERENCES events(seq),
+  episode_id        INTEGER REFERENCES episodes(id),
+  status            TEXT NOT NULL CHECK (status IN ('transcribing','held','new','delivered','processed','handled','closed_topic','cancelled')),
+  lease_id          TEXT,
+  delivered_at      INTEGER,
+  attempts          INTEGER NOT NULL DEFAULT 0 CHECK (attempts >= 0),
+  processed_at      INTEGER,
+  processed_silent  INTEGER NOT NULL DEFAULT 0 CHECK (processed_silent IN (0,1)),
+  turn              INTEGER,
+  created_at        INTEGER NOT NULL,
+  message_date      INTEGER,
+  stt_note          TEXT CHECK (stt_note IN ('too_long','too_big')),
+  audio_seconds     REAL CHECK (audio_seconds IS NULL OR audio_seconds >= 0),
+  media_ref         TEXT,
+  reaction_json     TEXT,
+  hold_until        INTEGER,
+  instructions_json TEXT,
+  CHECK ((kind = 'reaction') = (reaction_json IS NOT NULL)),
+  CHECK ((kind = 'instructions') = (instructions_json IS NOT NULL)),
+  CHECK (status NOT IN ('held','cancelled') OR kind = 'reaction'),
+  CHECK (status <> 'held' OR hold_until IS NOT NULL)
+) STRICT;
+INSERT INTO events_v12(seq, update_id, message_id, chat_id, thread_id, subject_id, trust, mixed, attachments_json, kind, text,
+  transcript, raw_ref, forward_json, reply_to, edit_of, episode_id, status, lease_id, delivered_at, attempts, processed_at,
+  processed_silent, turn, created_at, message_date, stt_note, audio_seconds, media_ref, reaction_json, hold_until)
+SELECT seq, update_id, message_id, chat_id, thread_id, subject_id, trust, mixed, attachments_json, kind, text,
+  transcript, raw_ref, forward_json, reply_to, edit_of, episode_id, status, lease_id, delivered_at, attempts, processed_at,
+  processed_silent, turn, created_at, message_date, stt_note, audio_seconds, media_ref, reaction_json, hold_until
+FROM events ORDER BY seq;
+UPDATE sqlite_sequence SET seq = max(seq, (SELECT seq FROM sqlite_sequence WHERE name = 'events'))
+WHERE name = 'events_v12' AND EXISTS (SELECT 1 FROM sqlite_sequence WHERE name = 'events');
+INSERT INTO sqlite_sequence(name, seq) SELECT 'events_v12', seq FROM sqlite_sequence
+WHERE name = 'events' AND NOT EXISTS (SELECT 1 FROM sqlite_sequence WHERE name = 'events_v12');
+DROP TABLE events;
+ALTER TABLE events_v12 RENAME TO events;
+CREATE INDEX events_status ON events(status, seq);
+CREATE INDEX events_message ON events(chat_id, message_id);
+CREATE INDEX events_update ON events(update_id);
+CREATE INDEX events_episode ON events(episode_id);
+CREATE TABLE deletions_v12 (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  chat_id       INTEGER NOT NULL,
+  tg_message_id INTEGER,
+  outbox_id     INTEGER REFERENCES outbox(id),
+  reason        TEXT NOT NULL CHECK (reason IN ('command','where','pin_notice','topic')),
+  due_at        INTEGER NOT NULL,
+  status        TEXT NOT NULL CHECK (status IN ('pending','sent','dropped')),
+  attempts      INTEGER NOT NULL DEFAULT 0 CHECK (attempts >= 0),
+  next_try_at   INTEGER,
+  created_at    INTEGER NOT NULL,
+  fallback_text TEXT,
+  CHECK (outbox_id IS NOT NULL OR tg_message_id IS NOT NULL)
+) STRICT;
+INSERT INTO deletions_v12(id, chat_id, tg_message_id, outbox_id, reason, due_at, status, attempts, next_try_at, created_at)
+SELECT id, chat_id, tg_message_id, outbox_id, reason, due_at, status, attempts, next_try_at, created_at FROM deletions ORDER BY id;
+UPDATE sqlite_sequence SET seq = max(seq, (SELECT seq FROM sqlite_sequence WHERE name = 'deletions'))
+WHERE name = 'deletions_v12' AND EXISTS (SELECT 1 FROM sqlite_sequence WHERE name = 'deletions');
+INSERT INTO sqlite_sequence(name, seq) SELECT 'deletions_v12', seq FROM sqlite_sequence
+WHERE name = 'deletions' AND NOT EXISTS (SELECT 1 FROM sqlite_sequence WHERE name = 'deletions_v12');
+DROP TABLE deletions;
+ALTER TABLE deletions_v12 RENAME TO deletions;
+CREATE INDEX deletions_status ON deletions(status, due_at);
+CREATE TABLE conversations (
+  key          TEXT PRIMARY KEY,
+  instructions TEXT NOT NULL,
+  seq          INTEGER,
+  at           INTEGER NOT NULL
+) STRICT;
+`;
+
 export const MIGRATIONS: readonly Migration[] = [
   { version: 1, name: 'схема 0.1: все таблицы 5.2', sql: SCHEMA_V1 },
   { version: 2, name: 'кнопки в outbox, тема Telegram у эпизода', sql: SCHEMA_V2 },
@@ -615,6 +724,7 @@ export const MIGRATIONS: readonly Migration[] = [
   { version: 9, name: 'чьи слова передаёт агент (reply.from)', sql: SCHEMA_V9 },
   { version: 10, name: 'посылки: доставки файлов агента (send_file)', sql: SCHEMA_V10 },
   { version: 11, name: 'реакция владельца на ответ агента; расшифровка цитатой', sql: SCHEMA_V11, foreignKeysOff: true },
+  { version: 12, name: 'правила канала разговору; удаление строки темы после [верно]', sql: SCHEMA_V12, foreignKeysOff: true },
 ];
 
 /**
@@ -663,8 +773,11 @@ export const REACTION_CLEARED = '';
 /** reactions.status */
 export const REACTION_STATUSES = ['pending', 'done', 'failed'] as const;
 
-/** deletions.reason: команда владельца · ответ «где мы» · служебное сообщение о закреплении. */
-export const DELETION_REASONS = ['command', 'where', 'pin_notice'] as const;
+/**
+ * deletions.reason: команда владельца · ответ «где мы» · служебное сообщение о закреплении · строка темы `⚙ ↪ #N · тема`
+ * после [верно] (0.3.5, схема v12; issue #48, ui.delete_confirmed_topic).
+ */
+export const DELETION_REASONS = ['command', 'where', 'pin_notice', 'topic'] as const;
 export type DeletionReason = (typeof DELETION_REASONS)[number];
 
 /** events.stt_note: звук файлом (аудиофайл, кружок, видео) длиннее предела (только скачивается) · больше 20 МБ (не скачивается). */
@@ -698,4 +811,5 @@ export const SCHEMA_TABLES = [
   'reactions',
   'deletions',
   'deliveries',
+  'conversations',
 ] as const;

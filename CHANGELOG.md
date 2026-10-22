@@ -9,16 +9,48 @@ an older version after a migration is only possible from a database backup taken
 
 The chat interface and the design documents are in Russian; the entries below describe behavior in English.
 
-## Unreleased
+## 0.3.5 - 2026-10-22
 
 ### Added
 
+- Current channel rules reach a resumed conversation (#47). Claude Code passes an MCP server's instructions to a
+  conversation only when the channel first connects to it: a conversation continued with `--resume` keeps the
+  instructions it got back then (tool descriptions do update), and a conversation started without the channel never
+  gets them. The channel now names the version of its instructions in `hello` (`instructions_version`, the start of a
+  SHA-256 of the text). The gateway remembers which version each agent conversation has confirmed (keyed by the Claude
+  Code session from the status line, or by the channel process while the session is unknown) and gives a conversation
+  with an old or unknown version one gateway event "channel rules" — `[№ N · правила канала, версия …]` followed by the
+  full current instructions. The agent marks it `done`, and the version is recorded for that conversation.
+- The rules event is a service event, like the channel check: it goes ahead of the waiting messages, also during stop
+  and pause, is redelivered by the usual timer, stays with the same conversation across a dropped connection or a
+  gateway restart, and is closed when another conversation takes the queue. A brand-new conversation, which already has
+  the instructions from Claude Code, gets the event once as well: the gateway cannot tell it from a resumed one.
+- `where()` called by the agent ends with a line about the channel rules: received by this conversation, waiting for
+  `done`, or not received — then the event is sent. The descriptions of `reply`, `done` and `where` point to the event
+  and to `where()`; `reply` and `send_file` on the rules event are refused.
+- Channel instructions and the agent folder template: the owner is in Telegram, not at the terminal — ask through
+  `reply`; on-screen choice prompts, plan mode and permission prompts never reach the owner. Before an action that may
+  ask for permission at the terminal, say so in `reply`. A reaction to an "X or Y?" reply chooses nothing: do the light,
+  reversible option and say in one `reply` line which one; ask again only when the branches are irreversible.
+- `ui.delete_confirmed_topic` in `config.yaml` (default `true`, #48): [верно] under the topic line `⚙ ↪ #N · topic`
+  deletes the line — the topic stays visible in the pinned status line. `false` keeps the previous behaviour: the line
+  is edited to "… — верно" without buttons. The deletion goes through the sender's queue with retries and survives a
+  restart; if Telegram refuses it (the message is older than 48 hours, …) or every attempt fails, the line is edited to
+  "… — верно" without buttons and the reason is logged. A second press while the deletion is pending does not edit the
+  line. [не то] is unchanged.
 - `npm run release-check` (`scripts/release-check.mjs`, no dependencies): scans the files git would commit, and with
   `--history` every object and commit message, against a private denylist named by `STG_DENYLIST` plus built-in checks
   for home-directory paths, e-mail addresses, phone numbers, bot tokens and API keys. Exit code 1 on findings.
 
 ### Changed
 
+- Database schema v12: the `events` table is rebuilt for the new event kind `instructions` (column
+  `instructions_json`), the `deletions` table is rebuilt for the new reason `topic` (column `fallback_text`), and a new
+  table `conversations` holds the confirmed rules version per agent conversation. Going back to 0.3.4 is possible only
+  from a backup taken before the upgrade.
+- Protocol: `hello` takes the optional `instructions_version`; events of kind `instructions` carry `instructions
+  {version}` and go only to a channel that named a version. A 0.3.5 channel connected to an older gateway repeats
+  `hello` without the field (no rules events, as before).
 - README and CHANGELOG in English (Russian README: `README.ru.md`).
 - `stg doctor`: the Node hint suggests `brew install node`; the OpenRouter transcription note says the Ogg voice path
   and the model name are not verified on a real key.

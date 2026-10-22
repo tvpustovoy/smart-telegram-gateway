@@ -16,6 +16,9 @@
 // «нераспознанные ключи»: канал запоминает это и повторяет hello без них (как переходник до 0.3.2) ⟨предл.⟩.
 // Кадры шлюза читаются до MAX_MEDIA_FRAME_BYTES (8 МБ): ответ на media — картинка в base64 (0.3); свои кадры шлюзу — по-
 // прежнему до 1 МБ.
+// Правила канала (0.3.5, issue #47): в hello — instructions_version, версия своих instructions; по ней шлюз решает, нужно
+// ли разговору событие «правила канала». Шлюз до 0.3.5 поля не знает — bad_request «нераспознанный ключ»: дальше hello
+// без него (событий правил нет, как раньше).
 
 import net from 'node:net';
 import {
@@ -46,6 +49,8 @@ export interface GatewayClientOptions {
   hint: { cwd: string; pid: number };
   /** Ключ процесса канала (0.3.2): случайный, на всю жизнь процесса; шлюзу — в hello. */
   instanceId?: string;
+  /** Версия instructions канала (0.3.5): шлюзу — в hello. */
+  instructionsVersion?: string;
   log: (line: string) => void;
   /** Событие → в сессию. true — толкнули (шлюзу уйдёт delivered). */
   onEvent: (ev: EventMessage) => Promise<boolean>;
@@ -84,6 +89,8 @@ export class GatewayClient {
   private lastLease: string | null = null;
   /** Шлюз до 0.3.2 не знает instance_id и prev_lease — hello без них. */
   private legacyHello = false;
+  /** Шлюз до 0.3.5 не знает instructions_version — hello без него. */
+  private noInstructionsHello = false;
 
   constructor(private readonly opts: GatewayClientOptions) {
     this.backoff = opts.timing.reconnectMinMs;
@@ -207,8 +214,18 @@ export class GatewayClient {
         this.opts.instanceId && !this.legacyHello
           ? { instance_id: this.opts.instanceId, ...(this.lastLease !== null ? { prev_lease: this.lastLease } : {}) }
           : {};
+      const rules = this.opts.instructionsVersion && !this.noInstructionsHello ? { instructions_version: this.opts.instructionsVersion } : {};
       sock.write(
-        encodeFrame({ type: 'hello', req_id: this.helloReq, adapter: this.opts.adapter, version: PROTOCOL_VERSION, role: 'adapter', session_hint: this.opts.hint, ...same }),
+        encodeFrame({
+          type: 'hello',
+          req_id: this.helloReq,
+          adapter: this.opts.adapter,
+          version: PROTOCOL_VERSION,
+          role: 'adapter',
+          session_hint: this.opts.hint,
+          ...same,
+          ...rules,
+        }),
       );
     });
     sock.on('data', (chunk: Buffer) => {
@@ -345,9 +362,19 @@ export class GatewayClient {
       return;
     }
     // Шлюз до 0.3.2: instance_id и prev_lease ему незнакомы — дальше hello без них (проба на каждую аренду, как раньше).
-    if (m.code === 'bad_request' && !this.legacyHello && /нераспознанн/i.test(m.text) && /instance_id|prev_lease/.test(m.text)) {
-      this.legacyHello = true;
-      this.opts.log('шлюз старой версии: hello без instance_id — проверочное событие на каждую аренду');
+    // Шлюз до 0.3.5: незнаком instructions_version — дальше hello без него (событий «правила канала» нет, как раньше).
+    const unknownKeys = m.code === 'bad_request' && /нераспознанн/i.test(m.text);
+    const oldInstance = unknownKeys && !this.legacyHello && /instance_id|prev_lease/.test(m.text);
+    const oldRules = unknownKeys && !this.noInstructionsHello && /instructions_version/.test(m.text);
+    if (oldInstance || oldRules) {
+      if (oldInstance) {
+        this.legacyHello = true;
+        this.opts.log('шлюз старой версии: hello без instance_id — проверочное событие на каждую аренду');
+      }
+      if (oldRules) {
+        this.noInstructionsHello = true;
+        this.opts.log('шлюз старой версии: hello без instructions_version — событий «правила канала» не будет');
+      }
       this.backoff = this.opts.timing.reconnectMinMs;
       sock.destroy();
       return;
