@@ -26,10 +26,14 @@
 // Telegram события — тема ответа);
 // остальное (строка шлюза, расшифровка, своё сообщение, чужая реакция) — updates ignored без содержимого и журнал
 // reaction_skipped с причиной ⟨предл.⟩. Повтор того же обновления — по updates, как у всех (второго события нет).
-// Окно отмены (0.3.4, issue #46; reaction-hold.ts): событие записывается сразу, но held до hold_until; новое обновление
+// Окно отмены (0.3.4, issue #46; hold.ts): событие записывается сразу, но held до hold_until; новое обновление
 // реакции на тот же ответ, пока событие удерживается, меняет его же (итог — последний, «было» — до первого изменения в
 // окне, окно — заново от последнего изменения) — само обновление без своего события (ignored, reaction_merged); итог
 // совпал с «было» (поставил и снял) — событие cancelled, агенту ничего (reaction_cancelled).
+// Окно для материала без слов владельца (0.3.6, issue #51; TECH-SPEC 5.18; material.ts): в главной транзакции сообщение
+// владельца получает роль — материал (пересылка, инлайн-бот, фото, файл, видео без подписи: held до его слов или конца
+// окна; слова были раньше в пределах окна — сразу), слова (текст, подпись, голосовое, свой кружок или аудиофайл; правка
+// удерживаемого материала: отпускают весь удерживаемый материал чата и темы) или никакую. После COMMIT — таймер окна.
 // Команда и нажатие (5.6, 5.9) — события handled; их действие (режим, ход, эпизод, строка владельцу) исполняется в той
 // же главной транзакции (control.ts): упал после COMMIT — команда уже исполнена, повтор обновления её не повторит.
 // После COMMIT — кадр mode переходнику, отдача событий, answerCallbackQuery с текстом отказа (если отказ).
@@ -60,6 +64,7 @@ import {
   isNotMp4Video,
   labelMessage,
   localDate,
+  materialClass,
   parseCommand,
   setMeta,
   transaction,
@@ -86,7 +91,8 @@ import type { Ctx } from './context.js';
 import type { Control, Effects } from './control.js';
 import type { Directory, Resolved } from './directory.js';
 import type { Episodes } from './episodes.js';
-import { reactionHoldMs } from './reaction-hold.js';
+import { reactionHoldMs } from './hold.js';
+import { admitMaterial, extendWindow, isHeldMaterial, releaseByWords, type MaterialDecision, type MaterialPlace, type WordsRelease } from './material.js';
 
 // Набор реакций без учёта порядка: у Premium их несколько, Telegram может вернуть их в другом порядке.
 const sameEmoji = (a: readonly string[], b: readonly string[]): boolean => [...a].sort().join(' ') === [...b].sort().join(' ');
@@ -200,8 +206,11 @@ export class Admission {
     private readonly control: Control,
     /** Распознаватель голосовых (5.8): после записи голосового — его очередь. */
     private readonly transcriber: { kick(): void } | null = null,
-    /** Окно отмены реакции (0.3.4, reaction-hold.ts): после записи и склейки — таймер на ближайший срок. */
-    private readonly reactionHold: { schedule(): void } | null = null,
+    /**
+     * Окна удержания (hold.ts): окно отмены реакции (0.3.4) — после записи и склейки, окно материала без слов владельца
+     * (0.3.6) — после записи материала, — таймер на ближайший срок.
+     */
+    private readonly hold: { schedule(): void } | null = null,
   ) {}
 
   private updateStatus(id: number): string | null {
@@ -339,15 +348,16 @@ export class Admission {
 
     let seq: number;
     let effects: Effects;
+    let material: MaterialOutcome;
     try {
-      ({ seq, effects } = this.commit(draft, tUpdate, retry));
+      ({ seq, effects, material } = this.commit(draft, tUpdate, retry));
     } catch (err) {
       if (this.ctx.disk.check(err, 'admission', { update_id: id, step: 'commit' })) return 'disk_full';
       throw err;
     }
     faultPoint('after_commit', id);
     this.ctx.disk.admitted(id);
-    this.afterCommit(draft, seq, effects);
+    this.afterCommit(draft, seq, effects, material);
     return 'ok';
   }
 
@@ -441,7 +451,7 @@ export class Admission {
    * открытый ⟨предл.⟩. Реакция эпизод не открывает и не продлевает (не сообщение). Агенту — по порядку, как прочие; в
    * «стоп» — ждёт, в паузе — отдаётся. 👀 и 👌 на реакции нет (не сообщение владельца); «ждут агента» её не считают.
    * Окно отмены (0.3.4, issue #46): reactions.hold_seconds > 0 — событие held до hold_until = сейчас + окно (отпускает
-   * reaction-hold.ts). Пока событие на этот ответ удерживается, новое обновление реакции на него — не новое событие, а
+   * hold.ts). Пока событие на этот ответ удерживается, новое обновление реакции на него — не новое событие, а
    * то же: emoji — последние, old — что стояло до первого изменения в окне, окно — заново от этого изменения ⟨предл.⟩;
    * итог совпал с old — событие cancelled (агенту ничего). Само такое обновление — ignored (своего события у него нет:
    * у admitted ровно одно событие, П-1), журнал reaction_merged или reaction_cancelled. Отданное (окно прошло) — новое
@@ -571,11 +581,11 @@ export class Admission {
         ...(bot?.thread_id ? { thread_id: bot.thread_id } : {}),
         ...(outcome.held ? { hold_ms: holdMs } : {}),
       });
-      if (outcome.held) this.reactionHold?.schedule();
+      if (outcome.held) this.hold?.schedule();
       else this.adapter.pump();
     } else if (outcome?.kind === 'merged') {
       this.ctx.journal.write('reaction_merged', { update_id: u.update_id, seq: outcome.seq, emoji: outcome.emoji, old: outcome.old, message_id: mr.message_id, hold_ms: holdMs });
-      this.reactionHold?.schedule();
+      this.hold?.schedule();
     } else if (outcome?.kind === 'cancelled') {
       this.ctx.journal.write('reaction_cancelled', {
         update_id: u.update_id,
@@ -586,7 +596,7 @@ export class Admission {
         message_id: mr.message_id,
         held_ms: outcome.heldMs,
       });
-      this.reactionHold?.schedule();
+      this.hold?.schedule();
     } else {
       this.ctx.journal.write('reaction_skipped', {
         update_id: u.update_id,
@@ -852,12 +862,33 @@ export class Admission {
     return api.download(f.file_path, { signal, timeoutMs: FILE_TIMEOUT_MS });
   }
 
-  private commit(d: Draft, tUpdate: number, retry = false): { seq: number; effects: Effects } {
+  /**
+   * Окно для материала без слов владельца (0.3.6, issue #51; material.ts): что это сообщение для окна — материал (держать
+   * или отдать сразу, если слова были раньше), слова владельца (отпустить удерживаемый материал этого чата) или ничего.
+   * Правка удерживаемого материала — тоже его слово (дописал подпись) ⟨предл.⟩.
+   */
+  private materialRole(d: Draft): 'material' | 'words' | null {
+    if (d.kind === 'edit') return d.who.isOwner && isHeldMaterial(this.ctx, d.editOf) ? 'words' : null;
+    return materialClass({
+      fromOwner: d.who.isOwner,
+      kind: d.kind,
+      trust: d.trust,
+      text: d.text,
+      attachments: d.attachments ?? [],
+      forwarded: d.forward !== null,
+    });
+  }
+
+  private commit(d: Draft, tUpdate: number, retry = false): { seq: number; effects: Effects; material: MaterialOutcome } {
     const { db } = this.ctx;
     const now = this.ctx.clock.now();
     return transaction(db, () => {
       this.hooks.onCommit(db);
       const subjectId = d.who.subject.id;
+      const place: MaterialPlace = { chatId: d.chatId, threadId: d.threadId, subjectId };
+      const role = this.materialRole(d);
+      const decision: MaterialDecision =
+        role === 'material' ? admitMaterial(this.ctx, place, d.status, now) : { status: d.status, holdUntil: null, material: null };
       let episodeId: number | null = null;
       let effects: Effects = {};
       if (d.episode === 'message') {
@@ -872,8 +903,8 @@ export class Admission {
       }
       const r = sql(db, 
           `INSERT INTO events(update_id, message_id, chat_id, thread_id, subject_id, trust, mixed, attachments_json, kind, text,
-             raw_ref, forward_json, reply_to, edit_of, episode_id, status, created_at, message_date, stt_note)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+             raw_ref, forward_json, reply_to, edit_of, episode_id, status, created_at, message_date, stt_note, hold_until, material_json)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         )
         .run(
           d.updateId,
@@ -891,12 +922,21 @@ export class Admission {
           d.replyTo ? JSON.stringify(d.replyTo) : null,
           d.editOf,
           episodeId,
-          d.status,
+          decision.status,
           now,
           d.messageDate,
           d.sttNote,
+          decision.holdUntil,
+          decision.material ? JSON.stringify(decision.material) : null,
         );
       const seq = Number(r.lastInsertRowid);
+      // Окно материала (0.3.6): материал в окне — окно прочих в этом чате от него; слова — удерживаемый материал с ними.
+      const material: MaterialOutcome = { decision, extended: [], words: null };
+      if (decision.material?.state === 'waiting' && decision.holdUntil !== null) material.extended = extendWindow(this.ctx, place, seq, decision.holdUntil);
+      else if (role === 'words') {
+        const w = releaseByWords(this.ctx, place, seq, d.status, now);
+        if (w.released.length || w.linked.length) material.words = w;
+      }
       sql(db, "UPDATE updates SET status = 'admitted', raw_json = NULL WHERE update_id = ?").run(d.updateId);
       if (d.receipt) {
         // ✍ при записи с 0.3.2 нет (развилка R-1 б): 👀 и 👌 — когда агент увидел и ответил
@@ -928,11 +968,11 @@ export class Admission {
         setMeta(db, META_KEYS.offset, String(d.updateId + 1));
         setMeta(db, META_KEYS.lastUpdateAt, String(now));
       }
-      return { seq, effects };
+      return { seq, effects, material };
     });
   }
 
-  private afterCommit(d: Draft, seq: number, effects: Effects): void {
+  private afterCommit(d: Draft, seq: number, effects: Effects, material: MaterialOutcome): void {
     const { journal } = this.ctx;
     if (d.kind === 'closed_topic') {
       // Закрытая тема — в журнал только №, дата, длительность (Ш-16).
@@ -951,7 +991,18 @@ export class Admission {
         ...(d.kind === 'edit' ? { edit_of: d.editOf } : {}),
         ...(d.command ? { command: d.command } : {}),
         ...(d.rawRef ? { raw_ref: d.rawRef } : {}),
+        // Окно материала (0.3.6): в окне — hold_ms и чьё окно сдвинуто; слова были раньше — их №.
+        ...(material.decision.material?.state === 'waiting'
+          ? { material: 'held', hold_ms: material.decision.material.window_ms, ...(material.extended.length ? { extended: material.extended } : {}) }
+          : material.decision.material?.state === 'before'
+            ? { material: 'words_before', words_seq: material.decision.material.words_seq }
+            : {}),
       });
+    }
+    // Слова владельца отпустили удерживаемый материал (0.3.6): отдан с ними — или ждёт, пока слова распознаются.
+    if (material.words) {
+      for (const r of material.words.released) journal.write('material_released', { seq: r.seq, held_ms: r.heldMs, words: 'after', words_seq: seq });
+      for (const m of material.words.linked) journal.write('material_linked', { seq: m, words_seq: seq });
     }
     if (d.callback && this.ctx.api) {
       // На каждое нажатие — ровно один answerCallbackQuery; при отказе — с текстом причины (5.9).
@@ -968,6 +1019,17 @@ export class Admission {
     if (effects.mode) this.adapter.notifyMode();
     this.sender.kick();
     if (d.status === 'transcribing') this.transcriber?.kick();
+    // Материал в окне или слова, которые его отпустили (0.3.6): таймер окна — на новый ближайший срок.
+    if (material.decision.holdUntil !== null || material.words) this.hold?.schedule();
     this.adapter.pump();
   }
+}
+
+/** Что окно материала сделало при записи (0.3.6): решение о самом событии, сдвинутые окна, отпущенное словами. */
+interface MaterialOutcome {
+  decision: MaterialDecision;
+  /** Удерживаемый материал этого чата, чьё окно теперь — от этого события. */
+  extended: number[];
+  /** Это — слова владельца: какой материал они отпустили. */
+  words: WordsRelease | null;
 }

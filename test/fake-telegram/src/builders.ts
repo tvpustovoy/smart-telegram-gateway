@@ -147,6 +147,15 @@ export class UpdateBuilder {
     return this.externalReply(from, text, { origin, quote }, opts);
   }
 
+  /** Стикер (0.3.6: жест — не слова владельца и не материал, окна материала не трогает). */
+  sticker(from: User, emoji = '👍', opts: MessageOpts = {}): Update {
+    const id = this.ids.newFileId('sticker');
+    return this.wrap({
+      ...this.base(from, opts),
+      sticker: { file_id: id, file_unique_id: `u${id}`, type: 'regular', width: 512, height: 512, is_animated: false, is_video: false, emoji },
+    } as AnyMessage);
+  }
+
   /** Через инлайн-бота. */
   viaBot(from: User, text: string, bot: User, opts: MessageOpts = {}): Update {
     return this.wrap({ ...this.base(from, opts), text, via_bot: { ...bot, is_bot: true } } as AnyMessage);

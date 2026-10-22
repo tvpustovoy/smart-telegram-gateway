@@ -60,6 +60,7 @@ The chat interface (gateway lines, `/help`, command names) and the agent's instr
 | 0.3.3 | Parcels: the agent sends files with `send_file` |
 | 0.3.4 | Transcripts as quotes, owner reactions reach the agent, with an undo window |
 | 0.3.5 | Current channel rules reach a resumed conversation; the confirmed topic line is deleted from the chat |
+| 0.3.6 | A forward, file or photo without your words waits for them a short while and reaches the agent together with them |
 
 Details are in [CHANGELOG.md](CHANGELOG.md).
 
@@ -119,7 +120,7 @@ Then finish the setup:
 
 | File | Purpose | On reinstall |
 |---|---|---|
-| `CLAUDE.md` | role instructions: notes, trust labels, `reply` / `done`, episodes, reactions, files | kept |
+| `CLAUDE.md` | role instructions: notes, trust labels, `reply` / `done`, material and the owner's words, episodes, reactions, files | kept (an older folder needs the new rules added by hand — see the template README) |
 | `.mcp.json` | the `smart-telegram-gateway` MCP server (`stg-channel`) with paths filled in | rewritten |
 | `.claude/settings.json` | permission mode `dontAsk` with an allow-list: channel tools, `Read`, `Grep`, `Glob`, `Edit` in `notes/` and `parcels/` | kept |
 | `.claude/agent-state.settings.json` | status line command and `PreCompact` / `PostCompact` / `StopFailure` hooks that feed the agent icons in the pinned line | rewritten |
@@ -148,6 +149,15 @@ What you see in the chat:
 - `⚙ ↪ #N · topic` with [верно] [не то] — the agent named or changed the topic. [верно] removes the line (the topic
   stays in the pinned line; `ui.delete_confirmed_topic`), [не то] brings the previous topic back.
 - A reaction on an agent reply (👍, ❤, …) is passed to the agent after a short undo window.
+- Material without your own words — a forward, a message sent through an inline bot, a photo, file or video without a
+  caption — waits for your words in the same chat, two minutes by default (`ui.material_hold_seconds`): text, a
+  caption, a voice message or a video note. Then the agent gets the material and your words together, material first. A voice
+  message counts as words as soon as it arrives: the material goes with it once it is transcribed. Several pieces of
+  material in a row share one window, counted from the last one. If you wrote first and sent the material within the
+  window, it goes at once. If no words come, the material goes after the window, marked "no words from the owner for
+  2 min". Commands do not count as words; a sticker neither opens nor closes the window. Until the agent gets the
+  material, it has no 👀: 👀 still means "the agent has seen it". `/where` lists such material as waiting for your
+  words.
 
 The agent's tools (MCP): `reply`, `done`, `episode`, `episode_summary`, `where`, `rule`, `media`, `send_file`.
 
@@ -184,6 +194,7 @@ reactions:
 ui:
   where_ttl_minutes: 5           # how long the "where" answer stays in the chat
   delete_confirmed_topic: true   # [верно] under the topic line deletes the line; false = keep it as "… — верно"
+  material_hold_seconds: 120     # material without your words waits this long for them; 0 = pass at once; at most 600
 ```
 
 Other providers:
@@ -276,7 +287,7 @@ The design documents are in Russian for now.
 
 ## Status
 
-Version 0.3.5, pre-1.0. It is built for one owner, one bot and one agent on one Mac. Groups and other people are
+Version 0.3.6, pre-1.0. It is built for one owner, one bot and one agent on one Mac. Groups and other people are
 modelled in the data and the access rules, but there is no interface for them yet. The agent runs without a sandbox
 (see the threat model). Expect breaking changes before 1.0; database migrations run automatically, and rolling back
 needs a backup (`stg backup`).

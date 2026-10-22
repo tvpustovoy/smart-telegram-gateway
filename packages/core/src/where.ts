@@ -90,6 +90,12 @@ function messageAt(raw: string | null, fallback: number): number {
   return fallback;
 }
 
+/**
+ * Материал без слов владельца в окне (0.3.6, issue #51): № событий, которые ждут его слов — агенту ещё не отданы (held
+ * или, пока распознаётся пересланное голосовое, transcribing; material_json.state = waiting).
+ */
+export const HELD_MATERIAL_SQL = "material_json IS NOT NULL AND json_extract(material_json, '$.state') = 'waiting' AND status IN ('held', 'transcribing')";
+
 /** Сколько сообщений владельца ждут агента (new · delivered · transcribing) — «где мы» и закреплённая строка. */
 export function waitingCount(db: Db): number {
   return (sql(db, `SELECT count(*) AS n FROM events WHERE status IN ('new', 'delivered', 'transcribing') AND kind IN (${MSG_KINDS_SQL})`).get() as { n: number }).n;
@@ -102,6 +108,7 @@ export function whereData(db: Db, input: WhereInput): WhereData {
   const waitingRows = sql(db, `SELECT seq FROM events WHERE status IN ('new', 'delivered', 'transcribing') AND kind IN (${MSG_KINDS_SQL}) ORDER BY seq LIMIT ${WAITING_LIMIT}`)
     .all() as Array<{ seq: number }>;
   const waiting = waitingCount(db);
+  const heldMaterial = (sql(db, `SELECT seq FROM events WHERE ${HELD_MATERIAL_SQL} ORDER BY seq LIMIT ${WAITING_LIMIT}`).all() as Array<{ seq: number }>).map((r) => r.seq);
   const deferred = (sql(db, "SELECT update_id, raw_json, received_at FROM updates WHERE status = 'deferred' ORDER BY update_id").all() as Array<{
     update_id: number;
     raw_json: string | null;
@@ -122,6 +129,7 @@ export function whereData(db: Db, input: WhereInput): WhereData {
     mode: readMode(db),
     waiting: waitingRows.map((r) => r.seq),
     waiting_count: waiting,
+    held_material: heldMaterial,
     agent_online: input.agentOnline,
     deferred,
     closed_silent: closedSilent,
@@ -163,6 +171,8 @@ export function whereText(d: WhereData, input: WhereInput): string {
     lines.push(`${NO_EPISODES_YET} — первое сообщение откроет эпизод${nextRole ? ` (${roleLabel(nextRole)})` : ''}`);
   }
   lines.push(d.waiting_count ? `Ждут ответа агента: ${d.waiting_count} (${seqList(d.waiting)})` : 'Ждут ответа агента: нет');
+  // Материал без слов владельца в окне (0.3.6, issue #51) — строка только когда он есть ⟨предл.⟩.
+  if (d.held_material?.length) lines.push(`Ждут слов владельца: ${d.held_material.length} (${seqList(d.held_material)})`);
   lines.push(`Агент: ${d.agent_online === null ? 'неизвестно — шлюз не отвечает' : d.agent_online ? 'на связи' : 'не на связи'}`);
   lines.push(`Режим: ${modeWord(d.mode)}`);
   lines.push(

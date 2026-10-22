@@ -9,11 +9,58 @@ an older version after a migration is only possible from a database backup taken
 
 The chat interface and the design documents are in Russian; the entries below describe behavior in English.
 
-## Unreleased
+## 0.3.6 - 2026-10-22
+
+### Added
+
+- A window for material without the owner's words (#51). Material is an owner's message with none of the owner's own
+  words in it: a forward (of anything, including the owner's own old message), a message sent through an inline bot, a
+  photo, file or video without a caption, a location or contact. Until 0.3.6 it reached the agent at once, and the agent
+  had to guess what to do with it, while the owner was usually about to say. Now such an event is stored at once but
+  held (`held`, as the reaction undo window of 0.3.4 holds a reaction: same status, `hold_until`, exact timer, the rest
+  of the window counted after a restart) for `ui.material_hold_seconds` (default 120, `0` turns the window off, at most
+  600).
+- Words release the window: the owner's next message with their own words in the same chat and Telegram topic — text,
+  a caption, a voice message, a video note, their own audio file — releases all held material of that chat in the same
+  transaction that stores the words. The agent gets the material and the words in one go, in order: material first,
+  each with the header mark `слова владельца — следом, № M`.
+- Three rules of the window: (1) a voice message or video note counts as words the moment it arrives, not after
+  transcription — the material does not overtake it and does not wait for the window: it stays held until the voice
+  message is transcribed and then goes right before it; (2) several pieces of material in a row share one window,
+  counted from the last one; (3) material that comes after the owner's words in the same chat within the window goes at
+  once, marked `слова владельца — раньше, № K`.
+- A window that ends without words releases the material marked `слов владельца не было N мин` (how long it waited).
+  A forwarded voice message is material too: it is transcribed as before, and if the window is still open, it is held
+  again afterwards. An edit of held material (the owner adds a caption) counts as words.
+- Commands (`стоп`, `где мы`, …) and button presses are not words; a sticker, dice or GIF neither opens nor closes the
+  window. `стоп` works as before: the window runs, then the material waits in `new` for [продолжить]. Messages of other
+  participants are not held.
+- 👀 is set when the material is given to the agent, that is after the window: 👀 still means "the agent has seen it".
+- `where` (owner, agent, `stg where`): the line `Ждут слов владельца: N (№ …)` lists held material; the field
+  `held_material` in the where data.
+- Event frames carry the optional field `material {words: after | before | none, words_seq, waited_ms}`; the channel
+  turns it into the header mark (`meta.material`, `meta.words_seq`). An older channel drops the field and shows the
+  event without the mark.
+- Journal: `in` with `material: held | words_before`, `material_released {seq, held_ms, words, words_seq?}`,
+  `material_linked {seq, words_seq}` (released by a voice message still being transcribed), `material_held` (a
+  transcribed forwarded voice message back in its window).
+- Role rules (channel instructions and the agent folder template): "Material (link, forward, file, picture) comes
+  together with the owner's words — answer the words. If it comes marked that there were no words from the owner — the
+  gist in 3–5 lines and one question"; for episodes: "When in doubt, stay in the current episode. A new one — when the
+  owner changed the topic or an unrelated matter came up; material along the way (a link, a forward) stays in the same
+  episode." The instructions have a new version, so a resumed conversation gets them as a "channel rules" event (0.3.5).
+- `scripts/agent-folder/README.md`: what to add by hand to an agent folder deployed before 0.3.6.
 
 ### Changed
 
 - License: Apache License 2.0 (`LICENSE`, `NOTICE`); `CONTRIBUTING.md` added.
+- Database schema v13: the `events` table is rebuilt with the column `material_json`; `held` is allowed for material as
+  well as for reactions, `cancelled` stays reaction-only. Going back to 0.3.5 is possible only from a backup taken
+  before the upgrade.
+- `packages/gateway/src/reaction-hold.ts` is now `hold.ts` (`Hold`): one timer for both windows.
+- Tests: test homes write `ui.material_hold_seconds: 0` unless a test asks for the window, so tests written before
+  0.3.6 keep sending captionless photos and forwards straight to the agent; the window has its own suite
+  (`m11-material-hold`).
 
 ## 0.3.5 - 2026-10-22
 

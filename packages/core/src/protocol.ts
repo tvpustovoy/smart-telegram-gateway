@@ -399,6 +399,17 @@ export const EventMessageSchema = z.object({
   // показать разговору. Текст правил подставляет канал — свой, той же версии (шлюз шлёт это событие только каналу,
   // который назвал версию в hello: прежний канал вида instructions не получает).
   instructions: z.object({ version: z.string() }).optional(),
+  // Материал без слов владельца (0.3.6, issue #51; в пределах v1, как media): words — after (слова владельца пришли
+  // следом: событие words_seq отдаётся сразу за этим) · before (слова были раньше, в пределах окна: событие words_seq) ·
+  // none (окно кончилось без слов: waited_ms — сколько материал ждал). Строкой, без перечисления: прежний канал поле
+  // отбрасывает, новый строит по нему пометку в заголовке (format.ts).
+  material: z
+    .object({
+      words: z.string(),
+      words_seq: seq.nullable(),
+      waited_ms: z.int().nonnegative().nullable(),
+    })
+    .optional(),
 });
 export type EventMessage = z.infer<typeof EventMessageSchema>;
 
@@ -435,6 +446,11 @@ export const WhereDataSchema = z.object({
   /** № событий, ждущих ответа агента (первые 50) и сколько всего. */
   waiting: z.array(seq),
   waiting_count: z.int().nonnegative(),
+  /**
+   * Материал без слов владельца в окне (0.3.6, issue #51): № событий, которые ждут его слов (первые 50); агенту ещё не
+   * отданы. Необязательное: прежний шлюз его не шлёт.
+   */
+  held_material: z.array(seq).optional(),
   /** На связи ли агент; null — неизвестно (шлюз не ответил, CLI читал базу сам). */
   agent_online: z.boolean().nullable(),
   deferred: z.array(z.object({ update_id: z.int(), message_at: z.int() })),

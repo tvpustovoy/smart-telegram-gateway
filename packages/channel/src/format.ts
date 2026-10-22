@@ -13,9 +13,12 @@
 // Правила канала (0.3.5, issue #47): «[№ 57 · правила канала, версия 1a2b3c4d5e6f] Текущие правила канала … done(seqs: [57]).»
 // и следом — сами instructions этого канала целиком (свои, той же версии: шлюз шлёт только версию); meta.kind =
 // instructions, meta.version.
+// Материал без слов владельца (0.3.6, issue #51): шлюз держит его окном и отдаёт вместе со словами владельца — в заголовке
+// «слова владельца — следом, № M» (слова — следующее событие), «слова владельца — раньше, № K» (сказал до материала) или
+// «слов владельца не было 2 мин» (окно кончилось без слов); meta.material = after · before · none, meta.words_seq.
 // Здесь же — слова, которыми инструменты возвращают модели исход.
 
-import { cutGraphemes, formatDuration, localTime, ownerReactionChange, ownerReactionTarget, type EventMessage, type Mode } from 'stg-core';
+import { cutGraphemes, formatDuration, formatElapsed, localTime, ownerReactionChange, ownerReactionTarget, type EventMessage, type Mode } from 'stg-core';
 import { INSTRUCTIONS, INSTRUCTIONS_VERSION } from './instructions.js';
 
 export const CHANNEL_NOTIFICATION = 'notifications/claude/channel';
@@ -211,6 +214,10 @@ function metaOf(ev: EventMessage): Record<string, string> {
   if (ev.chat) m.chat = ev.chat.kind;
   if (ev.edit_of !== null) m.edit_of = String(ev.edit_of);
   if (ev.media) m.media = headerValue(ev.media.what, NAME_MAX);
+  if (ev.material) {
+    m.material = headerValue(ev.material.words, NAME_MAX);
+    if (ev.material.words_seq !== null) m.words_seq = String(ev.material.words_seq);
+  }
   if (ev.reaction) {
     // Реакция владельца (0.3.4): кадр вида text, а для модели — reaction.
     m.kind = 'reaction';
@@ -246,6 +253,23 @@ function formatInstructions(ev: EventMessage, meta: Record<string, string>): Cha
     'Текущие правила канала smart-telegram-gateway — ниже целиком. Claude Code не передаёт их продолженному разговору, поэтому их присылает шлюз. ' +
     `Они заменяют прежние правила этого канала, если ты их видел. Прочти и ответь done(seqs: [${ev.seq}]).`;
   return { content: `${head} ${lead}\n\n${INSTRUCTIONS}`, meta: { ...meta, version: INSTRUCTIONS_VERSION } };
+}
+
+/** Сколько материал ждал слов владельца: «40 с», «2 мин», «1 ч 05 мин». */
+export function materialWait(ms: number): string {
+  return ms < 60_000 ? `${Math.max(1, Math.round(ms / 1000))} с` : formatElapsed(ms);
+}
+
+/**
+ * Пометка материала без слов владельца (0.3.6, issue #51): слова пришли следом · были раньше · окна не хватило. Значение
+ * words — строкой (новое значение прежний канал не сломает: пометки нет).
+ */
+function materialWords(m: NonNullable<EventMessage['material']>): string | null {
+  const n = m.words_seq !== null ? `, № ${m.words_seq}` : '';
+  if (m.words === 'after') return `слова владельца — следом${n}`;
+  if (m.words === 'before') return `слова владельца — раньше${n}`;
+  if (m.words === 'none') return `слов владельца не было${m.waited_ms !== null ? ` ${materialWait(m.waited_ms)}` : ''}`;
+  return null;
 }
 
 /** Событие → уведомление канала. */
@@ -284,6 +308,8 @@ export function formatEvent(ev: EventMessage): ChannelNotice {
   if (ev.attachments.some((a) => a.kind === 'via_bot')) parts.push('через инлайн-бота');
   if (ev.forward) parts.push(forwardWords(ev.forward));
   if (ev.reply_to) parts.push(replyWords(ev.reply_to, ep?.topic ?? null));
+  const words = ev.material ? materialWords(ev.material) : null;
+  if (words) parts.push(words);
   if (ev.redelivery) parts.push('повтор: проверь, не сделано ли уже');
   return { content: `[${parts.join(' · ')}] ${bodyOf(ev)}`, meta };
 }

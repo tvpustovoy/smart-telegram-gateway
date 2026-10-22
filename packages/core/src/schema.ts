@@ -29,9 +29,10 @@ export type EventKind = (typeof EVENT_KINDS)[number];
 /**
  * events.status: new → delivered → processed; голосовое — с transcribing; handled — команды и нажатия. held и cancelled
  * (0.3.4, окно отмены реакции; GitHub issue #46: поставил не то и сразу убрал — агенту ничего, как при отмене отправки
- * письма) — только у реакции владельца: held — записана и ждёт
+ * письма) — у реакции владельца: held — записана и ждёт
  * окна (events.hold_until), затем new; cancelled — в окне итог совпал с тем, что стояло до него (поставил и снял): агенту
- * ничего.
+ * ничего. held с 0.3.6 (схема v13, issue #51) — и у материала без слов владельца (events.material_json, MaterialHold):
+ * ждёт его слов или конца окна ui.material_hold_seconds; cancelled — по-прежнему только у реакции.
  */
 export const EVENT_STATUSES = ['transcribing', 'held', 'new', 'delivered', 'processed', 'handled', 'closed_topic', 'cancelled'] as const;
 export type EventStatus = (typeof EVENT_STATUSES)[number];
@@ -551,7 +552,7 @@ CREATE INDEX deliveries_idem ON deliveries(idem) WHERE idem IS NOT NULL;
  *   версий — 0: уходят как раньше.
  * - Окно отмены реакции (дописано в v11 до её выпуска: баз на v11 ещё не было, отдельной v12 не нужно; GitHub issue
  *   #46: окно не больше 3 с, чтобы не мешать переписке): статусы held и cancelled — только у реакции (CHECK);
- *   events.hold_until — с какого времени (часы шлюза) реакцию можно отдавать агенту: у held обязателен, после окна остаётся как отметка (reaction-hold.ts).
+ *   events.hold_until — с какого времени (часы шлюза) реакцию можно отдавать агенту: у held обязателен, после окна остаётся как отметка (hold.ts, до 0.3.6 — reaction-hold.ts).
  */
 const SCHEMA_V11 = `
 CREATE TABLE events_v11 (
@@ -712,6 +713,79 @@ CREATE TABLE conversations (
 ) STRICT;
 `;
 
+/**
+ * Версия 13 (0.3.6, issue #51). Пересборка events тем же порядком, что v11 и v12 (внешние ключи выключены на время
+ * миграции, foreignKeysOff; счётчик AUTOINCREMENT переносится — номера не переиспользуются; столбцы копируются явным
+ * списком).
+ * - events.material_json — материал без слов владельца (пересылка, инлайн-бот, файл, фото, видео без подписи; MaterialHold):
+ *   окно ui.material_hold_seconds держит его до слов владельца в том же чате или до конца окна. Только у видов text, voice,
+ *   photo, document (CHECK).
+ * - held — теперь и у материала (с material_json); cancelled — по-прежнему только у реакции; у held срок hold_until
+ *   обязателен, как в v11.
+ */
+const SCHEMA_V13 = `
+CREATE TABLE events_v13 (
+  seq               INTEGER PRIMARY KEY AUTOINCREMENT,
+  update_id         INTEGER,
+  message_id        INTEGER,
+  chat_id           INTEGER,
+  thread_id         INTEGER,
+  subject_id        TEXT,
+  trust             TEXT CHECK (trust IN ('owner','untrusted','owner_forward')),
+  mixed             INTEGER NOT NULL DEFAULT 0 CHECK (mixed IN (0,1)),
+  attachments_json  TEXT,
+  kind              TEXT NOT NULL CHECK (kind IN ('text','voice','photo','document','edit','command','callback','closed_topic','episode_closed','episode_reopened','probe','reaction','instructions')),
+  text              TEXT,
+  transcript        TEXT,
+  raw_ref           TEXT,
+  forward_json      TEXT,
+  reply_to          TEXT,
+  edit_of           INTEGER REFERENCES events(seq),
+  episode_id        INTEGER REFERENCES episodes(id),
+  status            TEXT NOT NULL CHECK (status IN ('transcribing','held','new','delivered','processed','handled','closed_topic','cancelled')),
+  lease_id          TEXT,
+  delivered_at      INTEGER,
+  attempts          INTEGER NOT NULL DEFAULT 0 CHECK (attempts >= 0),
+  processed_at      INTEGER,
+  processed_silent  INTEGER NOT NULL DEFAULT 0 CHECK (processed_silent IN (0,1)),
+  turn              INTEGER,
+  created_at        INTEGER NOT NULL,
+  message_date      INTEGER,
+  stt_note          TEXT CHECK (stt_note IN ('too_long','too_big')),
+  audio_seconds     REAL CHECK (audio_seconds IS NULL OR audio_seconds >= 0),
+  media_ref         TEXT,
+  reaction_json     TEXT,
+  hold_until        INTEGER,
+  instructions_json TEXT,
+  material_json     TEXT,
+  CHECK ((kind = 'reaction') = (reaction_json IS NOT NULL)),
+  CHECK ((kind = 'instructions') = (instructions_json IS NOT NULL)),
+  CHECK (material_json IS NULL OR kind IN ('text','voice','photo','document')),
+  CHECK (status <> 'held' OR kind = 'reaction' OR material_json IS NOT NULL),
+  CHECK (status <> 'cancelled' OR kind = 'reaction'),
+  CHECK (status <> 'held' OR hold_until IS NOT NULL)
+) STRICT;
+INSERT INTO events_v13(seq, update_id, message_id, chat_id, thread_id, subject_id, trust, mixed, attachments_json, kind, text,
+  transcript, raw_ref, forward_json, reply_to, edit_of, episode_id, status, lease_id, delivered_at, attempts, processed_at,
+  processed_silent, turn, created_at, message_date, stt_note, audio_seconds, media_ref, reaction_json, hold_until,
+  instructions_json)
+SELECT seq, update_id, message_id, chat_id, thread_id, subject_id, trust, mixed, attachments_json, kind, text,
+  transcript, raw_ref, forward_json, reply_to, edit_of, episode_id, status, lease_id, delivered_at, attempts, processed_at,
+  processed_silent, turn, created_at, message_date, stt_note, audio_seconds, media_ref, reaction_json, hold_until,
+  instructions_json
+FROM events ORDER BY seq;
+UPDATE sqlite_sequence SET seq = max(seq, (SELECT seq FROM sqlite_sequence WHERE name = 'events'))
+WHERE name = 'events_v13' AND EXISTS (SELECT 1 FROM sqlite_sequence WHERE name = 'events');
+INSERT INTO sqlite_sequence(name, seq) SELECT 'events_v13', seq FROM sqlite_sequence
+WHERE name = 'events' AND NOT EXISTS (SELECT 1 FROM sqlite_sequence WHERE name = 'events_v13');
+DROP TABLE events;
+ALTER TABLE events_v13 RENAME TO events;
+CREATE INDEX events_status ON events(status, seq);
+CREATE INDEX events_message ON events(chat_id, message_id);
+CREATE INDEX events_update ON events(update_id);
+CREATE INDEX events_episode ON events(episode_id);
+`;
+
 export const MIGRATIONS: readonly Migration[] = [
   { version: 1, name: 'схема 0.1: все таблицы 5.2', sql: SCHEMA_V1 },
   { version: 2, name: 'кнопки в outbox, тема Telegram у эпизода', sql: SCHEMA_V2 },
@@ -725,7 +799,32 @@ export const MIGRATIONS: readonly Migration[] = [
   { version: 10, name: 'посылки: доставки файлов агента (send_file)', sql: SCHEMA_V10 },
   { version: 11, name: 'реакция владельца на ответ агента; расшифровка цитатой', sql: SCHEMA_V11, foreignKeysOff: true },
   { version: 12, name: 'правила канала разговору; удаление строки темы после [верно]', sql: SCHEMA_V12, foreignKeysOff: true },
+  { version: 13, name: 'окно для материала без слов владельца', sql: SCHEMA_V13, foreignKeysOff: true },
 ];
+
+/**
+ * Материал без слов владельца (0.3.6, issue #51), events.material_json. Только у сообщения владельца видов text, voice,
+ * photo, document, в котором его собственных слов нет: пересылка, сообщение через инлайн-бота, файл, фото, видео без
+ * подписи (material.ts). Окно ui.material_hold_seconds держит такое событие, пока владелец не скажет, что с ним делать.
+ * - waiting — в окне: held (или transcribing, пока распознаётся пересланное голосовое); hold_until — конец окна (окно
+ *   отсчитывается от последнего материала в этом чате);
+ * - after — следом пришли слова владельца (words_seq): материал отдаётся вместе с ними; пока слова — голосовое в
+ *   распознавании, материал held и ждёт его;
+ * - before — слова владельца были раньше, в пределах окна (words_seq): материал отдан сразу, без окна;
+ * - none — окно кончилось без слов: отдан с пометкой, сколько ждал (waited_ms — от записи до отдачи).
+ */
+export const MATERIAL_STATES = ['waiting', 'after', 'before', 'none'] as const;
+export type MaterialState = (typeof MATERIAL_STATES)[number];
+
+export interface MaterialHold {
+  state: MaterialState;
+  /** Окно при записи, мс. */
+  window_ms: number;
+  /** Событие со словами владельца: следом (after) или раньше (before). */
+  words_seq?: number;
+  /** Сколько материал ждал слов (none), мс. */
+  waited_ms?: number;
+}
 
 /**
  * deliveries.status (0.3.3): pending → sent · dropped («стоп») · failed (Telegram не принял, копия пропала, загрузка трижды

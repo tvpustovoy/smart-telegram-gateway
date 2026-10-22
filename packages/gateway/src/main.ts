@@ -72,7 +72,7 @@ import { Episodes } from './episodes.js';
 import { acquireInstanceLock, checkInstance, readPidFile, removeOwnFiles, writePidFile } from './instance.js';
 import { MediaService } from './media.js';
 import { ParcelService } from './parcels.js';
-import { ReactionHold } from './reaction-hold.js';
+import { Hold } from './hold.js';
 import { Reception } from './reception.js';
 import { deferStaleInProgress, recoverCrashes, type StartInfo } from './recovery.js';
 import { Retention } from './retention.js';
@@ -132,7 +132,7 @@ class Gateway {
   private transcriber: Transcriber | null = null;
   private media: MediaService | null = null;
   private agentState: AgentStateWatcher | null = null;
-  private reactionHold: ReactionHold | null = null;
+  private hold: Hold | null = null;
   private tokenTimer: Timer | null = null;
   private stopping = false;
 
@@ -264,9 +264,12 @@ class Gateway {
     sender.statusLine.bindLive({ online: () => adapter.hasLease, agent: (now) => agentState.view(now) });
     // Расшифровка или отказ записаны: ответ владельцу (расшифровка или причина) — отправителю, событие (и ждавшие за
     // ним) — переходнику.
+    // Распознанный материал без слов владельца в окне снова удерживается (0.3.6, material.ts) — таймер окна сверяется.
+    let holdRef: Hold | null = null;
     const transcriber = new Transcriber(ctx, voice.stt, voice.sttKey, {
       onSettled: () => {
         sender.kick();
+        holdRef?.schedule();
         adapter.pump();
       },
     });
@@ -327,12 +330,14 @@ class Gateway {
       ...(vocab.slow ? { slow: true } : {}),
     });
     journal.write('tts_config', { provider: tts.provider, base_url: tts.base_url, model: tts.model, key: tts.key, voice: ttsVoice(tts) });
-    // Окно отмены реакции владельца (0.3.4, issue #46): удерживаемые реакции отпускает свой таймер; после перезапуска —
-    // остаток окна (прошло — сразу). Отпущено — переходнику.
-    const reactionHold = new ReactionHold(ctx, () => adapter.pump());
-    this.reactionHold = reactionHold;
-    ctx.disk.onRecovered(() => reactionHold.schedule());
-    const admission = new Admission(ctx, episodes, sender, adapter, hooks, control, transcriber, reactionHold);
+    // Окна удержания (hold.ts): окно отмены реакции владельца (0.3.4, issue #46) и окно для материала без слов владельца
+    // (0.3.6, issue #51) — удерживаемые события отпускает свой таймер; после перезапуска — остаток окна (прошло — сразу).
+    // Отпущено — переходнику.
+    const hold = new Hold(ctx, () => adapter.pump());
+    this.hold = hold;
+    holdRef = hold;
+    ctx.disk.onRecovered(() => hold.schedule());
+    const admission = new Admission(ctx, episodes, sender, adapter, hooks, control, transcriber, hold);
     // stg deferred retry (5.3) — через сокет: в базу пишет только шлюз.
     adapter.setRetryDeferred((id) => admission.retryDeferred(id));
     // Пробная запись файла при полном диске — тем же путём, что звук (временный файл → fsync → переименование).
@@ -346,7 +351,7 @@ class Gateway {
     await this.startReception(admission);
     this.ticker.start();
     adapter.start();
-    diskSafe('reaction_hold', () => reactionHold.schedule(), undefined);
+    diskSafe('hold', () => hold.schedule(), undefined);
     diskSafe('agent_state', () => agentState.start(), undefined);
     transcriber.kick();
     // Есть ли ключи голоса — сразу, для «статус» (ключ кладёт владелец; нет — голосовые «распознать не смог», ответы
@@ -449,7 +454,7 @@ class Gateway {
     this.stopping = true;
     this.tokenTimer?.cancel();
     this.ticker?.stop();
-    this.reactionHold?.stop();
+    this.hold?.stop();
     this.agentState?.stop();
     await this.reception?.stop();
     await this.transcriber?.stop();

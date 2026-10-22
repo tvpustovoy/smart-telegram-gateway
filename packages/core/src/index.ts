@@ -13,6 +13,7 @@ export * from './fsutil.js';
 export * from './journal.js';
 export * from './lock.js';
 export * from './markdown.js';
+export * from './material.js';
 export * from './media.js';
 export * from './ogg.js';
 export * from './openai.js';

@@ -1,8 +1,9 @@
 import assert from 'node:assert/strict';
+import crypto from 'node:crypto';
 import { describe, it } from 'node:test';
 import type { EventMessage } from 'stg-core';
 import { DEFAULT_TIMING, timingFromEnv } from './timing.js';
-import { formatEvent, formatMode, OUTCOME, busyText } from './format.js';
+import { formatEvent, formatMode, materialWait, OUTCOME, busyText } from './format.js';
 import { TOOLS, TOOL_NAMES } from './tools.js';
 import { INSTRUCTIONS, INSTRUCTIONS_VERSION } from './instructions.js';
 
@@ -344,6 +345,46 @@ describe('канал: инструменты, instructions, сроки', () => {
       assert.ok(d.includes('правила канала'), `${name}: ${d}`);
       if (name !== 'where') assert.ok(d.includes('вызови where()'), `${name}: ${d}`);
     }
+  });
+
+  it('A11.9 · материал без слов владельца (0.3.6, #51): пометка в заголовке — «слова владельца — следом, № M», «— раньше, № K», «слов владельца не было 2 мин»; meta.material и meta.words_seq; без поля — как раньше', () => {
+    const fwd = ev({ seq: 21, trust: 'untrusted', text: 'Статья о сне', forward: { origin_type: 'channel', from_name: 'Наука' } });
+    const after = formatEvent({ ...fwd, material: { words: 'after', words_seq: 22, waited_ms: null } });
+    assert.equal(after.content, '[№ 21 · эп. 42 · чужое · переслано из канала «Наука» · слова владельца — следом, № 22] Статья о сне');
+    assert.equal(after.meta.material, 'after');
+    assert.equal(after.meta.words_seq, '22');
+    const before = formatEvent({ ...fwd, material: { words: 'before', words_seq: 20, waited_ms: null } });
+    assert.ok(before.content.startsWith('[№ 21 · эп. 42 · чужое · переслано из канала «Наука» · слова владельца — раньше, № 20] '), before.content);
+    const none = formatEvent({ ...fwd, material: { words: 'none', words_seq: null, waited_ms: 125_000 } });
+    assert.ok(none.content.startsWith('[№ 21 · эп. 42 · чужое · переслано из канала «Наука» · слов владельца не было 2 мин] '), none.content);
+    assert.equal(none.meta.material, 'none');
+    assert.equal(none.meta.words_seq, undefined);
+    // Фото без подписи, повтор: пометка — до «повтор».
+    const photo = formatEvent(
+      ev({ seq: 30, kind: 'photo', text: null, mixed: true, attachments: [{ kind: 'photo', trust: 'untrusted' }], redelivery: true, material: { words: 'none', words_seq: null, waited_ms: 40_000 } }),
+    );
+    assert.ok(photo.content.includes('· слов владельца не было 40 с · повтор: проверь, не сделано ли уже]'), photo.content);
+    assert.deepEqual([materialWait(500), materialWait(59_400), materialWait(60_000), materialWait(3_900_000)], ['1 с', '59 с', '1 мин', '1 ч 05 мин']);
+    // Незнакомое значение words — без пометки; без поля — заголовок прежний.
+    assert.equal(formatEvent({ ...fwd, material: { words: 'someday', words_seq: null, waited_ms: null } }).content, formatEvent(fwd).content);
+    assert.equal(formatEvent(fwd).meta.material, undefined);
+  });
+
+  it('A11.10 · instructions (0.3.6, #51): материал — отвечай на слова; без слов — суть в 3–5 строк и один вопрос; пометки в заголовке; эпизод — сомневаешься, оставайся; версия — от нового текста', () => {
+    assert.ok(
+      INSTRUCTIONS.includes(
+        'Материал (ссылка, пересылка, файл, картинка) приходит вместе со словами владельца — отвечай на слова. Пришёл с пометкой, что слов владельца не было, — суть в 3–5 строк и один вопрос.',
+      ),
+    );
+    assert.ok(INSTRUCTIONS.includes('«слова владельца — следом, № M»'));
+    assert.ok(INSTRUCTIONS.includes('«слов владельца не было N мин»'));
+    assert.ok(
+      INSTRUCTIONS.includes(
+        'Разговор перешёл на другое — episode(action: "new", topic, reason). Сомневаешься — оставайся в текущем эпизоде. Новый — когда владелец сам сменил тему или пришло дело, не связанное с текущим; материал по ходу разговора (ссылка, пересылка) — в тот же эпизод.',
+      ),
+    );
+    // Версия — от текста: правила изменились — продолженный разговор получит событие «правила канала» (0.3.5, A10.2, A11.14).
+    assert.equal(INSTRUCTIONS_VERSION, crypto.createHash('sha256').update(INSTRUCTIONS).digest('hex').slice(0, 12));
   });
 
   it('сроки: по умолчанию — 5.10 (1…30 с, busy 30 с, ping 15 с, 45 с); множитель — только под тестом', () => {

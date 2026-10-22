@@ -233,15 +233,16 @@ describe('база: v11 (0.3.4) — пересборка events с видом re
     const others = ['outbox', 'receipts', 'messages_out', 'latency', 'edits', 'reactions'].map((t) => JSON.stringify(db.prepare(`SELECT * FROM ${t} ORDER BY 1`).all()));
     const r = migrate(db);
     try {
-      assert.deepEqual(r.applied, [10, 11, 12], 'миграции по порядку: v10 (0.3.3, посылки) → v11 (0.3.4) → v12 (0.3.5)');
+      assert.deepEqual(r.applied, [10, 11, 12, 13], 'миграции по порядку: v10 (0.3.3, посылки) → v11 (0.3.4) → v12 (0.3.5) → v13 (0.3.6)');
       assert.equal(schemaVersion(db), SCHEMA_VERSION);
       const after = db.prepare('SELECT * FROM events ORDER BY seq').all() as Array<Record<string, unknown>>;
       assert.equal(
         JSON.stringify(
-          after.map(({ reaction_json, hold_until, instructions_json, ...rest }) => {
+          after.map(({ reaction_json, hold_until, instructions_json, material_json, ...rest }) => {
             assert.equal(reaction_json, null);
             assert.equal(hold_until, null, 'окна отмены у прежних событий нет');
             assert.equal(instructions_json, null, 'правил канала у прежних событий нет (v12)');
+            assert.equal(material_json, null, 'окна материала у прежних событий нет (v13)');
             return rest;
           }),
         ),
@@ -321,7 +322,7 @@ describe('база: v11 (0.3.4) — пересборка events с видом re
     const dIdx = idxOf('deliveries');
     const r = migrate(db);
     try {
-      assert.deepEqual(r.applied, [11, 12]);
+      assert.deepEqual(r.applied, [11, 12, 13]);
       assert.equal(schemaVersion(db), SCHEMA_VERSION);
       assert.equal(JSON.stringify(deliveries()), dBefore, 'строки deliveries — те же');
       assert.equal(JSON.stringify(links()), lBefore, 'deliveries → events, outbox, messages_out — те же связи');
@@ -329,7 +330,7 @@ describe('база: v11 (0.3.4) — пересборка events с видом re
       // Ссылка deliveries → events указывает на новую таблицу events (переименование, а не events_v11) и проверяется.
       const fk = (db.prepare('PRAGMA foreign_key_list(deliveries)').all() as Array<{ table: string; from: string }>).map((x) => `${x.from}→${x.table}`).sort();
       assert.deepEqual(fk, ['event_seq→events', 'outbox_id→outbox']);
-      assert.doesNotMatch(tableSql(db, 'deliveries'), /events_v1[12]/);
+      assert.doesNotMatch(tableSql(db, 'deliveries'), /events_v1[123]/);
       assert.throws(() => db.prepare('DELETE FROM events WHERE seq = 1').run(), /FOREIGN KEY/, 'событие с доставкой не удалить');
       assert.throws(
         () => db.prepare("INSERT INTO deliveries(parcel, file, bytes, sha256, target, event_seq, status, created_at) VALUES ('p', 'f', 1, 'x', 'telegram', 999, 'pending', 1)").run(),
@@ -409,12 +410,13 @@ describe('база: v12 (0.3.5) — правила канала разговор
     const dBefore = JSON.stringify(deletions());
     const r = migrate(db);
     try {
-      assert.deepEqual(r.applied, [12]);
-      assert.equal(schemaVersion(db), 12);
+      assert.deepEqual(r.applied, [12, 13], 'v12, затем v13 (0.3.6)');
+      assert.equal(schemaVersion(db), SCHEMA_VERSION);
       assert.equal(
         JSON.stringify(
-          events().map(({ instructions_json, ...rest }) => {
+          events().map(({ instructions_json, material_json, ...rest }) => {
             assert.equal(instructions_json, null);
+            assert.equal(material_json, null);
             return rest;
           }),
         ),
@@ -441,7 +443,7 @@ describe('база: v12 (0.3.5) — правила канала разговор
         (db.prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = ? AND sql IS NOT NULL ORDER BY name").all(t) as Array<{ name: string }>).map((x) => x.name);
       assert.deepEqual(idx('events'), ['events_episode', 'events_message', 'events_status', 'events_update']);
       assert.deepEqual(idx('deletions'), ['deletions_status']);
-      assert.doesNotMatch(tableSql(db, 'events'), /events_v12/);
+      assert.doesNotMatch(tableSql(db, 'events'), /events_v1[23]/);
       assert.doesNotMatch(tableSql(db, 'deletions'), /deletions_v12/);
       // Правила канала — только с instructions_json, и instructions_json — только у них.
       db.prepare("INSERT INTO events(kind, status, created_at, instructions_json) VALUES ('instructions', 'new', 1, '{\"version\":\"abc\",\"key\":\"session:s1\"}')").run();
@@ -470,6 +472,86 @@ describe('база: v12 (0.3.5) — правила канала разговор
       assert.equal(schemaVersion(db), 11);
       assert.doesNotMatch(tableSql(db, 'deletions'), /fallback_text/, 'прежняя таблица на месте');
       assert.ok(!db.prepare("SELECT 1 FROM sqlite_master WHERE name = 'conversations'").get(), 'conversations нет');
+    } finally {
+      db.close();
+    }
+  });
+});
+
+describe('база: v13 (0.3.6) — окно для материала без слов владельца (#51)', () => {
+  function dbAt(v: number): Db {
+    const db = openDatabase(tmpDb());
+    for (const m of MIGRATIONS.filter((x) => x.version <= v)) {
+      db.exec(m.sql);
+      setMeta(db, 'schema_version', String(m.version));
+    }
+    return db;
+  }
+
+  it('A11.13 · v12 → v13: события (реакция в окне отмены, правила канала, проба) целы, material_json пуст, номер не переиспользуется; CHECK: held — у реакции и у материала, cancelled — только у реакции, material_json — только у сообщений', () => {
+    const db = dbAt(12);
+    insertSample(db);
+    transaction(db, () => {
+      db.prepare("INSERT INTO events(chat_id, kind, status, created_at, reaction_json, hold_until) VALUES (123456789, 'reaction', 'held', 1001, '{\"emoji\":[\"👍\"]}', 4001)").run();
+      db.prepare("INSERT INTO events(kind, status, created_at, instructions_json) VALUES ('instructions', 'delivered', 1002, '{\"version\":\"abc\",\"key\":\"session:s1\"}')").run();
+      db.prepare("INSERT INTO events(chat_id, kind, status, created_at) VALUES (123456789, 'probe', 'handled', 1003)").run();
+      // Последнее событие выдано и стёрто: счётчик выше наибольшего номера.
+      db.prepare("INSERT INTO events(chat_id, kind, status, created_at) VALUES (123456789, 'photo', 'new', 1004)").run();
+      db.prepare('DELETE FROM events WHERE seq = 5').run();
+    });
+    const events = (): Array<Record<string, unknown>> => db.prepare('SELECT * FROM events ORDER BY seq').all() as Array<Record<string, unknown>>;
+    const before = JSON.stringify(events());
+    const r = migrate(db);
+    try {
+      assert.deepEqual(r.applied, [13]);
+      assert.equal(schemaVersion(db), 13);
+      assert.equal(
+        JSON.stringify(
+          events().map(({ material_json, ...rest }) => {
+            assert.equal(material_json, null);
+            return rest;
+          }),
+        ),
+        before,
+        'строки событий — те же',
+      );
+      const ins = (sqlText: string): number => Number(db.prepare(sqlText).run().lastInsertRowid);
+      assert.equal(ins("INSERT INTO events(chat_id, kind, status, created_at) VALUES (1, 'text', 'new', 1)"), 6, 'номер события не переиспользуется');
+      const idx = (db.prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'events' AND sql IS NOT NULL ORDER BY name").all() as Array<{ name: string }>).map((x) => x.name);
+      assert.deepEqual(idx, ['events_episode', 'events_message', 'events_status', 'events_update']);
+      assert.doesNotMatch(tableSql(db, 'events'), /events_v13/);
+      // Материал в окне: held с material_json и сроком; пересланное голосовое — transcribing с material_json.
+      const waiting = '{"state":"waiting","window_ms":120000}';
+      for (const kind of ['text', 'voice', 'photo', 'document']) {
+        db.prepare("INSERT INTO events(chat_id, kind, status, created_at, hold_until, material_json) VALUES (1, ?, 'held', 1, 120001, ?)").run(kind, waiting);
+      }
+      db.prepare("INSERT INTO events(chat_id, kind, status, created_at, hold_until, material_json) VALUES (1, 'voice', 'transcribing', 1, 120001, ?)").run(waiting);
+      db.prepare("INSERT INTO events(chat_id, kind, status, created_at, material_json) VALUES (1, 'photo', 'new', 1, '{\"state\":\"before\",\"window_ms\":120000,\"words_seq\":6}')").run();
+      assert.throws(() => db.prepare("INSERT INTO events(chat_id, kind, status, created_at, material_json) VALUES (1, 'photo', 'held', 1, ?)").run(waiting), /CHECK/, 'held без срока');
+      assert.throws(() => db.prepare("INSERT INTO events(chat_id, kind, status, created_at, hold_until) VALUES (1, 'photo', 'held', 1, 3001)").run(), /CHECK/, 'held — не у реакции и не у материала');
+      assert.throws(() => db.prepare("INSERT INTO events(chat_id, kind, status, created_at, hold_until, material_json) VALUES (1, 'edit', 'held', 1, 3001, ?)").run(waiting), /CHECK/, 'material_json — не у правки');
+      assert.throws(() => db.prepare("INSERT INTO events(chat_id, kind, status, created_at, material_json) VALUES (1, 'photo', 'cancelled', 1, ?)").run(waiting), /CHECK/, 'cancelled — только у реакции');
+      assert.throws(() => db.prepare("INSERT INTO events(kind, status, created_at, instructions_json, material_json) VALUES ('instructions', 'new', 1, '{}', ?)").run(waiting), /CHECK/);
+      db.prepare("INSERT INTO events(chat_id, kind, status, created_at, reaction_json) VALUES (1, 'reaction', 'cancelled', 1, '{}')").run();
+      assert.equal((db.prepare('PRAGMA foreign_keys').get() as { foreign_keys: number }).foreign_keys, 1, 'внешние ключи снова включены');
+      assert.throws(() => db.prepare("INSERT INTO outbox(event_seq, chat_id, kind, text, origin, status, created_at) VALUES (999, 1, 'agent', 'x', 'agent', 'pending', 1)").run(), /FOREIGN KEY/);
+      assert.deepEqual(db.prepare('PRAGMA foreign_key_check').all(), []);
+      assert.deepEqual(quickCheck(db), []);
+    } finally {
+      db.close();
+    }
+  });
+
+  it('нарушенный внешний ключ — v13 откатывается целиком, база на v12', () => {
+    const db = dbAt(12);
+    try {
+      db.exec('PRAGMA foreign_keys = OFF');
+      db.prepare("INSERT INTO outbox(event_seq, chat_id, kind, text, origin, status, created_at) VALUES (777, 1, 'agent', 'x', 'agent', 'sent', 1)").run();
+      db.exec('PRAGMA foreign_keys = ON');
+      assert.throws(() => migrate(db), (e: unknown) => e instanceof DbError && e.kind === 'migration_failed' && /внешние ключи/.test(e.message));
+      assert.equal(schemaVersion(db), 12);
+      assert.doesNotMatch(tableSql(db, 'events'), /material_json/, 'прежняя таблица на месте');
+      assert.equal((db.prepare('PRAGMA foreign_keys').get() as { foreign_keys: number }).foreign_keys, 1);
     } finally {
       db.close();
     }

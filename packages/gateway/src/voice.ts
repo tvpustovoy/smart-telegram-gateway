@@ -46,6 +46,10 @@
 // сохраняется. Не вышло — ответ текстом с пометкой «⚙ голос не получился»; отметка voice_failed в базе держит порядок
 // частей после перезапуска.
 //
+// Окно для материала без слов владельца (0.3.6, issue #51; material.ts): распознавание кончилось — в той же транзакции
+// пересланное голосовое (материал) снова удерживается, если окно ещё идёт, а материал, ждавший этого голосового (кружка)
+// владельца — его слов, — отдаётся вместе с ним.
+//
 // Здесь нет ничего от конкретного провайдера: отказ любого — VoiceProviderError (вид, код, повторять ли). Ключи голоса —
 // по имени из config.yaml (stt.key, tts.key); одно имя — один ключ на оба.
 
@@ -83,6 +87,7 @@ import {
   type VoiceWhat,
 } from 'stg-core';
 import { insertOutbox, type Ctx } from './context.js';
+import { settleTranscribed, type SettleResult } from './material.js';
 
 /** Срок одной попытки распознавания (5.8). */
 export const STT_ATTEMPT_MS = 60_000;
@@ -639,6 +644,7 @@ export class Transcriber {
   /** Записать исход: transcript и new одной транзакцией с ответом владельцу на голосовое (файл). false — диск полон. */
   private commit(row: VoiceEventRow, o: SttOutcome): boolean {
     let changed = false;
+    let material: SettleResult | null = null;
     try {
       changed = transaction(this.ctx.db, () => {
         const r =
@@ -651,6 +657,7 @@ export class Transcriber {
                 : sql(this.ctx.db, "UPDATE events SET status = 'new' WHERE seq = ? AND status = 'transcribing'").run(row.seq);
         if (!Number(r.changes)) return false;
         enqueueSttReply(this.ctx, row.seq);
+        material = settleTranscribed(this.ctx, row.seq, this.ctx.clock.now());
         return true;
       });
     } catch (err) {
@@ -658,6 +665,13 @@ export class Transcriber {
       throw err;
     }
     if (!changed) return true;
+    const settled = material as SettleResult | null;
+    if (settled) {
+      const now = this.ctx.clock.now();
+      if (settled.held) this.ctx.journal.write('material_held', { seq: row.seq, after: 'stt' });
+      if (settled.timedOut) this.ctx.journal.write('material_released', { seq: row.seq, held_ms: now - row.created_at, words: 'none' });
+      for (const m of settled.released) this.ctx.journal.write('material_released', { seq: m.seq, held_ms: m.heldMs, words: 'after', words_seq: row.seq });
+    }
     const src = sttSourceOf(row);
     if (o.ok === 'skipped') {
       this.ctx.journal.write('stt_skipped', { seq: row.seq, reason: o.reason, saved: !!row.raw_ref, raw_ref: row.raw_ref, seconds: src?.seconds ?? null });

@@ -209,6 +209,22 @@ const reactionHoldSeconds = z
   })
   .default(DEFAULT_REACTION_HOLD_SECONDS);
 
+/**
+ * Окно для материала без слов владельца (0.3.6; GitHub issue #51): пересылка, файл, фото без подписи ждут его слов в том
+ * же чате — материал и слова агент получает вместе. По умолчанию — 120 с; 0 — без окна (материал отдаётся сразу, как до
+ * 0.3.6); больше 600 — ошибка настройки: дольше десяти минут материал не держится ⟨предл.⟩.
+ */
+export const DEFAULT_MATERIAL_HOLD_SECONDS = 120;
+export const MAX_MATERIAL_HOLD_SECONDS = 600;
+
+const materialHoldSeconds = z
+  .number({ error: 'окно для материала без слов владельца — число секунд' })
+  .min(0, { message: 'окно для материала без слов владельца — не меньше 0 (0 — без окна)' })
+  .max(MAX_MATERIAL_HOLD_SECONDS, {
+    message: `окно для материала без слов владельца — не больше ${MAX_MATERIAL_HOLD_SECONDS} с; 0 — без окна`,
+  })
+  .default(DEFAULT_MATERIAL_HOLD_SECONDS);
+
 export type SttConfig = z.infer<typeof SttConfigSchema>;
 export type TtsConfig = z.infer<typeof TtsConfigSchema>;
 
@@ -241,12 +257,15 @@ export const ConfigSchema = z.strictObject({
   // поля ввода и закреплённой строки (роль → как показывать; без записи — полное имя роли с большой буквы: одно имя роли
   // везде). Роль по умолчанию не показывается вовсе — запись для неё ни на что не влияет. delete_confirmed_topic (0.3.5,
   // issue #48): строка темы `⚙ ↪ #N · тема` после [верно] удаляется из чата (тема и так видна в закреплённой строке);
-  // false — как раньше: правится в одну строку «… — верно».
+  // false — как раньше: правится в одну строку «… — верно». material_hold_seconds (0.3.6, issue #51): материал без слов
+  // владельца (пересылка, файл, фото без подписи) ждёт его слов в том же чате столько секунд от последнего материала;
+  // слова пришли — материал уходит агенту вместе с ними, не пришли — с пометкой «слов владельца не было».
   ui: z
     .strictObject({
       where_ttl_minutes: positiveMinutes.default(5),
       role_short: z.record(z.string().min(1), z.string().min(1).max(32)).default({}),
       delete_confirmed_topic: z.boolean().default(true),
+      material_hold_seconds: materialHoldSeconds,
     })
     .prefault({}),
   // Посылки (5.16; 0.3.3, P-23): dir — папка посылок, единственное место, откуда агент отдаёт файлы (send_file);

@@ -99,6 +99,12 @@ export interface HomeOptions {
   extraConfig?: string;
   /** Содержимое rules.yaml; null — файла нет. */
   rules?: string | null;
+  /**
+   * Окно для материала без слов владельца (0.3.6, issue #51), ui.material_hold_seconds. По умолчанию в тестах — 0: тесты
+   * до 0.3.6 шлют фото, файлы и пересылки без подписи и ждут их у агента сразу. null — строки нет, окно по умолчанию
+   * шлюза (120 с; m11-material-hold). Своя секция ui: в extraConfig — строки тоже нет.
+   */
+  materialHoldSeconds?: number | null;
 }
 
 export interface TestHome {
@@ -120,7 +126,8 @@ export function makeHome(opts: HomeOptions): TestHome {
     `owner_id: ${owner === null ? '' : owner}\n` +
     'timezone: America/Los_Angeles\n' +
     `telegram: { api_base: "${opts.apiBase}" }\n` +
-    (opts.extraConfig ?? '');
+    (opts.extraConfig ?? '') +
+    (opts.materialHoldSeconds === null || /^ui:/m.test(opts.extraConfig ?? '') ? '' : `ui: { material_hold_seconds: ${opts.materialHoldSeconds ?? 0} }\n`);
   fs.writeFileSync(path.join(dir, 'config.yaml'), config);
   if (opts.rules) fs.writeFileSync(path.join(dir, 'rules.yaml'), opts.rules);
   return { dir, paths: stgPaths(dir), aux };

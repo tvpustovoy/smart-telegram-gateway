@@ -69,9 +69,14 @@
 // ответ к № M: 👍 — твой ответ: «…»»: прежний канал вида reaction не знает (его схема отбросила бы кадр целиком) и
 // читает событие текстом, новый строит заголовок по полю. Ответ на реакцию не обязателен — done (инструкции канала); 👀
 // и 👌 на ней нет, «агент молчит» о ней владельцу не пишется (не сообщение).
-// Окно отмены реакции (0.3.4, issue #46; reaction-hold.ts): реакция в окне — held, курсор её не ждёт: сообщения и прочие
+// Окно отмены реакции (0.3.4, issue #46; hold.ts): реакция в окне — held, курсор её не ждёт: сообщения и прочие
 // события идут мимо неё, а сама она, когда окно прошло (held → new), отдаётся вне очереди (lease.skipped — как голосовое,
 // распознававшееся дольше VOICE_HOLD_MS); отменённая в окне (cancelled) не отдаётся вовсе.
+// Окно для материала без слов владельца (0.3.6, issue #51; material.ts, hold.ts) — тот же held: курсор его не ждёт.
+// Слова владельца отпускают материал в той же транзакции, что их записывает, поэтому отдача идёт по № — материал, затем
+// слова, подряд (материал, мимо которого курсор уже прошёл, — из lease.skipped первым). В кадре — поле material
+// {words: after · before · none, words_seq, waited_ms}: канал пишет по нему пометку в заголовке; прежний канал поле
+// отбрасывает.
 //
 // Правила канала (0.3.5, issue #47). Claude Code передаёт instructions MCP-сервера разговору только при первом
 // подключении канала к нему: продолженный (--resume) разговор новых instructions не получает (описания инструментов
@@ -119,6 +124,7 @@ import {
   type EventMessage,
   type ForwardInfo,
   type InstructionsState,
+  type MaterialHold,
   type Mode,
   type OwnerReaction,
   type Timer,
@@ -301,6 +307,19 @@ interface EventRow {
   reaction_json?: string | null;
   /** Правила канала (схема v12; только у вида instructions): {version, key}. */
   instructions_json?: string | null;
+  /** Материал без слов владельца (схема v13, 0.3.6): MaterialHold. */
+  material_json?: string | null;
+}
+
+/**
+ * Материал без слов владельца (0.3.6, issue #51): слова пришли следом (after, № слов), были раньше (before) или окно
+ * кончилось без них (none, сколько ждал). Отдаётся только отпущенный материал: в окне (waiting) он агенту не уходит.
+ */
+function materialField(ev: EventRow): { material?: NonNullable<EventMessage['material']> } {
+  if (!ev.material_json) return {};
+  const m = JSON.parse(ev.material_json) as MaterialHold;
+  if (m.state === 'waiting') return {};
+  return { material: { words: m.state, words_seq: m.words_seq ?? null, waited_ms: m.waited_ms ?? null } };
 }
 
 /**
@@ -1363,6 +1382,7 @@ export class AdapterService {
       redelivery: redelivery ?? ev.attempts > 0,
       ...this.audioField(ev, attachments),
       ...mediaField(attachments),
+      ...materialField(ev),
     };
   }
 

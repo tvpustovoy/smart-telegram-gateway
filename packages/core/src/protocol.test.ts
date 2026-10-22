@@ -346,3 +346,48 @@ describe('протокол: реакция владельца (0.3.4) — кад
     assert.ok(!OldEvent.safeParse({ ...frame, kind: 'reaction' }).success);
   });
 });
+
+describe('протокол: материал без слов владельца (0.3.6, #51) — поле material', () => {
+  // Кадр, который шлюз 0.3.6 шлёт по пересылке, отпущенной словами владельца (adapter.ts, frame).
+  const frame = {
+    type: 'event',
+    seq: 21,
+    kind: 'text',
+    trust: 'untrusted',
+    mixed: false,
+    text: 'Статья о сне',
+    transcript: null,
+    attachments: [],
+    forward: { origin_type: 'channel', from_name: 'Наука' },
+    reply_to: null,
+    edit_of: null,
+    chat: { id: 111, kind: 'private' },
+    subject: { id: 'owner', who: 'owner' },
+    episode: { id: 9, topic: 'т', role: 'р', new: false },
+    redelivery: false,
+    material: { words: 'after', words_seq: 22, waited_ms: null },
+  };
+
+  it('новый канал видит поле material: следом, раньше, без слов (сколько ждал); незнакомое значение words — тоже строка', () => {
+    const n = parseGatewayLine(JSON.stringify(frame));
+    assert.ok(n.ok && n.message.type === 'event');
+    assert.deepEqual(n.message.material, frame.material);
+    const none = parseGatewayLine(JSON.stringify({ ...frame, material: { words: 'none', words_seq: null, waited_ms: 120_000 } }));
+    assert.ok(none.ok && none.message.type === 'event' && none.message.material?.waited_ms === 120_000);
+    const later = parseGatewayLine(JSON.stringify({ ...frame, material: { words: 'someday', words_seq: null, waited_ms: null } }));
+    assert.ok(later.ok, 'новое значение words не ломает разбор');
+    assert.ok(!parseGatewayLine(JSON.stringify({ ...frame, material: { words: 'after', words_seq: 0, waited_ms: null } })).ok, '№ слов — положительный');
+  });
+
+  it('where_result: held_material — необязательное (прежний шлюз его не шлёт)', () => {
+    const base = {
+      type: 'where_result',
+      req_id: 'r1',
+      text: '⚙ Где мы',
+      data: { episode: null, mode: 'running', waiting: [], waiting_count: 0, agent_online: true, deferred: [], closed_silent: [], summary_missing: [] },
+    };
+    assert.ok(parseGatewayLine(JSON.stringify(base)).ok);
+    const withHeld = parseGatewayLine(JSON.stringify({ ...base, data: { ...base.data, held_material: [21, 22] } }));
+    assert.ok(withHeld.ok && withHeld.message.type === 'where_result' && withHeld.message.data?.held_material?.length === 2);
+  });
+});

@@ -87,6 +87,8 @@ export async function voiceSetup(
     ttsKey?: string;
     withKey?: boolean;
     env?: Record<string, string | undefined>;
+    /** Окно для материала без слов владельца (0.3.6), как в makeHome: по умолчанию 0, null — по умолчанию шлюза. */
+    materialHoldSeconds?: number | null;
   } = {},
 ): Promise<VoiceSetup> {
   const dialect = opts.dialect ?? 'openai';
@@ -104,7 +106,11 @@ export async function voiceSetup(
     voice.sttYaml(opts.sttKey ? { key: opts.sttKey } : {}) +
     synth.ttsYaml({ voiceId: opts.voiceId, ...(opts.ttsKey ? { key: opts.ttsKey } : {}) });
   const s = await setup({
-    home: { extraConfig: yaml + (opts.extraConfig ?? ''), ...(opts.rules ? { rules: opts.rules } : {}) },
+    home: {
+      extraConfig: yaml + (opts.extraConfig ?? ''),
+      ...(opts.rules ? { rules: opts.rules } : {}),
+      ...(opts.materialHoldSeconds !== undefined ? { materialHoldSeconds: opts.materialHoldSeconds } : {}),
+    },
     env: { ...keyEnv, ...opts.env },
   });
   const close = s.close.bind(s);

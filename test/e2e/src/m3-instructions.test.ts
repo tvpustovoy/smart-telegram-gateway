@@ -18,7 +18,9 @@
 // - строки состояния двух сессий в одном каталоге чередуются до done — по событию на разговор, не больше; повтор по сроку
 //   — только событию текущего разговора; done на оба — записаны оба;
 // - процесс подтвердил новую версию, пока сессия была неизвестна, а у сессии записана старая, — запись сессии
-//   обновляется, второго события нет.
+//   обновляется, второго события нет;
+// - 0.3.6 (#51): разговор, подтвердивший правила 0.3.5, после обновления канала получает событие с новыми правилами —
+//   о материале без слов владельца и об эпизодах (A11.14).
 
 import assert from 'node:assert/strict';
 import crypto from 'node:crypto';
@@ -34,6 +36,8 @@ const ID_A = 'procA_0123456789abcdef';
 const ID_B = 'procB_0123456789abcdef';
 const ID_C = 'procC_0123456789abcdef';
 const V1 = 'aaaa11112222';
+/** Версия instructions канала 0.3.5 — начало SHA-256 их текста (с 0.3.6 текст другой). */
+const V035 = '1a2a8dc81ad2';
 const V2 = 'bbbb33334444';
 
 type Ev = Extract<Awaited<ReturnType<FakeChannel['waitEvent']>>, { type: 'event' }>;
@@ -377,6 +381,42 @@ describe('M3 · правила канала продолженному разг�
       assert.deepEqual([rec?.key.startsWith('instance:'), rec?.instructions, rec?.seq], [true, INSTRUCTIONS_VERSION, Number(n.meta.seq)]);
       const w = await fc.call('where');
       assert.ok(w.text.endsWith(`Правила канала: версия ${INSTRUCTIONS_VERSION} — этот разговор их получил (№ ${n.meta.seq}).`), w.text);
+    } finally {
+      await fc?.close();
+      await s.close();
+    }
+  });
+
+  it('A11.14 · 0.3.6 (#51): разговор подтвердил правила 0.3.5; канал обновлён, разговор продолжен — событие с новыми правилами (материал без слов владельца, эпизоды); done — записана новая версия', async () => {
+    assert.notEqual(INSTRUCTIONS_VERSION, V035, 'правила 0.3.6 — новая версия');
+    const s = await setup();
+    let fc: FakeClaude | null = null;
+    try {
+      await s.start();
+      await statusline(s, 'sess-036');
+      // Разговор с каналом 0.3.5: правила той версии получены и подтверждены.
+      const a = await adapter(s, { instanceId: ID_A, version: V035, probe: true });
+      const i1 = await waitInstructions(a.ch);
+      await doneOk(a.ch, i1.seq);
+      assert.equal(conv(s, 'session:sess-036')?.instructions, V035);
+      a.ch.close();
+      await waitUntil(() => journal(s, 'lease_released', (l) => l.lease === a.lease)[0], 5000, 'снятия аренды');
+      // Обновление: Claude Code продолжил тот же разговор с каналом 0.3.6 (настоящий канал).
+      fc = await FakeClaude.start(s.home, { autoInstructions: false });
+      await fc.waitVerified();
+      const n = await fc.waitNotice((x) => x.meta.kind === 'instructions', 10_000, 'события правил');
+      assert.equal(n.meta.version, INSTRUCTIONS_VERSION);
+      const offered = journal(s, 'instructions_offered', (l) => l.seq === Number(n.meta.seq))[0]!;
+      assert.deepEqual([offered.conversation, offered.had], ['session:sess-036', V035]);
+      for (const rule of [
+        'Материал (ссылка, пересылка, файл, картинка) приходит вместе со словами владельца — отвечай на слова. Пришёл с пометкой, что слов владельца не было, — суть в 3–5 строк и один вопрос.',
+        'Сомневаешься — оставайся в текущем эпизоде. Новый — когда владелец сам сменил тему или пришло дело, не связанное с текущим; материал по ходу разговора (ссылка, пересылка) — в тот же эпизод.',
+      ]) {
+        assert.ok(n.content.includes(rule), `в событии правил нет: ${rule}`);
+      }
+      const d = await fc.call('done', { seqs: [Number(n.meta.seq)] });
+      assert.equal(d.isError, false, d.text);
+      assert.equal(conv(s, 'session:sess-036')?.instructions, INSTRUCTIONS_VERSION);
     } finally {
       await fc?.close();
       await s.close();
