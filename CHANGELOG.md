@@ -23,8 +23,10 @@ The chat interface and the design documents are in Russian; the entries below de
   full current instructions. The agent marks it `done`, and the version is recorded for that conversation.
 - The rules event is a service event, like the channel check: it goes ahead of the waiting messages, also during stop
   and pause, is redelivered by the usual timer, stays with the same conversation across a dropped connection or a
-  gateway restart, and is closed when another conversation takes the queue. A brand-new conversation, which already has
-  the instructions from Claude Code, gets the event once as well: the gateway cannot tell it from a resumed one.
+  gateway restart, and is closed when another conversation's channel takes the queue. Within one channel connection a
+  conversation gets at most one rules event, even when the status lines of two sessions in the same folder alternate;
+  `done` on an event the connection sent earlier still counts. A brand-new conversation, which already has the
+  instructions from Claude Code, gets the event once as well: the gateway cannot tell it from a resumed one.
 - `where()` called by the agent ends with a line about the channel rules: received by this conversation, waiting for
   `done`, or not received — then the event is sent. The descriptions of `reply`, `done` and `where` point to the event
   and to `where()`; `reply` and `send_file` on the rules event are refused.
@@ -36,8 +38,9 @@ The chat interface and the design documents are in Russian; the entries below de
   deletes the line — the topic stays visible in the pinned status line. `false` keeps the previous behaviour: the line
   is edited to "… — верно" without buttons. The deletion goes through the sender's queue with retries and survives a
   restart; if Telegram refuses it (the message is older than 48 hours, …) or every attempt fails, the line is edited to
-  "… — верно" without buttons and the reason is logged. A second press while the deletion is pending does not edit the
-  line. [не то] is unchanged.
+  "… — верно" without buttons and the reason is logged. A line that is already gone (the owner deleted it) counts as
+  deleted and is not edited. A second press while the deletion is pending does not edit the line. [не то] is
+  unchanged.
 - `npm run release-check` (`scripts/release-check.mjs`, no dependencies): scans the files git would commit, and with
   `--history` every object and commit message, against a private denylist named by `STG_DENYLIST` plus built-in checks
   for home-directory paths, e-mail addresses, phone numbers, bot tokens and API keys. Exit code 1 on findings.

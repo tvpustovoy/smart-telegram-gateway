@@ -14,10 +14,15 @@
 // - второй переходник (другой разговор) — своё событие; открытое событие прежнего закрыто (handled);
 // - канал без версии (до 0.3.5) — событий правил нет; reply на событие правил — отказ; первая строка состояния живой
 //   аренды — записанное за процессом переходит к сессии (второго события нет); живой /clear — новому разговору своё;
-// - настоящий канал под поддельным Claude Code: в событии — instructions целиком и их версия; done — версия записана.
+// - настоящий канал под поддельным Claude Code: в событии — instructions целиком и их версия; done — версия записана;
+// - строки состояния двух сессий в одном каталоге чередуются до done — по событию на разговор, не больше; повтор по сроку
+//   — только событию текущего разговора; done на оба — записаны оба;
+// - процесс подтвердил новую версию, пока сессия была неизвестна, а у сессии записана старая, — запись сессии
+//   обновляется, второго события нет.
 
 import assert from 'node:assert/strict';
 import crypto from 'node:crypto';
+import os from 'node:os';
 import { describe, it } from 'node:test';
 import { INSTRUCTIONS, INSTRUCTIONS_VERSION } from 'stg-channel';
 import { FakeChannel } from 'stg-fake-channel';
@@ -59,15 +64,15 @@ function waitInstructions(ch: FakeChannel, n = 1): Promise<Ev> {
   return waitUntil(() => ch.instructions()[n - 1], 10_000, `события «правила канала» № ${n}`);
 }
 
-/** Строка состояния Claude Code (сессия) в каталоге аренды — каталоге теста. */
-async function statusline(s: Setup, sessionId: string): Promise<void> {
+/** Строка состояния Claude Code (сессия) в каталоге аренды — каталоге теста (или в другом: cwd). */
+async function statusline(s: Setup, sessionId: string, cwd = process.cwd()): Promise<void> {
   const r = await runCliInput(
     ['agent-state', 'statusline'],
     s.env,
     JSON.stringify({
       session_id: sessionId,
-      cwd: process.cwd(),
-      workspace: { current_dir: process.cwd(), project_dir: process.cwd() },
+      cwd,
+      workspace: { current_dir: cwd, project_dir: cwd },
       model: { display_name: 'Opus' },
       context_window: { used_percentage: 12 },
       cost: { total_cost_usd: 0.1 },
@@ -374,6 +379,94 @@ describe('M3 · правила канала продолженному разг�
       assert.ok(w.text.endsWith(`Правила канала: версия ${INSTRUCTIONS_VERSION} — этот разговор их получил (№ ${n.meta.seq}).`), w.text);
     } finally {
       await fc?.close();
+      await s.close();
+    }
+  });
+
+  it('строки состояния двух сессий в одном каталоге чередуются до done — по событию на разговор, не больше; повтор по сроку — только событию текущего; done на оба — записаны оба', async () => {
+    const s = await setup();
+    try {
+      const gw = await s.start();
+      await statusline(s, 'sess-a');
+      const a = await adapter(s, { instanceId: ID_A, version: V1, probe: true });
+      try {
+        const ia = await waitInstructions(a.ch);
+        // Вторая сессия Claude Code в том же каталоге пишет свою строку состояния; агент занят и done ещё не ответил.
+        await gw.advance('2s');
+        await statusline(s, 'sess-b');
+        const ib = await waitInstructions(a.ch, 2);
+        for (let i = 0; i < 4; i++) {
+          await gw.advance('2s');
+          await statusline(s, i % 2 === 0 ? 'sess-a' : 'sess-b');
+          await waitUntil(() => journal(s, 'agent_session_changed', (l) => l.lease === a.lease).length >= i + 2 || null, 10_000, `смены сессии № ${i + 2}`);
+        }
+        await settle(gw);
+        assert.deepEqual(a.ch.instructions().map((e) => e.seq), [ia.seq, ib.seq], 'по событию на разговор');
+        assert.deepEqual(journal(s, 'instructions_offered', (l) => l.lease === a.lease).map((l) => l.seq), [ia.seq, ib.seq]);
+        assert.equal(journal(s, 'instructions_closed').length, 0, 'отданные этой арендой не закрываются');
+        assert.ok(![statusOf(s, ia.seq), statusOf(s, ib.seq)].includes('handled'));
+        // Срок К-5 (вызовов не было): повтор — событию текущего разговора (sess-b); событию другого — нет, у текущего свои.
+        await gw.advance('11m');
+        const again = await waitInstructions(a.ch, 3);
+        assert.deepEqual([again.seq, again.redelivery], [ib.seq, true]);
+        await settle(gw);
+        assert.equal(a.ch.instructions().length, 3);
+        assert.deepEqual(journal(s, 'redelivered', (l) => l.kind === 'instructions').map((l) => l.seq), [ib.seq]);
+        // where() — событие текущего разговора ждёт done; нового нет.
+        const w = await a.ch.where();
+        assert.ok(w.type === 'where_result' && w.text.includes(`событие № ${ib.seq} «правила канала» отдано и ждёт твоего done`), JSON.stringify(w));
+        assert.equal(a.ch.instructions().length, 3);
+        const r = await a.ch.done([ia.seq, ib.seq]);
+        assert.ok(r.type === 'ack' && (r.result as { processed: number }).processed === 2, JSON.stringify(r));
+        assert.deepEqual({ ...conv(s, 'session:sess-a') }, { instructions: V1, seq: ia.seq });
+        assert.deepEqual({ ...conv(s, 'session:sess-b') }, { instructions: V1, seq: ib.seq });
+        // Разговоры записаны — дальнейшие смены сессии событий не дают.
+        await gw.advance('2s');
+        await statusline(s, 'sess-a');
+        await waitUntil(() => journal(s, 'agent_session_changed', (l) => l.lease === a.lease).length >= 6 || null, 10_000, 'смены сессии № 6');
+        await settle(gw);
+        assert.equal(a.ch.instructions().length, 3);
+      } finally {
+        a.ch.close();
+      }
+      await gw.stop();
+    } finally {
+      await s.close();
+    }
+  });
+
+  it('процесс подтвердил новую версию, пока сессия была неизвестна, а у сессии записана старая, — запись сессии обновляется, второго события нет', async () => {
+    const s = await setup();
+    try {
+      const gw = await s.start();
+      await statusline(s, 'sess-m');
+      const a = await adapter(s, { instanceId: ID_A, version: V1, probe: true });
+      const i1 = await waitInstructions(a.ch);
+      await doneOk(a.ch, i1.seq);
+      assert.equal(conv(s, 'session:sess-m')?.instructions, V1);
+      a.ch.close();
+      await waitUntil(() => journal(s, 'lease_released', (l) => l.lease === a.lease)[0], 5000, 'снятия аренды');
+      // Строка состояния — из другого каталога: сессия новой аренды неизвестна, правила — за процессом канала.
+      await statusline(s, 'sess-elsewhere', os.tmpdir());
+      await gw.advance('2s');
+      const b = await adapter(s, { instanceId: ID_B, version: V2, probe: true });
+      try {
+        const i2 = await waitInstructions(b.ch);
+        assert.equal(journal(s, 'instructions_offered', (l) => l.seq === i2.seq)[0]?.conversation, `instance:${hash(ID_B).slice(0, 8)}`);
+        await doneOk(b.ch, i2.seq);
+        assert.equal(conv(s, `instance:${hash(ID_B)}`)?.instructions, V2);
+        // Сессия стала известна — это sess-m со старой записью: запись процесса новее — переходит к ней.
+        await gw.advance('2s');
+        await statusline(s, 'sess-m');
+        await waitUntil(() => journal(s, 'agent_session', (l) => l.lease === b.lease)[0], 10_000, 'agent_session');
+        await settle(gw);
+        assert.deepEqual({ ...conv(s, 'session:sess-m') }, { instructions: V2, seq: i2.seq });
+        assert.equal(b.ch.instructions().length, 1, 'второго события нет');
+      } finally {
+        b.ch.close();
+      }
+      await gw.stop();
+    } finally {
       await s.close();
     }
   });

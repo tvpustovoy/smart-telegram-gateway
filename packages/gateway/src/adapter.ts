@@ -84,8 +84,10 @@
 // курсора, в «стоп» и в паузе тоже; текст правил подставляет канал (шлюз хранит только версию и ключ разговора —
 // events.instructions_json). done на него — версия записана за разговором. Не ответил — повтор по сроку К-5, как у
 // прочих; оборвалась связь — открытое событие правил отдаётся снова тому же разговору (новая аренда, перезапуск шлюза),
-// а событие правил другого разговора закрывается (handled). Новый разговор, которому Claude Code instructions уже дал,
-// шлюз от продолженного не отличает: он тоже получает событие (лишний раз — безвредно) ⟨предл.⟩.
+// а событие правил другого разговора закрывается (handled). Отданное этой арендой прежнему её разговору (сессия
+// сменилась) остаётся открытым — done по нему засчитывается, повтором по сроку не отдаётся: за аренду разговору — не
+// больше одного события, даже если строки состояния двух сессий чередуются. Новый разговор, которому Claude Code
+// instructions уже дал, шлюз от продолженного не отличает: он тоже получает событие (лишний раз — безвредно) ⟨предл.⟩.
 
 import crypto from 'node:crypto';
 import { performance } from 'node:perf_hooks';
@@ -992,8 +994,8 @@ export class AdapterService {
 
   /**
    * Сессия аренды стала известна (0.3.5): правила канала, записанные за процессом канала (ключ instance), — за этой
-   * сессией, если у неё своей записи нет; открытое событие правил процесса — теперь её. Ошибка записи — не беда:
-   * событие правил придёт ещё раз.
+   * сессией, если у неё своей записи нет или своя не новее (процесс подтвердил правила позже, чем сессия когда-то
+   * раньше); открытое событие правил процесса — теперь её. Ошибка записи — не беда: событие правил придёт ещё раз.
    */
   private instructionsToSession(lease: Lease, sessionId: string): void {
     if (lease.instanceHash === null || lease.instructions === null) return;
@@ -1002,7 +1004,9 @@ export class AdapterService {
     try {
       transaction(this.ctx.db, () => {
         sql(this.ctx.db,
-          'INSERT INTO conversations(key, instructions, seq, at) SELECT ?, instructions, seq, at FROM conversations WHERE key = ? ON CONFLICT(key) DO NOTHING',
+          `INSERT INTO conversations(key, instructions, seq, at) SELECT ?, instructions, seq, at FROM conversations WHERE key = ?
+           ON CONFLICT(key) DO UPDATE SET instructions = excluded.instructions, seq = excluded.seq, at = excluded.at
+           WHERE excluded.at >= conversations.at`,
         ).run(to, from);
         sql(this.ctx.db,
           `UPDATE events SET instructions_json = json_set(instructions_json, '$.key', ?)
@@ -1022,8 +1026,11 @@ export class AdapterService {
   /**
    * Правила канала разговору аренды (0.3.5, issue #47; шапка). Получил эту версию — ничего (current). Открытое событие
    * правил ему и этой версии уже у аренды — ждёт done (pending); у прежней аренды (обрыв, перезапуск шлюза) — отдать
-   * снова этой, с redelivery. Иначе — новое событие (sent). Открытые события правил другим разговорам или другой версии
-   * закрываются (handled): разговор у аренды один. Проверенной аренде; в «стоп» и паузе — тоже (служебное, как probe).
+   * снова этой, с redelivery. Иначе — новое событие (sent). Открытые события правил другим разговорам или другой версии,
+   * которых эта аренда не отдавала, закрываются (handled): разговор у аренды один. Отданные этой арендой другим её
+   * разговорам (сессия сменилась) остаются открытыми: они в том же потоке канала, и done по ним засчитывается, — так
+   * строки состояния двух сессий в одном каталоге, чередуясь, дают не больше одного события на разговор за аренду.
+   * Проверенной аренде; в «стоп» и паузе — тоже (служебное, как probe).
    */
   private offerInstructions(lease: Lease, trigger: string): InstructionsOffer {
     const version = lease.instructions;
@@ -1032,13 +1039,13 @@ export class AdapterService {
     const rec = this.conversationInstructions(key);
     if (rec?.instructions === version) return { state: 'current', version, seq: rec.seq };
     const open = sql(this.ctx.db, "SELECT * FROM events WHERE kind = 'instructions' AND status IN ('new', 'delivered') ORDER BY seq").all() as unknown as EventRow[];
-    let same: EventRow | null = null;
-    const stale: number[] = [];
-    for (const ev of open) {
+    const fits = (ev: EventRow): boolean => {
       const info = instructionsInfo(ev.instructions_json);
-      if (same === null && info?.key === key && info.version === version) same = ev;
-      else stale.push(ev.seq);
-    }
+      return info?.key === key && info.version === version;
+    };
+    // Своё (отданное этой арендой) — первым: второе событие тому же разговору за аренду не создаётся.
+    const same = open.find((ev) => fits(ev) && this.ownsEvent(lease, ev)) ?? open.find(fits) ?? null;
+    const stale = open.filter((ev) => ev !== same && !this.ownsEvent(lease, ev)).map((ev) => ev.seq);
     const now = this.ctx.clock.now();
     const seq = transaction(this.ctx.db, () => {
       if (stale.length) sql(this.ctx.db, "UPDATE events SET status = 'handled' WHERE seq IN (SELECT value FROM json_each(?))").run(JSON.stringify(stale));
@@ -1243,6 +1250,13 @@ export class AdapterService {
       }
       if (stopped) {
         // В stopped ничего не отдаётся и ответы не уходят: срок ждёт [продолжить].
+        t.calls = lease.calls;
+        t.due = now + T;
+        continue;
+      }
+      // Правила другого разговора этой аренды (сессия сменилась, 0.3.5): событие открыто — done по нему засчитывается, —
+      // но повтором не отдаётся: у текущего разговора свои; вернулся тот разговор — срок идёт снова.
+      if (ev.kind === 'instructions' && instructionsInfo(ev.instructions_json)?.key !== conversationKey(lease)) {
         t.calls = lease.calls;
         t.due = now + T;
         continue;

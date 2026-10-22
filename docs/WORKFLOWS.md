@@ -1099,31 +1099,31 @@ same_as_before, held_ms}`, обновление — `ignored`. Изменени�
 ### Правила канала разговору агента (0.3.5) `instructions`
 
 - **Зачем.** #47: Claude Code отдаёт `instructions` MCP-сервера разговору только при первом подключении канала к нему. Продолженный (`--resume`, `start.sh --continue`) разговор новых правил не получает (описания инструментов обновляются), а разговор, начатый без канала, не получает их вовсе. Шлюз помнит, какую версию получил каждый разговор, и досылает текущую событием.
-- **Когда работает.** Только у проверенной аренды канала, который назвал версию в `hello` (`instructions_version`; `Lease.instructions`). Вызов `offerInstructionsSafe` (`adapter.ts:1073`):
-  - после `done` на пробу — `verify` (`adapter.ts:942`, `trigger: verified`);
-  - при той же сессии без пробы — `grantSameSession` (`adapter.ts:893`, `same_session`);
-  - у живой аренды: первая строка состояния (`adapter.ts:977`, `session_known`) и смена сессии (`adapter.ts:990`, `session_changed`) — `checkSession`;
-  - на `where()` агента (`onWhere`, `adapter.ts:606-611`, `where`).
+- **Когда работает.** Только у проверенной аренды канала, который назвал версию в `hello` (`instructions_version`; `Lease.instructions`). Вызов `offerInstructionsSafe` (`adapter.ts:1080`):
+  - после `done` на пробу — `verify` (`adapter.ts:944`, `trigger: verified`);
+  - при той же сессии без пробы — `grantSameSession` (`adapter.ts:895`, `same_session`);
+  - у живой аренды: первая строка состояния (`adapter.ts:979`, `session_known`) и смена сессии (`adapter.ts:992`, `session_changed`) — `checkSession`;
+  - на `where()` агента (`onWhere`, `adapter.ts:608-613`, `where`).
 - **Что берёт.**
   - Ключ разговора (`conversationKey`): `session:<session_id>` строки состояния, пока сессия неизвестна — `instance:<SHA-256 instance_id>`.
   - `conversations` — записанная версия разговора; `events` вида `instructions` в `new` или `delivered` (`instructions_json {version, key}`).
-- **Что делает.** `offerInstructions` (`adapter.ts:1028-1070`):
+- **Что делает.** `offerInstructions` (`adapter.ts:1035-1077`):
   1. Версия разговора записана и та же — ничего (`current`).
-  2. Открытое событие правил этому разговору и этой версии есть: у этой аренды — ждёт `done` (`pending`); у прежней (обрыв, перезапуск, другой процесс того же разговора) — отдаётся этой снова, с `redelivery: да`.
+  2. Открытое событие правил этому разговору и этой версии есть: у этой аренды — ждёт `done` (`pending`; своё ищется первым, `adapter.ts:1047`); у прежней (обрыв, перезапуск, другой процесс того же разговора) — отдаётся этой снова, с `redelivery: да`.
   3. Иначе — новая строка `events` вида `instructions` (`new`, без чата и метки).
-  4. Открытые события правил другим разговорам или другой версии — `handled` (`instructions_closed`): разговор у аренды один.
+  4. Открытые события правил другим разговорам или другой версии, которых эта аренда не отдавала, — `handled` (`instructions_closed`): разговор у аренды один (`adapter.ts:1048`). Отданные этой арендой прежнему её разговору (сессия сменилась) остаются открытыми: они в том же потоке канала, `done` по ним засчитывается за разговором события. За аренду разговору — не больше одного события, даже если строки состояния двух сессий в одном каталоге чередуются (тогда событий два — по одному на каждую, `done` записывает оба).
   5. Событие — мимо курсора (`PUMP_KINDS_SQL` его не берёт), сразу кадром; `pushed` и срок повтора К-5 — как у прочих. Всё это — до `pump`: правила приходят раньше накопленного. Режим не проверяется — в «стоп» и в паузе тоже.
-  6. Первая строка состояния живой аренды — `instructionsToSession` (`adapter.ts:998`): запись за процессом копируется сессии (если у неё своей нет), открытое событие процесса становится её.
-  7. `done` на событие правил (`onDone`, `adapter.ts:1688`) — `processed` и `conversations` (ключ события, версия, №) одной транзакцией; `reply` и `send_file` на него — `bad_request` (`adapter.ts:1459`, `:1569`).
-  8. Смена сессии у живой аренды: `resendForSession` событие правил не повторяет (`ev.kind === 'instructions'` — мимо) — новому разговору своё.
-- **Во что переводит.** `events` вида `instructions`: `new → delivered → processed` (после `done`) · `→ handled` (другой разговор или версия); `new` после снятия аренды другого процесса — ждёт следующей аренды того же разговора. `conversations` — версия разговора.
+  6. Первая строка состояния живой аренды — `instructionsToSession` (`adapter.ts:1000`): запись за процессом копируется сессии (если у неё своей нет или своя не новее), открытое событие процесса становится её.
+  7. `done` на событие правил (`onDone`, `adapter.ts:1702`) — `processed` и `conversations` (ключ события, версия, №) одной транзакцией; `reply` и `send_file` на него — `bad_request` (`adapter.ts:1473`, `:1583`).
+  8. Смена сессии у живой аренды: `resendForSession` событие правил не повторяет (`ev.kind === 'instructions'` — мимо) — новому разговору своё. Срок К-5 у события правил другого разговора этой аренды не повторяет его, а откладывает (`checkRedelivery`, `adapter.ts:1259`): вернулся тот разговор — срок идёт снова.
+- **Во что переводит.** `events` вида `instructions`: `new → delivered → processed` (после `done`) · `→ handled` (другой разговор или версия, отданные не этой арендой); `new` после снятия аренды другого процесса — ждёт следующей аренды того же разговора. `conversations` — версия разговора.
 - **Пределы и сроки.** Версия — первые 12 знаков SHA-256 текста `instructions` (`INSTRUCTIONS_VERSION`, `packages/channel/src/instructions.ts:55`). Повтор — как у прочих (карточка `redelivery`): через срок К-5 один раз (занятую сессию — откладывая, до `REDELIVERY_MAX_POSTPONES` раз), затем `agent_silent` без строки владельцу (это не сообщение владельца); в «стоп» срок ждёт [продолжить].
 - **Если упал посреди.** Строка события и запись — в базе. Перезапуск шлюза: отданное последней проверенной аренде процесса с `instance_id` остаётся за ним (`resetDelivered`) — тот же процесс получает его без второго события, `done` засчитывается. Диск полон при отдаче — `offerInstructionsSafe` глотает ошибку, правила придут при следующем поводе.
 - **Что видит агент.** `[№ N · правила канала, версия <12 знаков>] Текущие правила канала … Прочти и ответь done(seqs: [N]).` и через пустую строку — `instructions` целиком (`formatInstructions`, `packages/channel/src/format.ts:243`); `where()` — последней строкой «Правила канала: версия … — этот разговор их получил (№ N)» · «… событие № N … отдано и ждёт твоего done» · «… не получал: шлюз прислал событие № N …» (`instructionsWhereLine`, `strings.ts`). Владелец ничего не видит.
 - **Журнал.** `instructions_offered {seq, lease, version, conversation, had, trigger, again?}`, `instructions_closed`, `instructions_received`; в `lease_granted` — `instructions` (версия из `hello`).
 - **Код и тесты.**
   - Код: `adapter.ts` (`conversationKey`, `instructionsInfo`, `offerInstructions`, `offerInstructionsSafe`, `instructionsToSession`, `frame`, `onDone`, `onWhere`); `core/schema.ts` (v12); `packages/channel/src/instructions.ts`, `format.ts`, `gateway-client.ts`.
-  - Тесты: `m3-instructions.test.ts` (A10.1–A10.8), `format.test.ts`, `tools.test.ts` (канал: `hello` с версией и без неё на старом шлюзе), `db.test.ts` (A10.15).
+  - Тесты: `m3-instructions.test.ts` (A10.1–A10.8, A10.17, A10.18), `format.test.ts`, `tools.test.ts` (канал: `hello` с версией и без неё на старом шлюзе), `db.test.ts` (A10.15).
 
 ### Отдача событий агенту и ответы `delivery`
 
@@ -1642,7 +1642,7 @@ same_as_before, held_ms}`, обновление — `ignored`. Изменени�
     - `admission.ts:615-623`.
   - Тесты:
     - `m2-episodes.test.ts`: A2.5–A2.9, тишина по дате сообщения, [верно] — строка удалена (A10.9), [не то] после `name`, [не то] через 5 мин (A2.9) и через 5 ч, итог с чужим, `episode` в `stopped`;
-    - `m2-topic-line.test.ts`: A10.10–A10.14 — настройка выключена, отказ Telegram, все попытки, повторное нажатие, перезапуск;
+    - `m2-topic-line.test.ts`: A10.10–A10.14, A10.19 — настройка выключена, отказ Telegram, строки уже нет, все попытки, повторное нажатие, перезапуск;
     - `m3-channel.test.ts:122` (A3.8) и `m3-channel.test.ts:147` (A3.9);
     - `m5-rules.test.ts:251` (A5.6, `role_change` по кнопке) и `m5-rules.test.ts:293` (A5.7);
     - `m2-where.test.ts:194` — «итог #N не получен»;
@@ -1973,7 +1973,7 @@ same_as_before, held_ms}`, обновление — `ignored`. Изменени�
      - Не вышло за 5 минут от постановки — `dropped`, служебное остаётся в чате.
   3. Вызывает `deleteMessage` по каждой части (sender.ts:895-925).
   4. Разбирает ошибки (sender.ts:900-923):
-     - любая ошибка Telegram ниже 500, кроме 401, 404 и 429 (на деле 400 и 403: уже удалено, старше 48 ч) — `delete_failed`, считается сделанным; у строки темы — `dropped` (sender.ts:1139-1142);
+     - любая ошибка Telegram ниже 500, кроме 401, 404 и 429 (на деле 400 и 403: уже удалено, старше 48 ч) — `delete_failed`, считается сделанным; у строки темы — `dropped` (sender.ts:1143-1146), кроме «message to delete not found»: её уже нет (владелец удалил сам) — `already_gone`, без правки;
      - 429 — ждать `retry_after`, общая пауза чата; попытка засчитывается, но сам 429 удаление не бросает;
      - сеть, 5xx, 401, 404 — повтор через 1, 2, 4, 8 с, на пятой неудаче — `dropped`.
 - **Во что переводит.**
@@ -1983,8 +1983,8 @@ same_as_before, held_ms}`, обновление — `ignored`. Изменени�
     - цель не отправлялась;
     - приём не догнал закрепление;
     - внутренняя ошибка (sender.ts:329);
-    - строка темы: Telegram отказал (400, 403).
-  - Строка темы `dropped` (любая причина) — в той же записи правка `edits` без кнопок: «… — верно» (`fallback_text`) или только кнопки (`finishDeletion`, sender.ts:1062-1072).
+    - строка темы: Telegram отказал (400, 403; не «message to delete not found»).
+  - Строка темы `dropped` (любая причина) — в той же записи правка `edits` без кнопок: «… — верно» (`fallback_text`) или только кнопки (`finishDeletion`, sender.ts:1064-1074).
   - `pending` с `next_try_at`.
   - `sent` и `dropped` старше суток (от `created_at`) удаляет тикер раз в минуту (ticker.ts:99, 135-142).
 - **Пределы и сроки.**
@@ -2010,7 +2010,7 @@ same_as_before, held_ms}`, обновление — `ignored`. Изменени�
     - `m2-where.test.ts:82` — команда удалена, ответ «где мы» — через 5 минут; `:178` — команда /help удалена; `:213` — прежний «где мы» удалён при новом;
     - `m2-statusline.test.ts:54` — «бот закрепил» удалено; `:289` — сдвиг номера; `:324` — временные строки удаляются через 5 минут;
     - `m1-a06a-burst.test.ts` — удаления и закрепление идут в счёт 1/с.
-  - Сбои `deleteMessage` задаёт только `m2-topic-line.test.ts` (0.3.5: 400, 502 все пять попыток, 500 и перезапуск, ответ 1,5 с); для команд, «где мы» и «бот закрепил» — нет.
+  - Сбои `deleteMessage` задаёт только `m2-topic-line.test.ts` (0.3.5: 400, 400 «message to delete not found», 502 все пять попыток, 500 и перезапуск, ответ 1,5 с); для команд, «где мы» и «бот закрепил» — нет.
 
 ### Закреплённая строка состояния `status-line`
 
@@ -2923,7 +2923,7 @@ same_as_before, held_ms}`, обновление — `ignored`. Изменени�
 | `closed_topic` | `closed_topic` | gw/admission.ts:517 |
 | `episode_closed` · `episode_reopened` | `new` | gw/episodes.ts:168–171, 211–214 |
 | `probe` | сразу `delivered` и с `lease_id` | gw/adapter.ts:525 |
-| `instructions` (0.3.5) | `new` — и сразу кадром аренде (`delivered`) | `offerInstructions` gw/adapter.ts:1028 |
+| `instructions` (0.3.5) | `new` — и сразу кадром аренде (`delivered`) | `offerInstructions` gw/adapter.ts:1035 |
 
 **Переходы:**
 
@@ -2940,8 +2940,8 @@ same_as_before, held_ms}`, обновление — `ignored`. Изменени�
 | `new` · `delivered` → `processed` (`processed_silent = 1`) | `agentSummary` gw/control.ts:501–514 (:507–509) | только `episode_closed` этого эпизода, когда пришёл итог |
 | `probe`: `delivered` → `processed` | `onDone` gw/adapter.ts:980, 992, 1005 | `done` с кодом пробы — аренда проверена |
 | `probe`: `new` · `delivered` → `handled` | gw/adapter.ts:305 · :475 · :523 | проба осталась без ответа: старт, снятие аренды, новый `hello` |
-| `instructions`: `delivered` → `processed` | `onDone` gw/adapter.ts:1688 | `done` — версия записана за разговором (`conversations`) |
-| `instructions`: `new` · `delivered` → `handled` | `offerInstructions` gw/adapter.ts:1028 | аренде другого разговора или другой версии отдаётся своё — прежнее закрывается (`instructions_closed`) |
+| `instructions`: `delivered` → `processed` | `onDone` gw/adapter.ts:1702 | `done` — версия записана за разговором (`conversations`) |
+| `instructions`: `new` · `delivered` → `handled` | `offerInstructions` gw/adapter.ts:1035 | аренде другого разговора или другой версии отдаётся своё — прежнее, отданное не ей, закрывается (`instructions_closed`) |
 
 ```
  приём: голос, звук файлом                  распознаватель
@@ -3109,7 +3109,7 @@ same_as_before, held_ms}`, обновление — `ignored`. Изменени�
 | `pending` → `sent` | `sendDeletion` gw/sender.ts:874–928 (:926) | удалено, или Telegram ответил 400/403: «уже нет» или «нельзя» (:904–909, `already_gone`) |
 | `pending` → `dropped` | `dueDeletion` gw/sender.ts:419–424 | целевая строка `outbox` брошена или её нет |
 | `pending` → `dropped` | gw/sender.ts:881–884 | `pin_notice`: приём не догнал закрепление за 5 мин (:204) |
-| `pending` → `dropped` + правка без кнопок | gw/sender.ts:1139–1142 · `finishDeletion` :1062 | `topic` (0.3.5): Telegram отказал (400, 403) — и при любом другом `dropped` строки темы в той же записи ставится правка `fallback_text` |
+| `pending` → `dropped` + правка без кнопок | gw/sender.ts:1143–1146 · `finishDeletion` :1064 | `topic` (0.3.5): Telegram отказал (400, 403; «message to delete not found» — уже удалена, `sent` без правки) — и при любом другом `dropped` строки темы в той же записи ставится правка `fallback_text` |
 | `pending` → `dropped` | gw/sender.ts:915–917 · `run` :329 | 5-я неудача по сети, 5xx, 401 или 404 (`DELETE_ATTEMPTS` :195) · внутренняя ошибка |
 | `pending` ↻ `next_try_at` | gw/sender.ts:885–889 · :910–923 | `pin_notice` ждёт ещё 1 с · 429 по `retry_after` · сеть и 5xx с нарастающей паузой |
 | `sent` · `dropped` → строка удалена | `purgeUi` gw/ticker.ts:135–142 (:138) | старше 24 ч |

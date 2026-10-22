@@ -237,6 +237,8 @@ type Item =
 
 /** Попыток удалить сообщение при сбое сети и 5xx. */
 const DELETE_ATTEMPTS = 5;
+/** Ответ Telegram на удаление: сообщения уже нет (удалено раньше, в том числе владельцем) — удалять нечего. */
+const MESSAGE_GONE = /message to delete not found/i;
 /**
  * Служебное сообщение о закреплении удаляется не раньше, чем через столько после закрепления, и когда длинный опрос висит
  * не меньше этого: всё, что владелец написал до закрепления, уже пришло (ответ Telegram — быстрее).
@@ -1102,7 +1104,8 @@ export class Sender {
   /**
    * Удалить сообщение (или все части строки outbox). 400 и 403 — его уже нет или удалить нельзя (старше 48 часов) — не
    * беда. 429 — ждать; сеть и 5xx — повтор, до DELETE_ATTEMPTS. Служебное сообщение о закреплении — по номеру, найденному,
-   * когда приём догнал закрепление (pinNoticeTarget).
+   * когда приём догнал закрепление (pinNoticeTarget). Строка темы (0.3.5): удалить нельзя — правка без кнопок
+   * (finishDeletion); её уже нет (MESSAGE_GONE) — как у прочих.
    */
   private async sendDeletion(d: DeletionRow): Promise<void> {
     const { ctx } = this;
@@ -1135,8 +1138,9 @@ export class Sender {
         const now = ctx.clock.now();
         this.nextAllowed.set(d.chat_id, now + CHAT_SPACING_MS);
         if (err instanceof TelegramApiError && err.errorCode !== 429 && err.errorCode < 500 && err.errorCode !== 401 && err.errorCode !== 404) {
-          // Строка темы, которую Telegram удалить не дал (старше 48 часов и т. п.), — остаётся: правка без кнопок.
-          if (d.reason === 'topic') {
+          // Строка темы, которую Telegram удалить не дал (старше 48 часов и т. п.), — остаётся: правка без кнопок. Её уже
+          // нет (владелец удалил сам) — удаление засчитано, правка не нужна.
+          if (d.reason === 'topic' && !MESSAGE_GONE.test(err.description)) {
             this.finishDeletion(d, 'dropped', api.redact(err.description));
             return;
           }

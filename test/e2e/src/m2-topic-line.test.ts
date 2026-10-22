@@ -2,6 +2,7 @@
 // видит `⚙ ↪ #N · тема` с [верно] [не то]; [верно] — строка удаляется (тема и так в закреплённой строке), по умолчанию.
 // - ui.delete_confirmed_topic: false — как раньше: одна правка «… — верно» без кнопок, удаления нет;
 // - Telegram не дал удалить (старше 48 часов и т. п.) — правка «… — верно» без кнопок; причина — в журнале;
+// - строки уже нет (владелец удалил её сам) — удаление засчитано (already_gone), правки нет;
 // - удаление не прошло за все попытки (сеть, 5xx) — то же;
 // - повторное нажатие, пока удаление в пути, — «уже использовано», правок нет, удаление одно;
 // - перезапуск шлюза между нажатием и удалением — строка удалена после перезапуска (удаление — в базе, с повтором).
@@ -85,6 +86,31 @@ describe('M2 · строка темы после [верно] (0.3.5, #48)', () 
         const dropped = j.find((l) => l.ev === 'delete_dropped' && l.reason === 'topic')!;
         assert.match(String(dropped.why), /can't be deleted/);
         assert.equal(j.find((l) => l.ev === 'topic_line_kept')?.edit, 'text');
+      } finally {
+        ch.close();
+      }
+      await gw.stop();
+    } finally {
+      await s.close();
+    }
+  });
+
+  it('строки уже нет (владелец удалил её сам) — удаление засчитано, правки нет', async () => {
+    const s = await setup();
+    try {
+      const gw = await s.start();
+      const { ch } = await connectAdapter(s.home);
+      try {
+        const { line } = await topicLine(s, gw, ch, 'Почта');
+        s.fake.scenario({ method: 'deleteMessage', when: (p) => Number(p.message_id) === line.message_id, reply: reply.error(400, 'Bad Request: message to delete not found') });
+        assert.equal(await press(s, line, 'верно'), null);
+        await pump(gw, () => q1<{ status: string }>(s.home, "SELECT status FROM deletions WHERE reason = 'topic'")?.status === 'sent' || null, { what: 'удаления, засчитанного без правки' });
+        await settle(gw);
+        assert.equal(deletesOf(s, line), 1, 'одна попытка');
+        assert.deepEqual(editsOf(s, line), [], 'несуществующую строку не правят');
+        const j = readJournal(s.home);
+        assert.deepEqual(j.find((l) => l.ev === 'deleted' && l.reason === 'topic')?.already_gone, [line.message_id]);
+        assert.ok(!j.some((l) => l.ev === 'topic_line_kept' || l.ev === 'delete_dropped'), 'не «оставлена»');
       } finally {
         ch.close();
       }
