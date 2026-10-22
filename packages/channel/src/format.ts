@@ -15,10 +15,13 @@
 // instructions, meta.version.
 // Материал без слов владельца (0.3.6, issue #51): шлюз держит его окном и отдаёт вместе со словами владельца — в заголовке
 // «слова владельца — следом, № M» (слова — следующее событие), «слова владельца — раньше, № K» (сказал до материала) или
-// «слов владельца не было 2 мин» (окно кончилось без слов); meta.material = after · before · none, meta.words_seq. Своё
-// фото или файл владельца без подписи в таком событии — «чужое (фото)», а не «слово владельца + чужое (фото)»: его слов
-// в нём нет (рядом стояло бы «слов владельца не было»); meta.trust — untrusted, meta.mixed — false. Без пометки (окно 0,
-// прежний шлюз) — метка прежняя.
+// «слов владельца не было за 1 мин» (окно кончилось без слов; сколько материал на деле ждал); meta.material = after ·
+// before · none, meta.words_seq. Своё фото или файл владельца без подписи в таком событии — «чужое (фото)», а не «слово
+// владельца + чужое (фото)»: его слов в нём нет (рядом стояло бы «слов владельца не было»); meta.trust — untrusted,
+// meta.mixed — false. Без пометки (окно 0, прежний шлюз) — метка прежняя.
+// Слова владельца к материалу после окна (0.3.6): реплай на материал (reply_to.material) — «слова к материалу № N» вместо
+// «ответ на своё сообщение № N» (meta.to_material); первые слова после материала, ушедшего без слов (after_material), —
+// «слова после материала № N» или «№ N, K» (meta.after_material). Прежний шлюз полей не шлёт — заголовок прежний.
 // Здесь же — слова, которыми инструменты возвращают модели исход.
 
 import { cutGraphemes, formatDuration, formatElapsed, localTime, ownerReactionChange, ownerReactionTarget, type EventMessage, type Mode } from 'stg-core';
@@ -107,7 +110,11 @@ function forwardWords(f: NonNullable<EventMessage['forward']>): string {
   }
 }
 
-function replyWords(r: NonNullable<EventMessage['reply_to']>, currentTopic: string | null): string {
+/**
+ * Реплай. ownWords — в событии слова владельца (0.3.6): реплай на материал — «слова к материалу № N»; иначе (чужое, его
+ * материал без слов) — «ответ на материал № N».
+ */
+function replyWords(r: NonNullable<EventMessage['reply_to']>, currentTopic: string | null, ownWords: boolean): string {
   const seq = r.event_seq ?? null;
   let s: string;
   switch (r.kind) {
@@ -121,7 +128,8 @@ function replyWords(r: NonNullable<EventMessage['reply_to']>, currentTopic: stri
       s = `ответ на строку шлюза${seq !== null ? ` к № ${seq}` : ''}`;
       break;
     case 'owner':
-      s = `ответ на своё сообщение${seq !== null ? ` № ${seq}` : ''}`;
+      if (r.material) s = `${ownWords ? 'слова к материалу' : 'ответ на материал'}${seq !== null ? ` № ${seq}` : ''}`;
+      else s = `ответ на своё сообщение${seq !== null ? ` № ${seq}` : ''}`;
       break;
     default:
       s = 'ответ на сообщение, которого у шлюза нет';
@@ -230,6 +238,9 @@ function metaOf(ev: EventMessage): Record<string, string> {
     m.material = headerValue(ev.material.words, NAME_MAX);
     if (ev.material.words_seq !== null) m.words_seq = String(ev.material.words_seq);
   }
+  // Слова к материалу после окна (0.3.6): реплай на материал и первые слова после материала, ушедшего без слов.
+  if (ev.reply_to?.material && ev.reply_to.event_seq !== null && ev.reply_to.event_seq !== undefined) m.to_material = String(ev.reply_to.event_seq);
+  if (ev.after_material?.length) m.after_material = ev.after_material.join(',');
   if (ev.reaction) {
     // Реакция владельца (0.3.4): кадр вида text, а для модели — reaction.
     m.kind = 'reaction';
@@ -267,7 +278,7 @@ function formatInstructions(ev: EventMessage, meta: Record<string, string>): Cha
   return { content: `${head} ${lead}\n\n${INSTRUCTIONS}`, meta: { ...meta, version: INSTRUCTIONS_VERSION } };
 }
 
-/** Сколько материал ждал слов владельца: «40 с», «2 мин», «1 ч 05 мин». */
+/** Сколько материал ждал слов владельца (после «за»): «40 с», «2 мин», «1 ч 05 мин». */
 export function materialWait(ms: number): string {
   return ms < 60_000 ? `${Math.max(1, Math.round(ms / 1000))} с` : formatElapsed(ms);
 }
@@ -280,8 +291,13 @@ function materialWords(m: NonNullable<EventMessage['material']>): string | null 
   const n = m.words_seq !== null ? `, № ${m.words_seq}` : '';
   if (m.words === 'after') return `слова владельца — следом${n}`;
   if (m.words === 'before') return `слова владельца — раньше${n}`;
-  if (m.words === 'none') return `слов владельца не было${m.waited_ms !== null ? ` ${materialWait(m.waited_ms)}` : ''}`;
+  if (m.words === 'none') return `слов владельца не было${m.waited_ms !== null ? ` за ${materialWait(m.waited_ms)}` : ''}`;
   return null;
+}
+
+/** Слова после материала, ушедшего без слов (0.3.6, issue #51): «слова после материала № N» или «№ N, K». */
+function afterMaterialWords(seqs: readonly number[] | undefined): string | null {
+  return seqs?.length ? `слова после материала № ${seqs.join(', ')}` : null;
 }
 
 /** Событие → уведомление канала. */
@@ -321,9 +337,11 @@ export function formatEvent(ev: EventMessage): ChannelNotice {
   parts.push(trust);
   if (ev.attachments.some((a) => a.kind === 'via_bot')) parts.push('через инлайн-бота');
   if (ev.forward) parts.push(forwardWords(ev.forward));
-  if (ev.reply_to) parts.push(replyWords(ev.reply_to, ep?.topic ?? null));
+  if (ev.reply_to) parts.push(replyWords(ev.reply_to, ep?.topic ?? null, ev.trust === 'owner' && !ownerMaterialWithoutWords(ev)));
   const words = ev.material ? materialWords(ev.material) : null;
   if (words) parts.push(words);
+  const after = afterMaterialWords(ev.after_material);
+  if (after) parts.push(after);
   if (ev.redelivery) parts.push('повтор: проверь, не сделано ли уже');
   return { content: `[${parts.join(' · ')}] ${bodyOf(ev)}`, meta };
 }

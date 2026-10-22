@@ -76,7 +76,9 @@
 // Слова владельца отпускают материал в той же транзакции, что их записывает, поэтому отдача идёт по № — материал, затем
 // слова, подряд (материал, мимо которого курсор уже прошёл, — из lease.skipped первым). В кадре — поле material
 // {words: after · before · none, words_seq, waited_ms}: канал пишет по нему пометку в заголовке; прежний канал поле
-// отбрасывает.
+// отбрасывает. У первых слов владельца после материала, ушедшего без слов (material_json.followup_seq материала = № слов),
+// — поле after_material [№ материала]: «слова после материала № N» (afterMaterialField; материал ищется по эпизоду слов);
+// у реплая на материал — reply_to.material: «слова к материалу № N».
 //
 // Правила канала (0.3.5, issue #47). Claude Code передаёт instructions MCP-сервера разговору только при первом
 // подключении канала к нему: продолженный (--resume) разговор новых instructions не получает (описания инструментов
@@ -103,6 +105,7 @@ import {
   AGENT_EVENT_KINDS,
   LEASE_PING_MS,
   LEASE_PONG_TIMEOUT_MS,
+  MATERIAL_KINDS,
   MAX_MEDIA_FRAME_BYTES,
   MESSAGE_EVENT_KINDS,
   META_KEYS,
@@ -1383,7 +1386,22 @@ export class AdapterService {
       ...this.audioField(ev, attachments),
       ...mediaField(attachments),
       ...materialField(ev),
+      ...this.afterMaterialField(ev),
     };
+  }
+
+  /**
+   * Слова после материала (0.3.6, issue #51; material.ts, linkFollowup): это — первые слова владельца после материала,
+   * ушедшего без слов, — № того материала. Связь записана у материала (followup_seq); он — в эпизоде слов (по индексу
+   * эпизода, а не по всей таблице).
+   */
+  private afterMaterialField(ev: EventRow): { after_material?: number[] } {
+    if (ev.episode_id === null || ev.update_id === null || !(MATERIAL_KINDS as readonly string[]).includes(ev.kind)) return {};
+    const rows = sql(this.ctx.db,
+      `SELECT seq FROM events WHERE episode_id = ? AND seq < ? AND material_json IS NOT NULL
+         AND json_extract(material_json, '$.followup_seq') = ? ORDER BY seq`,
+    ).all(ev.episode_id, ev.seq, ev.seq) as Array<{ seq: number }>;
+    return rows.length ? { after_material: rows.map((r) => r.seq) } : {};
   }
 
   /**

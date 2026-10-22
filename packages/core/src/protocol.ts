@@ -328,6 +328,9 @@ export const ReplyToSchema = z.object({
   // Начало ответа агента, до 200 знаков, — только у kind = agent (5.4).
   excerpt: z.string().max(200).optional(),
   episode_topic: z.string().nullable().optional(),
+  // Ответ — на материал без слов владельца (0.3.6, issue #51; в пределах v1): событие с material_json или такое по
+  // классификации (core/material.ts). Канал пишет «слова к материалу № N»; прежний канал поле отбрасывает.
+  material: z.boolean().optional(),
 });
 
 export const EventMessageSchema = z.object({
@@ -410,6 +413,10 @@ export const EventMessageSchema = z.object({
       waited_ms: z.int().nonnegative().nullable(),
     })
     .optional(),
+  // Слова после материала (0.3.6, issue #51; в пределах v1): это — первые слова владельца после материала, ушедшего без
+  // слов (none), в том же чате, теме и эпизоде, не позже ui.material_followup_minutes; № того материала (одного или
+  // нескольких). Канал пишет «слова после материала № N, K»; прежний канал поле отбрасывает.
+  after_material: z.array(seq).optional(),
 });
 export type EventMessage = z.infer<typeof EventMessageSchema>;
 

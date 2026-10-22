@@ -125,8 +125,9 @@ describe('config.yaml', () => {
     assert.deepEqual(c.parcels, { dir: null, targets: ['telegram'] });
     // Окно отмены реакции (0.3.4, issue #46) — 3 с.
     assert.deepEqual(c.reactions, { hold_seconds: 3 });
-    // Окно для материала без слов владельца (0.3.6, issue #51) — 120 с.
-    assert.equal(c.ui.material_hold_seconds, 120);
+    // Окно для материала без слов владельца (0.3.6, issue #51) — 60 с; слова после материала — 10 мин.
+    assert.equal(c.ui.material_hold_seconds, 60);
+    assert.equal(c.ui.material_followup_minutes, 10);
   });
 
   it('посылки (0.3.3): parcels.dir — полный путь или с «~/»; имя цели — латиница; лишнее поле — ошибка', () => {
@@ -150,8 +151,8 @@ describe('config.yaml', () => {
     assert.match(problems(() => parseConfig({ bot: 'b', timezone: 'UTC', reactions: { hold: 3 } }, { test: false })).join(), /hold/);
   });
 
-  it('A11.12 · окно для материала без слов владельца (0.3.6, issue #51): по умолчанию 120 с; 0 — без окна; дробное и 600 — можно; больше 600 и меньше 0 — ошибка словами', () => {
-    assert.equal(parseConfig({ bot: 'b_bot', timezone: 'UTC' }, { test: false }).ui.material_hold_seconds, 120);
+  it('A11.12 · окно для материала без слов владельца (0.3.6, issue #51): по умолчанию 60 с; 0 — без окна; дробное и 600 — можно; больше 600 и меньше 0 — ошибка словами', () => {
+    assert.equal(parseConfig({ bot: 'b_bot', timezone: 'UTC' }, { test: false }).ui.material_hold_seconds, 60);
     const c = loadConfig(tmpFile('config.yaml', 'bot: b_bot\ntimezone: UTC\nui: { material_hold_seconds: 0 }\n'), { test: false });
     assert.equal(c.ui.material_hold_seconds, 0);
     assert.equal(c.ui.delete_confirmed_topic, true, 'прочие поля ui — по умолчанию');
@@ -161,6 +162,18 @@ describe('config.yaml', () => {
     assert.deepEqual(big, ['ui.material_hold_seconds — окно для материала без слов владельца — не больше 600 с; 0 — без окна']);
     assert.match(problems(() => parseConfig({ bot: 'b', timezone: 'UTC', ui: { material_hold_seconds: -1 } }, { test: false })).join(), /ui\.material_hold_seconds — окно для материала без слов владельца — не меньше 0/);
     assert.match(problems(() => parseConfig({ bot: 'b', timezone: 'UTC', ui: { material_hold_seconds: 'две минуты' } }, { test: false })).join(), /ui\.material_hold_seconds — окно для материала без слов владельца — число секунд/);
+  });
+
+  it('A11.12 · слова после материала (0.3.6, issue #51): ui.material_followup_minutes — по умолчанию 10; 0 — выключено; 120 — можно; 121, −1, дробное и строка — ошибка словами', () => {
+    assert.equal(parseConfig({ bot: 'b_bot', timezone: 'UTC' }, { test: false }).ui.material_followup_minutes, 10);
+    const c = loadConfig(tmpFile('config.yaml', 'bot: b_bot\ntimezone: UTC\nui: { material_followup_minutes: 0 }\n'), { test: false });
+    assert.deepEqual([c.ui.material_followup_minutes, c.ui.material_hold_seconds], [0, 60], 'окно — по умолчанию');
+    assert.equal(parseConfig({ bot: 'b_bot', timezone: 'UTC', ui: { material_followup_minutes: 120 } }, { test: false }).ui.material_followup_minutes, 120);
+    const big = problems(() => loadConfig(tmpFile('config.yaml', 'bot: b_bot\ntimezone: UTC\nui: { material_followup_minutes: 121 }\n'), { test: false }));
+    assert.deepEqual(big, ['ui.material_followup_minutes — слова после материала — не больше 120 мин; 0 — выключено']);
+    assert.match(problems(() => parseConfig({ bot: 'b', timezone: 'UTC', ui: { material_followup_minutes: -1 } }, { test: false })).join(), /ui\.material_followup_minutes — слова после материала — не меньше 0/);
+    assert.match(problems(() => parseConfig({ bot: 'b', timezone: 'UTC', ui: { material_followup_minutes: 2.5 } }, { test: false })).join(), /ui\.material_followup_minutes — слова после материала — целое число минут/);
+    assert.match(problems(() => parseConfig({ bot: 'b', timezone: 'UTC', ui: { material_followup_minutes: 'десять' } }, { test: false })).join(), /ui\.material_followup_minutes — слова после материала — целое число минут/);
   });
 
   it('ошибки — по-русски, с полем', () => {

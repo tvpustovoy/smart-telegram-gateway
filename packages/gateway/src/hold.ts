@@ -4,7 +4,7 @@
 //   снятую, агент не получает — как отмена отправки письма в почте. Окно короткое (не больше 3 с), чтобы не мешать
 //   разговору в чате. Склейка и отмена в окне — в приёме (admission.ts, handleReaction);
 // - окно для материала без слов владельца (0.3.6; issue #51): пересылка, файл, фото без подписи ждут его слов в том же
-//   чате (до 600 с, по умолчанию 120). Слова пришли — материал отпускает приём (material.ts, releaseByWords) в той же
+//   чате (до 600 с, по умолчанию 60). Слова пришли — материал отпускает приём (material.ts, releaseByWords) в той же
 //   транзакции, что записывает слова; слова — голосовое в распознавании — отпускает распознаватель вместе с ним
 //   (material.ts, settleTranscribed). Здесь — только конец окна: материал уходит с пометкой «слов владельца не было».
 //
@@ -27,6 +27,11 @@ export function reactionHoldMs(ctx: Pick<Ctx, 'config'>): number {
 /** Окно для материала без слов владельца из config.yaml (ui.material_hold_seconds), мс; 0 — без окна. */
 export function materialHoldMs(ctx: Pick<Ctx, 'config'>): number {
   return Math.max(0, Math.round((ctx.config.ui?.material_hold_seconds ?? 0) * 1000));
+}
+
+/** Срок «слов после материала» из config.yaml (ui.material_followup_minutes), мс; 0 — выключено. */
+export function materialFollowupMs(ctx: Pick<Ctx, 'config'>): number {
+  return Math.max(0, Math.round((ctx.config.ui?.material_followup_minutes ?? 0) * 60_000));
 }
 
 /**

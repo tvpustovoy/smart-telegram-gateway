@@ -347,7 +347,7 @@ describe('канал: инструменты, instructions, сроки', () => {
     }
   });
 
-  it('A11.9 · материал без слов владельца (0.3.6, #51): пометка в заголовке — «слова владельца — следом, № M», «— раньше, № K», «слов владельца не было 2 мин»; meta.material и meta.words_seq; своё фото без подписи — «чужое (фото)»; без поля — как раньше', () => {
+  it('A11.9 · материал без слов владельца (0.3.6, #51): пометка в заголовке — «слова владельца — следом, № M», «— раньше, № K», «слов владельца не было за 2 мин»; meta.material и meta.words_seq; своё фото без подписи — «чужое (фото)»; без поля — как раньше', () => {
     const fwd = ev({ seq: 21, trust: 'untrusted', text: 'Статья о сне', forward: { origin_type: 'channel', from_name: 'Наука' } });
     const after = formatEvent({ ...fwd, material: { words: 'after', words_seq: 22, waited_ms: null } });
     assert.equal(after.content, '[№ 21 · эп. 42 · чужое · переслано из канала «Наука» · слова владельца — следом, № 22] Статья о сне');
@@ -356,17 +356,17 @@ describe('канал: инструменты, instructions, сроки', () => {
     const before = formatEvent({ ...fwd, material: { words: 'before', words_seq: 20, waited_ms: null } });
     assert.ok(before.content.startsWith('[№ 21 · эп. 42 · чужое · переслано из канала «Наука» · слова владельца — раньше, № 20] '), before.content);
     const none = formatEvent({ ...fwd, material: { words: 'none', words_seq: null, waited_ms: 125_000 } });
-    assert.ok(none.content.startsWith('[№ 21 · эп. 42 · чужое · переслано из канала «Наука» · слов владельца не было 2 мин] '), none.content);
+    assert.ok(none.content.startsWith('[№ 21 · эп. 42 · чужое · переслано из канала «Наука» · слов владельца не было за 2 мин] '), none.content);
     assert.equal(none.meta.material, 'none');
     assert.equal(none.meta.words_seq, undefined);
     // Фото без подписи, повтор: пометка — до «повтор».
     const photo = formatEvent(
       ev({ seq: 30, kind: 'photo', text: null, mixed: true, attachments: [{ kind: 'photo', trust: 'untrusted' }], redelivery: true, material: { words: 'none', words_seq: null, waited_ms: 40_000 } }),
     );
-    assert.ok(photo.content.includes('· слов владельца не было 40 с · повтор: проверь, не сделано ли уже]'), photo.content);
+    assert.ok(photo.content.includes('· слов владельца не было за 40 с · повтор: проверь, не сделано ли уже]'), photo.content);
     // Своё фото владельца без подписи с пометкой окна — «чужое (фото)», а не «слово владельца + чужое (фото)» рядом со
     // «слов владельца не было»; meta.trust — untrusted, meta.mixed — false. Без пометки (окно 0) — метка прежняя.
-    assert.equal(photo.content, '[№ 30 · эп. 42 · фото · чужое (фото) · слов владельца не было 40 с · повтор: проверь, не сделано ли уже] (без подписи; содержимое файла у шлюза)');
+    assert.equal(photo.content, '[№ 30 · эп. 42 · фото · чужое (фото) · слов владельца не было за 40 с · повтор: проверь, не сделано ли уже] (без подписи; содержимое файла у шлюза)');
     assert.deepEqual([photo.meta.trust, photo.meta.mixed], ['untrusted', 'false']);
     const doc = formatEvent(ev({ seq: 31, kind: 'document', text: null, mixed: true, attachments: [{ kind: 'document', trust: 'untrusted' }], material: { words: 'after', words_seq: 32, waited_ms: null } }));
     assert.ok(doc.content.startsWith('[№ 31 · эп. 42 · файл · чужое (файл) · слова владельца — следом, № 32] '), doc.content);
@@ -381,6 +381,39 @@ describe('канал: инструменты, instructions, сроки', () => {
     assert.equal(formatEvent(fwd).meta.material, undefined);
   });
 
+  it('A11.23, A11.24 · слова владельца к материалу после окна (0.3.6, #51): реплай на материал — «слова к материалу № N» (meta.to_material); первые слова после материала без слов — «слова после материала № N» («№ N, K»; meta.after_material); без полей — как раньше', () => {
+    // Реплай владельца на свой материал (в любое время): вместо «ответ на своё сообщение № N».
+    const toMat = formatEvent(ev({ seq: 40, text: 'сохрани это в заметки', reply_to: { kind: 'owner', event_seq: 21, material: true } }));
+    assert.equal(toMat.content, '[№ 40 · эп. 42 · слово владельца · слова к материалу № 21] сохрани это в заметки');
+    assert.deepEqual([toMat.meta.reply_to, toMat.meta.to_material], ['owner:21', '21']);
+    // Голосовое — тоже слова; реплай на сообщение, которое не материал, — как раньше.
+    const voice = formatEvent(ev({ seq: 41, kind: 'voice', text: null, transcript: 'это перескажи', reply_to: { kind: 'owner', event_seq: 21, material: true } }));
+    assert.ok(voice.content.startsWith('[№ 41 · эп. 42 · голосовое · слово владельца · слова к материалу № 21] '), voice.content);
+    const plainReply = formatEvent(ev({ seq: 42, reply_to: { kind: 'owner', event_seq: 39 } }));
+    assert.ok(plainReply.content.includes('· ответ на своё сообщение № 39]'), plainReply.content);
+    assert.equal(plainReply.meta.to_material, undefined);
+    // Не слова владельца (чужое, его фото без подписи с пометкой окна) — «ответ на материал», без «слова».
+    const foreign = formatEvent(ev({ seq: 43, trust: 'untrusted', subject: { id: 'anya', who: 'subject' }, reply_to: { kind: 'owner', event_seq: 21, material: true } }));
+    assert.ok(foreign.content.includes('· чужое · ответ на материал № 21]'), foreign.content);
+    const bare = formatEvent(
+      ev({ seq: 44, kind: 'photo', text: null, mixed: true, attachments: [{ kind: 'photo', trust: 'untrusted' }], reply_to: { kind: 'owner', event_seq: 21, material: true }, material: { words: 'after', words_seq: 45, waited_ms: null } }),
+    );
+    assert.ok(bare.content.includes('· чужое (фото) · ответ на материал № 21 · слова владельца — следом, № 45]'), bare.content);
+    // Реплай в окне: материал «слова владельца — следом, № M», слова — «слова к материалу № N»: пометки не спорят.
+    const inWindow = formatEvent(ev({ seq: 46, text: 'вот это', reply_to: { kind: 'owner', event_seq: 45, material: true } }));
+    assert.equal(inWindow.content, '[№ 46 · эп. 42 · слово владельца · слова к материалу № 45] вот это');
+    // Слова после материала, ушедшего без слов: один и несколько; пометка — после реплая и пометки окна, до «повтор».
+    const after = formatEvent(ev({ seq: 47, kind: 'voice', text: null, transcript: 'сохрани в заметки', after_material: [21] }));
+    assert.equal(after.content, '[№ 47 · эп. 42 · голосовое · слово владельца · слова после материала № 21] сохрани в заметки');
+    assert.equal(after.meta.after_material, '21');
+    const two = formatEvent(ev({ seq: 48, redelivery: true, reply_to: { kind: 'agent', event_seq: 21 }, after_material: [21, 23] }));
+    assert.ok(two.content.startsWith('[№ 48 · эп. 42 · слово владельца · ответ на твоё сообщение к № 21 · слова после материала № 21, 23 · повтор: проверь, не сделано ли уже] '), two.content);
+    assert.equal(two.meta.after_material, '21,23');
+    // Пустой список и кадр без полей — заголовок прежний.
+    assert.equal(formatEvent(ev({ after_material: [] })).content, formatEvent(ev()).content);
+    assert.equal(formatEvent(ev()).meta.after_material, undefined);
+  });
+
   it('A11.10 · instructions (0.3.6, #51): материал — отвечай на слова; без слов — суть в 3–5 строк и один вопрос; done — материал со словами владельца; пометки в заголовке; эпизод — сомневаешься, оставайся; версия — от нового текста', () => {
     assert.ok(
       INSTRUCTIONS.includes(
@@ -388,7 +421,12 @@ describe('канал: инструменты, instructions, сроки', () => {
       ),
     );
     assert.ok(INSTRUCTIONS.includes('«слова владельца — следом, № M»'));
-    assert.ok(INSTRUCTIONS.includes('«слов владельца не было N мин»'));
+    assert.ok(INSTRUCTIONS.includes('«слов владельца не было за N мин»'));
+    // Слова к материалу после окна (A11.23, A11.24): правила дословно и что значат пометки.
+    assert.ok(INSTRUCTIONS.includes('Ответ владельца на материал — его слова к этому материалу, в любое время: отвечай на них, держа материал в виду.'));
+    assert.ok(INSTRUCTIONS.includes('Слова после материала № N — это его слова к материалу: отвечай на них, держа материал в виду; короткая суть уже ушла, не повторяй её.'));
+    assert.ok(INSTRUCTIONS.includes('«слова к материалу № N» — он ответил реплаем на материал № N'));
+    assert.ok(INSTRUCTIONS.includes('«слова после материала № N» — первые его слова после материала № N, ушедшего без слов'));
     // «— раньше» — материал не удерживался: слова пришли до него, отдан сразу.
     assert.ok(INSTRUCTIONS.includes('«слова владельца — раньше, № K» — его слова пришли до материала, это событие № K, и материал шлюз отдал сразу'));
     // done не спорит с правилом о материале: материал без слов владельца — не done, а суть и вопрос.

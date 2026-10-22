@@ -102,7 +102,7 @@ export interface HomeOptions {
   /**
    * Окно для материала без слов владельца (0.3.6, issue #51), ui.material_hold_seconds. По умолчанию в тестах — 0: тесты
    * до 0.3.6 шлют фото, файлы и пересылки без подписи и ждут их у агента сразу. null — строки нет, окно по умолчанию
-   * шлюза (120 с; m11-material-hold). Своя секция ui: в extraConfig — строки тоже нет.
+   * шлюза (60 с; m11-material-hold). Своя секция ui: в extraConfig — строки тоже нет.
    */
   materialHoldSeconds?: number | null;
 }

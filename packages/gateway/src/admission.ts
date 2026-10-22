@@ -34,7 +34,10 @@
 // владельца получает роль — материал (пересылка, инлайн-бот, фото, файл, видео без подписи: held до его слов или конца
 // окна; слова были раньше в пределах окна — сразу), слова (текст, подпись, голосовое, свой кружок или аудиофайл; правка
 // удерживаемого материала, в которой есть слова: отпускают весь удерживаемый материал чата и темы), правка удерживаемого
-// материала без слов (ждёт вместе с исходным) или никакую. После COMMIT — таймер окна.
+// материала без слов (ждёт вместе с исходным) или никакую. После COMMIT — таймер окна. После окна: реплай на материал
+// (в любое время) — reply_to.material («слова к материалу № N»); первые слова владельца после материала, ушедшего без
+// слов, в том же чате, теме и эпизоде, не позже ui.material_followup_minutes, — linkFollowup («слова после материала
+// № N»); реплай на материал — приоритет, пометки «после» у него нет.
 // Команда и нажатие (5.6, 5.9) — события handled; их действие (режим, ход, эпизод, строка владельцу) исполняется в той
 // же главной транзакции (control.ts): упал после COMMIT — команда уже исполнена, повтор обновления её не повторит.
 // После COMMIT — кадр mode переходнику, отдача событий, answerCallbackQuery с текстом отказа (если отказ).
@@ -94,7 +97,18 @@ import type { Control, Effects } from './control.js';
 import type { Directory, Resolved } from './directory.js';
 import type { Episodes } from './episodes.js';
 import { reactionHoldMs } from './hold.js';
-import { admitMaterial, extendWindow, isHeldMaterial, joinWindow, releaseByWords, type MaterialDecision, type MaterialPlace, type WordsRelease } from './material.js';
+import {
+  admitMaterial,
+  extendWindow,
+  isHeldMaterial,
+  isMaterialEvent,
+  joinWindow,
+  linkFollowup,
+  releaseByWords,
+  type MaterialDecision,
+  type MaterialPlace,
+  type WordsRelease,
+} from './material.js';
 
 // Набор реакций без учёта порядка: у Premium их несколько, Telegram может вернуть их в другом порядке.
 const sameEmoji = (a: readonly string[], b: readonly string[]): boolean => [...a].sort().join(' ') === [...b].sort().join(' ');
@@ -124,6 +138,8 @@ export interface ReplyTo {
   event_seq: number | null;
   excerpt?: string;
   episode_topic?: string | null;
+  /** Ответ — на материал без слов владельца (0.3.6, issue #51): «слова к материалу № N». */
+  material?: boolean;
 }
 
 interface Draft {
@@ -647,7 +663,10 @@ export class Admission {
     return false;
   }
 
-  /** Реплай владельца в этом же чате (5.5а): на сообщение бота — по messages_out, на своё — по events. */
+  /**
+   * Реплай владельца в этом же чате (5.5а): на сообщение бота — по messages_out, на своё — по events. Своё — материал без
+   * слов владельца (0.3.6, issue #51; material.ts, isMaterialEvent) — material: true: агент видит «слова к материалу № N».
+   */
   lookupReplyTo(chatId: number, messageId: number): ReplyTo {
     const db = this.ctx.db;
     const topicOf = (seq: number | null): string | null => {
@@ -673,7 +692,7 @@ export class Admission {
          AND kind NOT IN ('callback', 'edit') ORDER BY seq LIMIT 1`,
       )
       .get(chatId, messageId) as { seq: number } | undefined;
-    if (ev) return { kind: 'owner', event_seq: ev.seq, episode_topic: topicOf(ev.seq) };
+    if (ev) return { kind: 'owner', event_seq: ev.seq, episode_topic: topicOf(ev.seq), ...(isMaterialEvent(this.ctx, ev.seq) ? { material: true } : {}) };
     // Старое сообщение, до шлюза: текст из Telegram не вкладывается.
     return { kind: 'unknown', event_seq: null };
   }
@@ -940,12 +959,14 @@ export class Admission {
           decision.material ? JSON.stringify(decision.material) : null,
         );
       const seq = Number(r.lastInsertRowid);
-      // Окно материала (0.3.6): материал в окне — окно прочих в этом чате от него; слова — удерживаемый материал с ними.
-      const material: MaterialOutcome = { decision, extended: [], words: null, joined: role === 'edit_material' && decision.material ? d.editOf : null };
+      // Окно материала (0.3.6): материал в окне — окно прочих в этом чате от него; слова — удерживаемый материал с ними;
+      // новые слова (не правка, не реплай на материал) — первые после материала, ушедшего без слов: «слова после материала».
+      const material: MaterialOutcome = { decision, extended: [], words: null, joined: role === 'edit_material' && decision.material ? d.editOf : null, followup: [] };
       if (role === 'material' && decision.material?.state === 'waiting' && decision.holdUntil !== null) material.extended = extendWindow(this.ctx, place, seq, decision.holdUntil);
       else if (role === 'words') {
         const w = releaseByWords(this.ctx, place, seq, d.status, now);
         if (w.released.length || w.linked.length) material.words = w;
+        if (d.kind !== 'edit' && !d.replyTo?.material) material.followup = linkFollowup(this.ctx, place, seq, episodeId, now);
       }
       sql(db, "UPDATE updates SET status = 'admitted', raw_json = NULL WHERE update_id = ?").run(d.updateId);
       if (d.receipt) {
@@ -997,7 +1018,7 @@ export class Admission {
         text: d.text,
         ...(d.attachments?.length ? { attachments: d.attachments.map((a) => `${a.kind}:${a.trust}`) } : {}),
         ...(d.forward ? { forward: d.forward.origin_type } : {}),
-        ...(d.replyTo ? { reply_to: d.replyTo.kind, reply_to_seq: d.replyTo.event_seq } : {}),
+        ...(d.replyTo ? { reply_to: d.replyTo.kind, reply_to_seq: d.replyTo.event_seq, ...(d.replyTo.material ? { reply_to_material: true } : {}) } : {}),
         ...(d.kind === 'edit' ? { edit_of: d.editOf } : {}),
         ...(d.command ? { command: d.command } : {}),
         ...(d.rawRef ? { raw_ref: d.rawRef } : {}),
@@ -1012,6 +1033,8 @@ export class Admission {
           : material.decision.material?.state === 'before'
             ? { material: 'words_before', words_seq: material.decision.material.words_seq }
             : {}),
+        // Слова после материала, ушедшего без слов (0.3.6): № того материала.
+        ...(material.followup.length ? { after_material: material.followup } : {}),
       });
     }
     // Слова владельца отпустили удерживаемый материал (0.3.6): отдан с ними — или ждёт, пока слова распознаются.
@@ -1049,4 +1072,6 @@ interface MaterialOutcome {
   words: WordsRelease | null;
   /** Это — правка удерживаемого материала без слов: № исходного, с которым она ждёт. */
   joined: number | null;
+  /** Это — первые слова владельца после материала, ушедшего без слов: № того материала (linkFollowup). */
+  followup: number[];
 }

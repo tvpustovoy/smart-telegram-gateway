@@ -1,7 +1,8 @@
 // M11 · окно для материала без слов владельца (0.3.6, issue #51) на поддельных Telegram, провайдере голоса и переходнике.
 // Материал — сообщение владельца без его слов (пересылка, фото, файл, видео без подписи, инлайн-бот): шлюз держит его
-// окном ui.material_hold_seconds (по умолчанию 120 с; здесь — без строки в config.yaml) и отдаёт агенту вместе со словами
-// владельца, одним заходом: материал, затем слова.
+// окном ui.material_hold_seconds (по умолчанию 60 с; здесь — без строки в config.yaml) и отдаёт агенту вместе со словами
+// владельца, одним заходом: материал, затем слова. После окна — слова к материалу: реплай на него и первые слова после
+// материала, ушедшего без слов (ui.material_followup_minutes, по умолчанию 10 мин).
 // A11.1 материал + слова в окне — подряд, материал с пометкой «слова — следом, № M»; 👀 на материале — только после отдачи
 // · A11.2 материал без слов — по окну, с пометкой «слов не было», сколько ждал · A11.3 несколько материалов подряд — одно
 // окно от последнего; слова отпускают все · A11.4 слова раньше материала, в пределах окна, — материал сразу, без окна; за
@@ -12,7 +13,9 @@
 // распознаётся) · A11.17 правка удерживаемого материала (дописал подпись) — слова · A11.19 участник по правилам — окна
 // нет · A11.20 правка удерживаемого материала без слов (живое место, фото заменено без подписи) — не слова: ждёт с
 // исходным, окно не сдвигает · A11.21 «новая тема» в окне — материал агенту раньше «эпизод закрыт», с пометкой «слов не
-// было» · A11.22 прежний сценарий картинки (media(seq), 👀 → 👌) с окном по умолчанию.
+// было» · A11.22 прежний сценарий картинки (media(seq), 👀 → 👌) с окном по умолчанию · A11.23 реплай на материал — «слова к
+// материалу № N» (после окна, в окне, окно 0 — по классификации) · A11.24 слова после материала — первые слова владельца
+// после материала без слов в пределах 10 мин (голосовое — по приходу; перезапуск; 0 — выключено).
 
 import assert from 'node:assert/strict';
 import { after, before, describe, it } from 'node:test';
@@ -92,12 +95,12 @@ function helpers(b: Bench) {
   }
   const journal = (ev: string, seq: number): Record<string, unknown> | undefined => readJournal(b.s.home).find((l) => l.ev === ev && l.seq === seq);
   /** Слова владельца из прошлого теста старше окна: следующий материал — снова в окно (правило «слова раньше»). */
-  const quiet = (): Promise<void> => advance(121);
+  const quiet = (): Promise<void> => advance(61);
   return { seqOf, row, given, push, forward, photo, says, advance, held, inOneGo, finish, journal, quiet };
 }
 
-async function start(b: Bench, materialHoldSeconds: number | null = null): Promise<void> {
-  b.s = await setup({ home: { materialHoldSeconds, rules: RULES } });
+async function start(b: Bench, materialHoldSeconds: number | null = null, extraConfig?: string): Promise<void> {
+  b.s = await setup({ home: { materialHoldSeconds, rules: RULES, ...(extraConfig ? { extraConfig } : {}) } });
   b.gw = await b.s.start();
   ({ ch: b.ch, turn: b.turn } = await connectAdapter(b.s.home));
 }
@@ -108,20 +111,20 @@ async function stop(b: Bench): Promise<void> {
   await b.s?.close();
 }
 
-describe('M11 · окно для материала без слов владельца (0.3.6, #51): по умолчанию 120 с', () => {
+describe('M11 · окно для материала без слов владельца (0.3.6, #51): по умолчанию 60 с', () => {
   const b = {} as Bench;
   const h = helpers(b);
   before(() => start(b));
   after(() => stop(b));
 
-  it('A11.1: фото без подписи — в окне (held, hold_until = запись + 120 с, 👀 нет); слова владельца через 30 с — фото и слова агенту подряд, фото с пометкой «слова — следом, № M»; 👀 — после отдачи', async () => {
+  it('A11.1: фото без подписи — в окне (held, hold_until = запись + 60 с, 👀 нет); слова владельца через 30 с — фото и слова агенту подряд, фото с пометкой «слова — следом, № M»; 👀 — после отдачи', async () => {
     const pu = h.photo();
     const p = await h.seqOf(pu);
     const r = h.row(p);
-    assert.equal(r.hold_until! - r.created_at, 120_000);
-    assert.deepEqual(r.material, { state: 'waiting', window_ms: 120_000 });
+    assert.equal(r.hold_until! - r.created_at, 60_000);
+    assert.deepEqual(r.material, { state: 'waiting', window_ms: 60_000 });
     const inJ = h.journal('in', p);
-    assert.deepEqual([inJ?.material, inJ?.hold_ms], ['held', 120_000]);
+    assert.deepEqual([inJ?.material, inJ?.hold_ms], ['held', 60_000]);
     await h.advance(30);
     h.held(p, 'через 30 с');
     assert.deepEqual(reactionsOf(b.s.fake, pu), [], '👀 нет: агент материал ещё не видел');
@@ -132,7 +135,7 @@ describe('M11 · окно для материала без слов владел
     h.inOneGo([p, w]);
     assert.deepEqual(mat.material, { words: 'after', words_seq: w, waited_ms: null });
     assert.equal(words.material, undefined, 'у слов пометки нет');
-    assert.deepEqual(h.row(p).material, { state: 'after', window_ms: 120_000, words_seq: w });
+    assert.deepEqual(h.row(p).material, { state: 'after', window_ms: 60_000, words_seq: w });
     const rel = h.journal('material_released', p);
     assert.deepEqual([rel?.words, rel?.words_seq, rel?.held_ms], ['after', w, 30_000]);
     // 👀 — когда агент увидел: на фото — только теперь, после окна.
@@ -141,34 +144,34 @@ describe('M11 · окно для материала без слов владел
     await b.ch.done([p, w]);
   });
 
-  it('A11.2: пересылка без слов — 119 с ещё в окне; 120 с — агенту с пометкой «слов владельца не было» и сколько ждала', async () => {
+  it('A11.2: пересылка без слов — 59 с ещё в окне; 60 с — агенту с пометкой «слов владельца не было» и сколько ждала', async () => {
     await h.quiet();
     const f = await h.seqOf(h.forward('Исследование: сон и память'));
-    await h.advance(119, 17);
-    h.held(f, 'через 119 с');
+    await h.advance(59, 17);
+    h.held(f, 'через 59 с');
     await h.advance(1);
     const e = await b.ch.waitEvent(f);
-    assert.deepEqual(e.material, { words: 'none', words_seq: null, waited_ms: 120_000 });
+    assert.deepEqual(e.material, { words: 'none', words_seq: null, waited_ms: 60_000 });
     assert.equal(e.trust, 'untrusted');
-    assert.deepEqual([h.journal('material_released', f)?.words, h.journal('material_released', f)?.held_ms], ['none', 120_000]);
-    assert.deepEqual(h.row(f).material, { state: 'none', window_ms: 120_000, waited_ms: 120_000 });
+    assert.deepEqual([h.journal('material_released', f)?.words, h.journal('material_released', f)?.held_ms], ['none', 60_000]);
+    assert.deepEqual(h.row(f).material, { state: 'none', window_ms: 60_000, waited_ms: 60_000 });
     await h.finish([f]);
   });
 
   it('A11.3: несколько материалов подряд — одно окно от последнего; без слов — выходят вместе; затем три материала и слова — все со словами', async () => {
     await h.quiet();
     const a = await h.seqOf(h.forward('первая ссылка'));
-    await h.advance(60);
+    await h.advance(30);
     const c = await h.seqOf(h.photo());
     assert.equal(h.row(a).hold_until, h.row(c).hold_until, 'окно первого — от последнего материала');
     assert.deepEqual(h.journal('in', c)?.extended, [a]);
-    await h.advance(90);
-    h.held(a, 'через 150 с от первого');
-    await h.advance(30);
+    await h.advance(45);
+    h.held(a, 'через 75 с от первого');
+    await h.advance(15);
     await b.ch.waitEvent(c);
     h.inOneGo([a, c]);
     const ea = b.ch.events().find((e) => e.seq === a)!;
-    assert.deepEqual(ea.material, { words: 'none', words_seq: null, waited_ms: 180_000 }, 'первый ждал 3 минуты');
+    assert.deepEqual(ea.material, { words: 'none', words_seq: null, waited_ms: 90_000 }, 'первый ждал полторы минуты');
     await h.finish([a, c]);
     // Три материала и слова: все — со словами, по порядку.
     const m1 = await h.seqOf(h.forward('раз'));
@@ -183,7 +186,7 @@ describe('M11 · окно для материала без слов владел
     await h.finish([m1, m2, m3, w]);
   });
 
-  it('A11.4: слова раньше материала, в пределах окна, — материал сразу (пометка «слова — раньше, № K»); слова старше окна — материал в окно', async () => {
+  it('A11.4: слова раньше материала, в пределах окна (через 40 с), — материал сразу (пометка «слова — раньше, № K»); слова старше окна — материал в окно', async () => {
     await h.quiet();
     const w = await h.seqOf(h.says('сейчас пришлю статью — перескажи'));
     await b.ch.waitEvent(w);
@@ -194,10 +197,10 @@ describe('M11 · окно для материала без слов владел
     assert.equal(h.row(f).hold_until, null, 'окна нет');
     assert.deepEqual([h.journal('in', f)?.material, h.journal('in', f)?.words_seq], ['words_before', w]);
     await h.finish([w, f]);
-    await h.advance(121);
+    await h.advance(61);
     const g = await h.seqOf(h.forward('Ещё статья'));
-    h.held(g, 'слова были 121 с назад');
-    await h.advance(120);
+    h.held(g, 'слова были 61 с назад');
+    await h.advance(60);
     await b.ch.waitEvent(g);
     await h.finish([g]);
   });
@@ -211,15 +214,15 @@ describe('M11 · окно для материала без слов владел
     };
     await h.quiet();
     const f = await h.seqOf(h.forward('до перезапуска'));
-    await h.advance(60);
+    await h.advance(30);
     await restart();
     h.held(f, 'после перезапуска');
-    await h.advance(59);
-    h.held(f, 'через 119 с');
+    await h.advance(29);
+    h.held(f, 'через 59 с');
     await h.advance(1);
     const e = await b.ch.waitEvent(f);
     assert.equal(e.material?.words, 'none');
-    assert.equal(h.journal('material_released', f)?.held_ms, 120_000);
+    assert.equal(h.journal('material_released', f)?.held_ms, 60_000);
     await h.finish([f]);
     const g = await h.seqOf(h.photo());
     await h.advance(10);
@@ -248,7 +251,7 @@ describe('M11 · окно для материала без слов владел
     const line = await waitSent(b.s, b.gw, (m) => m.text === '⚙ Остановлен, сообщения сохраняю' && buttonsOf(m).some((x) => x.text === 'продолжить'), 'строки «стоп»');
     await b.ch.waitMode('stopped');
     h.held(f, 'команда «стоп» — не слова');
-    await h.advance(120);
+    await h.advance(60);
     assert.equal(h.row(f).status, 'new', 'окно прошло и в «стоп»');
     assert.ok(!h.given(f), 'в «стоп» не отдан');
     assert.equal(await press(b.s, line, 'продолжить'), null);
@@ -304,16 +307,16 @@ describe('M11 · окно для материала без слов владел
     await h.advance(30);
     const pe = await h.seqOf(h.push(b.s.fake.builder.edited(pu, '')));
     h.held(pe, 'правка фото без подписи');
-    await h.advance(89);
-    h.held(p, 'через 119 с');
+    await h.advance(29);
+    h.held(p, 'через 59 с');
     await h.advance(1);
     await b.ch.waitEvent(pe);
     h.inOneGo([p, pe]);
     assert.deepEqual(
       [b.ch.events().find((e) => e.seq === p)?.material, b.ch.events().find((e) => e.seq === pe)?.material],
       [
-        { words: 'none', words_seq: null, waited_ms: 120_000 },
-        { words: 'none', words_seq: null, waited_ms: 90_000 },
+        { words: 'none', words_seq: null, waited_ms: 60_000 },
+        { words: 'none', words_seq: null, waited_ms: 30_000 },
       ],
     );
     await h.finish([p, pe]);
@@ -346,6 +349,9 @@ describe('M11 · окно для материала без слов владел
     const w = await h.seqOf(h.says('глянь, что там с ценами'));
     const ew = await b.ch.waitEvent(w);
     assert.notEqual(ew.episode?.id, ep, 'слова — в новом эпизоде');
+    // Слова после материала — только в том же эпизоде (A11.24): материал остался в прежнем — пометки нет.
+    assert.equal(ew.after_material, undefined);
+    assert.equal(h.row(f).material?.followup_seq, undefined);
     assert.equal(readJournal(b.s.home).filter((l) => l.ev === 'material_released' && l.seq === f).length, 1, 'материал отдан один раз');
     await h.finish([w]);
   });
@@ -406,6 +412,154 @@ describe('M11 · окно выключено: ui.material_hold_seconds: 0 (0.3.6
     assert.equal(readJournal(b.s.home).filter((l) => String(l.ev).startsWith('material_')).length, 0);
     await h.finish([f, p]);
   });
+
+  it('A11.23 (окно 0): реплай на пересылку — материал по классификации (material_json нет): reply_to.material; реплай на своё слово — без признака; слов после материала нет — окна не было', async () => {
+    const fu = h.forward('Статья');
+    const f = await h.seqOf(fu);
+    await b.ch.waitEvent(f);
+    await h.finish([f]);
+    const r = await h.seqOf(h.push(b.s.fake.builder.replyTo(OWNER, 'перескажи', fu.message!)));
+    const er = await b.ch.waitEvent(r);
+    assert.deepEqual(er.reply_to, { kind: 'owner', event_seq: f, episode_topic: er.episode?.topic, material: true });
+    assert.equal(h.journal('in', r)?.reply_to_material, true);
+    const wu = h.says('купить хлеба');
+    const w = await h.seqOf(wu);
+    await b.ch.waitEvent(w);
+    const r2 = await h.seqOf(h.push(b.s.fake.builder.replyTo(OWNER, 'и молока', wu.message!)));
+    const er2 = await b.ch.waitEvent(r2);
+    assert.equal(er2.reply_to?.material, undefined, 'своё слово — не материал');
+    assert.deepEqual([er.after_material, er2.after_material], [undefined, undefined]);
+    await h.finish([r, w, r2]);
+  });
+});
+
+describe('M11 · слова владельца к материалу после окна (0.3.6, #51): реплай на материал, слова после материала', () => {
+  const b = {} as Bench;
+  const h = helpers(b);
+  before(() => start(b));
+  after(() => stop(b));
+
+  /** Материал без слов: окно (60 с) прошло — отдан с «слов не было»; агент отметил. */
+  async function wordless(u: Update): Promise<number> {
+    const seq = await h.seqOf(u);
+    await h.advance(60);
+    const e = await b.ch.waitEvent(seq);
+    assert.equal(e.material?.words, 'none');
+    await h.finish([seq]);
+    return seq;
+  }
+  /** Слова владельца — событие у агента. */
+  async function words(u: Update): Promise<Ev> {
+    return b.ch.waitEvent(await h.seqOf(u));
+  }
+
+  it('A11.23: реплай на материал после окна — reply_to.material, «слова к материалу № N»: и через 20 мин, и не первыми словами; в окне — реплай отпускает материал («следом, № M»), у слов — «к материалу № N»; на своё слово — как раньше', async () => {
+    const fu = h.forward('Исследование: сон и память');
+    const f = await wordless(fu);
+    const wu0 = h.says('где ты был вчера');
+    const w0 = await words(wu0);
+    await h.finish([w0.seq]);
+    await h.advance(1200);
+    const r = await words(h.push(b.s.fake.builder.replyTo(OWNER, 'сохрани это в заметки', fu.message!)));
+    assert.deepEqual([r.reply_to?.kind, r.reply_to?.event_seq, r.reply_to?.material], ['owner', f, true]);
+    assert.deepEqual([h.journal('in', r.seq)?.reply_to, h.journal('in', r.seq)?.reply_to_seq, h.journal('in', r.seq)?.reply_to_material], ['owner', f, true]);
+    assert.equal(r.after_material, undefined);
+    await h.finish([r.seq]);
+    // В окне: реплай на удерживаемое фото — его слова: фото и реплай подряд, пометки не спорят.
+    await h.quiet();
+    const pu = h.photo();
+    const p = await h.seqOf(pu);
+    h.held(p, 'фото');
+    await h.advance(20);
+    const r2 = await words(h.push(b.s.fake.builder.replyTo(OWNER, 'вот это сократи', pu.message!)));
+    h.inOneGo([p, r2.seq]);
+    assert.deepEqual(b.ch.events().find((e) => e.seq === p)?.material, { words: 'after', words_seq: r2.seq, waited_ms: null });
+    assert.deepEqual([r2.reply_to?.event_seq, r2.reply_to?.material, r2.material], [p, true, undefined]);
+    // Реплай на своё слово — не материал: «ответ на своё сообщение», как раньше.
+    const r3 = await words(h.push(b.s.fake.builder.replyTo(OWNER, 'и ещё', wu0.message!)));
+    assert.deepEqual([r3.reply_to?.kind, r3.reply_to?.event_seq, r3.reply_to?.material], ['owner', w0.seq, undefined]);
+    await h.finish([p, r2.seq, r3.seq]);
+  });
+
+  it('A11.24: слова после материала — первые слова владельца после материала без слов, в том же чате и эпизоде, не позже 10 мин: after_material [N] («слова после материала № N»), followup_seq у материала, in.after_material; вторые — без пометки; два материала — оба; 10 мин — да, 10 мин 1 с — нет; реплай на материал — приоритет, и следующие слова — без пометки', async () => {
+    await h.quiet();
+    const f = await wordless(h.forward('Статья о сне'));
+    await h.advance(300);
+    const w = await words(h.says('сохрани в заметки'));
+    assert.deepEqual(w.after_material, [f]);
+    assert.equal(w.material, undefined);
+    assert.equal(h.row(f).material?.followup_seq, w.seq);
+    assert.deepEqual(h.journal('in', w.seq)?.after_material, [f]);
+    const w2 = await words(h.says('и напомни завтра'));
+    assert.equal(w2.after_material, undefined, 'только первые слова');
+    await h.finish([w.seq, w2.seq]);
+    // Два материала, ушедшие без слов в разное время, — оба; ровно 10 мин после выпуска первого (второй вышел на 90 с
+    // позже) — ещё да.
+    await h.quiet();
+    const a = await wordless(h.forward('первая'));
+    await h.advance(30);
+    const c = await wordless(h.photo());
+    await h.advance(510);
+    const wc = await words(h.says('сравни их'));
+    assert.deepEqual(wc.after_material, [a, c]);
+    await h.finish([wc.seq]);
+    // 10 мин 1 с — уже нет; и следующие слова — тоже нет.
+    await h.quiet();
+    const g = await wordless(h.forward('поздняя'));
+    await h.advance(601);
+    const wg = await words(h.says('это про что?'));
+    assert.equal(wg.after_material, undefined);
+    assert.equal(h.row(g).material?.followup_seq, undefined);
+    await h.finish([wg.seq]);
+    // Реплай на материал первыми словами — «к материалу», без «после»; следующие слова — без пометки.
+    await h.quiet();
+    const mu = h.forward('ещё ссылка');
+    const m = await wordless(mu);
+    const rm = await words(h.push(b.s.fake.builder.replyTo(OWNER, 'это в архив', mu.message!)));
+    assert.deepEqual([rm.reply_to?.material, rm.after_material], [true, undefined]);
+    const wm = await words(h.says('и закрой задачу'));
+    assert.equal(wm.after_material, undefined, 'реплай на материал — уже первые слова');
+    assert.equal(h.row(m).material?.followup_seq, undefined);
+    await h.finish([rm.seq, wm.seq]);
+  });
+
+  it('A11.24: перезапуск — связь в базе: слова, отданные до перезапуска без done, приходят снова с той же пометкой', async () => {
+    await h.quiet();
+    const f = await wordless(h.forward('до перезапуска'));
+    const w = await words(h.says('отложи на вечер'));
+    assert.deepEqual(w.after_material, [f]);
+    await b.ch.delivered(w.seq);
+    b.ch.close();
+    await b.gw.stop();
+    b.gw = await b.s.start();
+    ({ ch: b.ch, turn: b.turn } = await connectAdapter(b.s.home));
+    const again = await b.ch.waitEvent(w.seq);
+    assert.deepEqual([again.redelivery, again.after_material], [true, [f]]);
+    await h.finish([w.seq]);
+  });
+});
+
+describe('M11 · слова после материала выключены: ui.material_followup_minutes: 0 (0.3.6, #51)', () => {
+  const b = {} as Bench;
+  const h = helpers(b);
+  before(() => start(b, null, 'ui: { material_followup_minutes: 0 }\n'));
+  after(() => stop(b));
+
+  it('A11.24 (0): окно — по умолчанию (60 с); материал без слов, слова через минуту — без пометки «после», followup_seq нет; реплай на материал — «к материалу», как всегда', async () => {
+    const fu = h.forward('Статья');
+    const f = await h.seqOf(fu);
+    assert.equal(h.row(f).hold_until! - h.row(f).created_at, 60_000);
+    await h.advance(60);
+    await b.ch.waitEvent(f);
+    await h.finish([f]);
+    await h.advance(60);
+    const w = await b.ch.waitEvent(await h.seqOf(h.says('сохрани')));
+    assert.equal(w.after_material, undefined);
+    assert.equal(h.row(f).material?.followup_seq, undefined);
+    const r = await b.ch.waitEvent(await h.seqOf(h.push(b.s.fake.builder.replyTo(OWNER, 'и это', fu.message!))));
+    assert.equal(r.reply_to?.material, true);
+    await h.finish([w.seq, r.seq]);
+  });
 });
 
 describe('M11 · голосовое владельца — слова с момента прихода (0.3.6, #51)', () => {
@@ -425,7 +579,7 @@ describe('M11 · голосовое владельца — слова с мом�
     await s.close();
   });
 
-  it('A11.15: фото в окне, затем голосовое: фото не уходит раньше расшифровки и не ждёт окна — фото и голосовое подряд, фото «слова — следом, № голосового»', async () => {
+  it('A11.15: фото в окне, затем голосовое: фото не уходит раньше расшифровки и не ждёт окна (60 с) — фото и голосовое подряд, фото «слова — следом, № голосового»', async () => {
     const p = await seqOf(s.fake.push(s.fake.builder.photo(OWNER, null))[0]!);
     assert.equal(status(p), 'held');
     s.voice.latencyMs = 1500;
@@ -481,5 +635,33 @@ describe('M11 · голосовое владельца — слова с мом�
     s.voice.latencyMs = 0;
     for (const x of [f2, w2]) await ch.delivered(x);
     await ch.done([f2, w2]);
+  });
+
+  it('A11.24: голосовое после материала без слов — «слова после материала» по времени прихода: пришло за 1 с до конца 10 мин, распознано позже — пометка есть', async () => {
+    for (let i = 0; i < 5; i++) await gw.advance('15s');
+    const p = await seqOf(s.fake.push(s.fake.builder.photo(OWNER, null))[0]!);
+    for (let i = 0; i < 4; i++) await gw.advance('15s');
+    const ep = await ch.waitEvent(p);
+    assert.deepEqual(ep.material, { words: 'none', words_seq: null, waited_ms: 60_000 });
+    await ch.delivered(p);
+    await ch.done([p]);
+    for (let i = 0; i < 39; i++) await gw.advance('15s');
+    await gw.advance('14s');
+    s.voice.latencyMs = 1500;
+    const vu = pushVoice(s, 4);
+    const v = await seqOf(vu);
+    const followup = (): unknown => {
+      const r = q1<{ material_json: string }>(s.home, 'SELECT material_json FROM events WHERE seq = ?', p)!;
+      return (JSON.parse(r.material_json) as { followup_seq?: number }).followup_seq;
+    };
+    assert.equal(followup(), v, 'связь — при записи голосового');
+    assert.equal(status(v), 'transcribing');
+    await gw.advance('15s');
+    const ev = await ch.waitEvent(v, 15_000);
+    assert.deepEqual(ev.after_material, [p]);
+    s.voice.latencyMs = 0;
+    await waitSttReply(s, gw, vu);
+    await ch.delivered(v);
+    await ch.done([v]);
   });
 });

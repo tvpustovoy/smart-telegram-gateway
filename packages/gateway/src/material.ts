@@ -1,6 +1,6 @@
 // Окно для материала без слов владельца (0.3.6; GitHub issue #51; TECH-SPEC 5.18). Владелец часто присылает ссылку,
 // пересылку или файл, а что с ними делать, говорит следом. Шлюз держит такой материал окном ui.material_hold_seconds
-// (по умолчанию 120 с) и отдаёт агенту вместе со словами — одним заходом: материал, затем слова.
+// (по умолчанию 60 с) и отдаёт агенту вместе со словами — одним заходом: материал, затем слова.
 // Что материал, а что слова, — core/material.ts (materialClass). Здесь — шаги внутри транзакций приёма и распознавания:
 // - admitMaterial — материал записывается: слова владельца были раньше в пределах окна (в том же чате и теме) — сразу,
 //   с пометкой before (правило 3); иначе — held (пересланное голосовое — transcribing) с hold_until = сейчас + окно;
@@ -19,12 +19,18 @@
 //   агент писал, видя его ⟨предл.: материал — в эпизоде, где пришёл; правило роли «материал по ходу разговора — в тот же
 //   эпизод»⟩.
 // Конец окна без слов — таймер hold.ts: пометка none и сколько материал ждал.
+// После окна (#51):
+// - isMaterialEvent — реплай владельца на материал (в любое время): reply_to.material, у слов — «слова к материалу № N»;
+// - linkFollowup — владелец не отвечает реплаем, а наговаривает голосовое позже окна: первое следующее его сообщение со
+//   словами в том же чате, теме Telegram и эпизоде, не позже ui.material_followup_minutes после выпуска материала без
+//   слов (none), — «слова после материала № N» (material_json.followup_seq у материала; кадр слов — after_material).
+//   Только первое: после него слова к этому материалу уже были. Реплай на материал — приоритет: пометки «после» у него нет.
 // Команды («стоп», «где мы» …), нажатия, реакции и жесты (стикер) окна не трогают; «стоп» — как прежде: окно идёт, затем
 // материал ждёт [продолжить] в new.
 
-import { HELD_MATERIAL_SQL, hasOwnerWords, sql, type Attachment, type EventStatus, type MaterialHold, type TrustLabel } from 'stg-core';
+import { HELD_MATERIAL_SQL, hasOwnerWords, materialClass, sql, type Attachment, type EventKind, type EventStatus, type MaterialHold, type TrustLabel } from 'stg-core';
 import type { Ctx } from './context.js';
-import { materialHoldMs } from './hold.js';
+import { materialFollowupMs, materialHoldMs } from './hold.js';
 
 /** Где окно: чат, тема Telegram и отправитель (окно — только у владельца). */
 export interface MaterialPlace {
@@ -40,21 +46,27 @@ export interface MaterialDecision {
 }
 
 /**
- * Последние слова владельца в этом чате и теме не раньше since (часы шлюза): № события или null. Слова — по тем же
- * правилам, что при приёме (hasOwnerWords): текст, подпись, голосовое, свой кружок и аудиофайл; команды — не слова.
+ * Последние слова владельца в этом чате и теме (cond — где искать: не раньше времени или между №): № события или null.
+ * Слова — по тем же правилам, что при приёме (hasOwnerWords): текст, подпись, голосовое, свой кружок и аудиофайл; команды
+ * и правки — не слова.
  */
-function recentOwnerWords(ctx: Ctx, p: MaterialPlace, since: number): number | null {
+function lastOwnerWords(ctx: Ctx, p: MaterialPlace, cond: string, ...args: number[]): number | null {
   const rows = sql(ctx.db,
     `SELECT seq, kind, trust, text, attachments_json FROM events
      WHERE chat_id = ? AND thread_id IS ? AND subject_id IS ? AND update_id IS NOT NULL
-       AND kind IN ('text', 'voice', 'photo', 'document') AND forward_json IS NULL AND created_at >= ?
+       AND kind IN ('text', 'voice', 'photo', 'document') AND forward_json IS NULL AND ${cond}
      ORDER BY seq DESC LIMIT 50`,
-  ).all(p.chatId, p.threadId, p.subjectId, since) as Array<{ seq: number; kind: 'text' | 'voice' | 'photo' | 'document'; trust: TrustLabel | null; text: string | null; attachments_json: string | null }>;
+  ).all(p.chatId, p.threadId, p.subjectId, ...args) as Array<{ seq: number; kind: 'text' | 'voice' | 'photo' | 'document'; trust: TrustLabel | null; text: string | null; attachments_json: string | null }>;
   for (const r of rows) {
     const attachments = r.attachments_json ? (JSON.parse(r.attachments_json) as Attachment[]) : [];
     if (hasOwnerWords({ kind: r.kind, trust: r.trust, text: r.text, attachments })) return r.seq;
   }
   return null;
+}
+
+/** Последние слова владельца в этом чате и теме не раньше since (часы шлюза). */
+function recentOwnerWords(ctx: Ctx, p: MaterialPlace, since: number): number | null {
+  return lastOwnerWords(ctx, p, 'created_at >= ?', since);
 }
 
 /**
@@ -212,4 +224,57 @@ export function settleTranscribed(ctx: Ctx, seq: number, now: number): SettleRes
     out.released.push({ seq: r.seq, heldMs: now - r.created_at });
   }
   return out;
+}
+
+/**
+ * Реплай на сообщение (0.3.6, issue #51; reply_to.material): материал ли оно — событие с material_json (окно его держало:
+ * в окне, со словами, без слов) или материал без слов владельца по классификации (core/material.ts: окно 0, событие до
+ * 0.3.6). Правка сюда не попадает: реплай ищет исходное сообщение.
+ */
+export function isMaterialEvent(ctx: Ctx, seq: number): boolean {
+  const r = sql(ctx.db, 'SELECT subject_id, kind, trust, text, attachments_json, forward_json, material_json FROM events WHERE seq = ?').get(seq) as
+    | { subject_id: string | null; kind: EventKind; trust: TrustLabel | null; text: string | null; attachments_json: string | null; forward_json: string | null; material_json: string | null }
+    | undefined;
+  if (!r) return false;
+  if (r.material_json !== null) return true;
+  const owner = ctx.directory.ownerSubjectId();
+  return (
+    materialClass({
+      fromOwner: owner !== null && r.subject_id === owner,
+      kind: r.kind,
+      trust: r.trust,
+      text: r.text,
+      attachments: r.attachments_json ? (JSON.parse(r.attachments_json) as Attachment[]) : [],
+      forwarded: r.forward_json !== null,
+    }) === 'material'
+  );
+}
+
+/**
+ * Слова после материала (после INSERT слов владельца, в той же транзакции): материал этого чата, темы Telegram и эпизода,
+ * ушедший без слов (none; правки, ждавшие с исходным, — нет: материал — исходное), выпущенный не раньше
+ * ui.material_followup_minutes назад, после которого слов владельца ещё не было, — followup_seq = № этих слов: № такого
+ * материала. Голосовое — с момента прихода (время записи слов). Реплай на материал сюда не идёт (приоритет — «слова к
+ * материалу», admission.ts), но и он — первые слова: следующие сообщения пометки уже не получат.
+ */
+export function linkFollowup(ctx: Ctx, p: MaterialPlace, wordsSeq: number, episodeId: number | null, now: number): number[] {
+  const ms = materialFollowupMs(ctx);
+  if (ms === 0 || episodeId === null) return [];
+  const rows = sql(ctx.db,
+    `SELECT seq, material_json, created_at FROM events
+     WHERE episode_id = ? AND chat_id = ? AND thread_id IS ? AND subject_id IS ? AND seq < ? AND kind <> 'edit'
+       AND material_json IS NOT NULL AND json_extract(material_json, '$.state') = 'none'
+       AND json_extract(material_json, '$.followup_seq') IS NULL
+     ORDER BY seq`,
+  ).all(episodeId, p.chatId, p.threadId, p.subjectId, wordsSeq) as Array<{ seq: number; material_json: string; created_at: number }>;
+  // Выпущен — запись + сколько ждал (waited_ms — от записи до отдачи).
+  const fresh = rows
+    .map((r) => ({ seq: r.seq, m: JSON.parse(r.material_json) as MaterialHold, created: r.created_at }))
+    .filter((r) => r.m.waited_ms !== undefined && now - (r.created + r.m.waited_ms) <= ms);
+  if (!fresh.length) return [];
+  // Только первые слова: после материала слов владельца в этом чате и теме ещё не было.
+  const last = lastOwnerWords(ctx, p, 'seq > ? AND seq < ?', fresh[0]!.seq, wordsSeq);
+  const linked = fresh.filter((r) => last === null || r.seq > last);
+  for (const r of linked) sql(ctx.db, 'UPDATE events SET material_json = ? WHERE seq = ?').run(JSON.stringify({ ...r.m, followup_seq: wordsSeq }), r.seq);
+  return linked.map((r) => r.seq);
 }

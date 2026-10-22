@@ -211,10 +211,10 @@ const reactionHoldSeconds = z
 
 /**
  * Окно для материала без слов владельца (0.3.6; GitHub issue #51): пересылка, файл, фото без подписи ждут его слов в том
- * же чате — материал и слова агент получает вместе. По умолчанию — 120 с; 0 — без окна (материал отдаётся сразу, как до
- * 0.3.6); больше 600 — ошибка настройки: дольше десяти минут материал не держится ⟨предл.⟩.
+ * же чате — материал и слова агент получает вместе. По умолчанию — 60 с (#51: минута, а не две); 0 — без окна (материал
+ * отдаётся сразу, как до 0.3.6); больше 600 — ошибка настройки: дольше десяти минут материал не держится ⟨предл.⟩.
  */
-export const DEFAULT_MATERIAL_HOLD_SECONDS = 120;
+export const DEFAULT_MATERIAL_HOLD_SECONDS = 60;
 export const MAX_MATERIAL_HOLD_SECONDS = 600;
 
 const materialHoldSeconds = z
@@ -224,6 +224,23 @@ const materialHoldSeconds = z
     message: `окно для материала без слов владельца — не больше ${MAX_MATERIAL_HOLD_SECONDS} с; 0 — без окна`,
   })
   .default(DEFAULT_MATERIAL_HOLD_SECONDS);
+
+/**
+ * Слова после материала (0.3.6; issue #51): материал ушёл агенту с пометкой «слов владельца не было», а владелец
+ * наговаривает к нему голосовое позже окна. Первое следующее сообщение владельца со словами в том же чате, теме Telegram
+ * и эпизоде — не позже стольких минут после выпуска материала — агент получает с пометкой «слова после материала № N».
+ * По умолчанию — 10 мин; 0 — выключено; больше 120 — ошибка настройки ⟨предл.: дольше двух часов связь уже не очевидна⟩.
+ */
+export const DEFAULT_MATERIAL_FOLLOWUP_MINUTES = 10;
+export const MAX_MATERIAL_FOLLOWUP_MINUTES = 120;
+
+const materialFollowupMinutes = z
+  .int({ error: 'слова после материала — целое число минут' })
+  .min(0, { message: 'слова после материала — не меньше 0 (0 — выключено)' })
+  .max(MAX_MATERIAL_FOLLOWUP_MINUTES, {
+    message: `слова после материала — не больше ${MAX_MATERIAL_FOLLOWUP_MINUTES} мин; 0 — выключено`,
+  })
+  .default(DEFAULT_MATERIAL_FOLLOWUP_MINUTES);
 
 export type SttConfig = z.infer<typeof SttConfigSchema>;
 export type TtsConfig = z.infer<typeof TtsConfigSchema>;
@@ -260,12 +277,15 @@ export const ConfigSchema = z.strictObject({
   // false — как раньше: правится в одну строку «… — верно». material_hold_seconds (0.3.6, issue #51): материал без слов
   // владельца (пересылка, файл, фото без подписи) ждёт его слов в том же чате столько секунд от последнего материала;
   // слова пришли — материал уходит агенту вместе с ними, не пришли — с пометкой «слов владельца не было».
+  // material_followup_minutes (0.3.6, issue #51): первые слова владельца после такого материала в пределах стольких минут
+  // от его выпуска — с пометкой «слова после материала № N»; 0 — выключено.
   ui: z
     .strictObject({
       where_ttl_minutes: positiveMinutes.default(5),
       role_short: z.record(z.string().min(1), z.string().min(1).max(32)).default({}),
       delete_confirmed_topic: z.boolean().default(true),
       material_hold_seconds: materialHoldSeconds,
+      material_followup_minutes: materialFollowupMinutes,
     })
     .prefault({}),
   // Посылки (5.16; 0.3.3, P-23): dir — папка посылок, единственное место, откуда агент отдаёт файлы (send_file);

@@ -372,11 +372,35 @@ describe('протокол: материал без слов владельца 
     const n = parseGatewayLine(JSON.stringify(frame));
     assert.ok(n.ok && n.message.type === 'event');
     assert.deepEqual(n.message.material, frame.material);
-    const none = parseGatewayLine(JSON.stringify({ ...frame, material: { words: 'none', words_seq: null, waited_ms: 120_000 } }));
-    assert.ok(none.ok && none.message.type === 'event' && none.message.material?.waited_ms === 120_000);
+    const none = parseGatewayLine(JSON.stringify({ ...frame, material: { words: 'none', words_seq: null, waited_ms: 60_000 } }));
+    assert.ok(none.ok && none.message.type === 'event' && none.message.material?.waited_ms === 60_000);
     const later = parseGatewayLine(JSON.stringify({ ...frame, material: { words: 'someday', words_seq: null, waited_ms: null } }));
     assert.ok(later.ok, 'новое значение words не ломает разбор');
     assert.ok(!parseGatewayLine(JSON.stringify({ ...frame, material: { words: 'after', words_seq: 0, waited_ms: null } })).ok, '№ слов — положительный');
+  });
+
+  it('слова к материалу после окна: reply_to.material и after_material — необязательные; новый канал их видит, прежний (схема 0.3.5) отбрасывает, не теряя кадра', () => {
+    const words = {
+      ...frame,
+      seq: 30,
+      trust: 'owner',
+      forward: null,
+      text: 'сохрани это',
+      material: undefined,
+      reply_to: { kind: 'owner', event_seq: 21, material: true },
+      after_material: [19, 21],
+    };
+    const n = parseGatewayLine(JSON.stringify(words));
+    assert.ok(n.ok && n.message.type === 'event');
+    assert.deepEqual([n.message.reply_to?.material, n.message.after_material], [true, [19, 21]]);
+    assert.ok(!parseGatewayLine(JSON.stringify({ ...words, after_material: [0] })).ok, '№ материала — положительный');
+    // Прежний канал: ReplyTo и событие без новых полей (z.object) — поля отброшены, реплай и текст целы.
+    const OldReplyTo = z.object({ kind: z.enum(['agent', 'receipt', 'service', 'owner', 'unknown']), event_seq: z.int().positive().nullable().optional() });
+    const OldEvent = z.object({ type: z.literal('event'), seq: z.int().positive(), text: z.string().nullable(), reply_to: OldReplyTo.nullable() });
+    const r = OldEvent.safeParse(words);
+    assert.ok(r.success, r.success ? '' : JSON.stringify(r.error.issues));
+    assert.deepEqual(r.data.reply_to, { kind: 'owner', event_seq: 21 });
+    assert.ok(!('after_material' in r.data));
   });
 
   it('where_result: held_material — необязательное (прежний шлюз его не шлёт)', () => {

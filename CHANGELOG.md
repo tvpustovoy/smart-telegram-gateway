@@ -18,8 +18,8 @@ The chat interface and the design documents are in Russian; the entries below de
   photo, file or video without a caption, a location or contact. Until 0.3.6 it reached the agent at once, and the agent
   had to guess what to do with it, while the owner was usually about to say. Now such an event is stored at once but
   held (`held`, as the reaction undo window of 0.3.4 holds a reaction: same status, `hold_until`, exact timer, the rest
-  of the window counted after a restart) for `ui.material_hold_seconds` (default 120, `0` turns the window off, at most
-  600).
+  of the window counted after a restart) for `ui.material_hold_seconds` (default 60, `0` turns the window off, at most
+  600; #51: one minute rather than two).
 - Words release the window: the owner's next message with their own words in the same chat and Telegram topic — text,
   a caption, a voice message, a video note, their own audio file — releases all held material of that chat in the same
   transaction that stores the words. The agent gets the material and the words in one go, in order: material first,
@@ -29,7 +29,8 @@ The chat interface and the design documents are in Russian; the entries below de
   message is transcribed and then goes right before it; (2) several pieces of material in a row share one window,
   counted from the last one; (3) material that comes after the owner's words in the same chat within the window goes at
   once, marked `слова владельца — раньше, № K`.
-- A window that ends without words releases the material marked `слов владельца не было N мин` (how long it waited).
+- A window that ends without words releases the material marked `слов владельца не было за N мин` (how long it
+  actually waited).
   A forwarded voice message is material too: it is transcribed as before, and if the window is still open, it is held
   again afterwards. An edit of held material counts as words only if it carries the owner's words (a caption added). An
   edit without words — a live location sending new coordinates, a photo replaced without a caption — does not release
@@ -40,18 +41,34 @@ The chat interface and the design documents are in Russian; the entries below de
 - Commands (`стоп`, `где мы`, …) and button presses are not words; a sticker, dice or GIF neither opens nor closes the
   window. `стоп` works as before: the window runs, then the material waits in `new` for [продолжить]. Messages of other
   participants are not held.
+- The owner's words to material after the window. A reply to material, at any time, reaches the agent as
+  `слова к материалу № N` instead of `ответ на своё сообщение № N`: the gateway marks `reply_to.material` when the
+  replied message is material (an event the window handled, or material by the same classification when the window is
+  off or the message predates 0.3.6). A reply within the window releases the material as any words do; the material is
+  marked `слова владельца — следом, № M` and the reply `слова к материалу № N`.
+- Words after material: the owner often sends material and records a voice message about it separately, which may miss
+  the window. After material has gone out marked as having no words, the owner's first next message with their own
+  words (text, voice message, video note, caption) in the same chat, Telegram topic and episode, no later than
+  `ui.material_followup_minutes` after the material was released (default 10, `0` turns it off, a whole number up to
+  120), reaches the agent marked `слова после материала № N` (`№ N, K` for several). Only the first such message; a voice
+  message counts from its arrival, not from its transcription. A reply to material takes priority: it is marked
+  `слова к материалу`, not `после`, and it still counts as the first words. The link is stored with the material
+  (`material_json.followup_seq`) and survives a restart.
 - 👀 is set when the material is given to the agent, that is after the window: 👀 still means "the agent has seen it".
 - `where` (owner, agent, `stg where`): the line `Ждут слов владельца: N (№ …)` lists held material — N is the total,
   the numbers are the first ones; the fields `held_material` (first 50) and `held_material_count` in the where data.
   Edits held with their original are not listed.
 - Event frames carry the optional field `material {words: after | before | none, words_seq, waited_ms}`; the channel
-  turns it into the header mark (`meta.material`, `meta.words_seq`). An older channel drops the field and shows the
-  event without the mark. The owner's own photo, file or video without a caption that carries the mark is labelled
-  `чужое (фото)` rather than `слово владельца + чужое (фото)`, with `meta.trust` `untrusted` and `meta.mixed` `false`:
-  there are no owner's words in it. Without the mark (window 0) the label is as before.
-- Journal: `in` with `material: held | words_before` (`joined` for an edit held with its original), `material_released
-  {seq, held_ms, words, words_seq?, episode_closed?}`, `material_linked {seq, words_seq}` (released by a voice message
-  still being transcribed), `material_held` (a transcribed forwarded voice message back in its window).
+  turns it into the header mark (`meta.material`, `meta.words_seq`). Words to material carry the optional
+  `reply_to.material` (`meta.to_material`) or `after_material` (the material numbers; `meta.after_material`). An older
+  channel drops these fields and shows the event without the mark. The owner's own photo, file or video without a
+  caption that carries the mark is labelled `чужое (фото)` rather than `слово владельца + чужое (фото)`, with
+  `meta.trust` `untrusted` and `meta.mixed` `false`: there are no owner's words in it. Without the mark (window 0) the
+  label is as before.
+- Journal: `in` with `material: held | words_before` (`joined` for an edit held with its original), `after_material`
+  and `reply_to_material` for words to material, `material_released {seq, held_ms, words, words_seq?,
+  episode_closed?}`, `material_linked {seq, words_seq}` (released by a voice message still being transcribed),
+  `material_held` (a transcribed forwarded voice message back in its window).
 - Role rules (channel instructions and the agent folder template): "Material (link, forward, file, picture) comes
   together with the owner's words — answer the words. If it comes marked that there were no words from the owner — the
   gist in 3–5 lines and one question"; for episodes: "When in doubt, stay in the current episode. A new one — when the
@@ -59,9 +76,12 @@ The chat interface and the design documents are in Russian; the entries below de
   episode." The line about `done` is narrowed so it does not contradict the material rule: `done` is for material that
   came together with the owner's words (the answer goes to the words), "just note it", the channel check and the episode
   summary — no longer "only material: a forward, a file", which would let the agent close wordless material silently.
-  The instructions have a new version, so a resumed conversation gets them as a "channel rules" event (0.3.5).
+  For words to material after the window: "The owner's reply to material is their words to that material, at any time:
+  answer them with the material in mind" and "Words after material No. N are the owner's words to that material: answer
+  them with the material in mind; the short gist has already gone out, do not repeat it." The instructions have a new
+  version, so a resumed conversation gets them as a "channel rules" event (0.3.5).
 - `scripts/agent-folder/README.md`: what to change by hand in an agent folder deployed before 0.3.6 (the `done` line,
-  the material rule, the episode rule).
+  the material rule, the two lines on words to material after the window, the episode rule).
 
 ### Changed
 
@@ -74,7 +94,8 @@ The chat interface and the design documents are in Russian; the entries below de
 - Tests: test homes write `ui.material_hold_seconds: 0` unless a test asks for the window, so tests written before
   0.3.6 keep sending captionless photos and forwards straight to the agent; the window has its own suite
   (`m11-material-hold`), which also runs a picture scenario of the earlier suites (`media(seq)`, 👀 then 👌) and a new
-  topic during the window with the default window.
+  topic during the window with the default window, and covers replies to material and words after material (A11.23,
+  A11.24).
 
 ## 0.3.5 - 2026-10-22
 

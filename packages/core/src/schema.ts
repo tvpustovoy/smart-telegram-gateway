@@ -814,7 +814,10 @@ export const MIGRATIONS: readonly Migration[] = [
  *   распознавании, материал held и ждёт его;
  * - before — слова владельца были раньше, в пределах окна (words_seq): материал отдан сразу, без окна;
  * - none — окно кончилось без слов (или раньше закрылся эпизод материала): отдан с пометкой, сколько ждал (waited_ms —
- *   от записи до отдачи).
+ *   от записи до отдачи; выпущен — created_at + waited_ms). Первые слова владельца после него в том же чате, теме Telegram
+ *   и эпизоде, не позже ui.material_followup_minutes от выпуска, — followup_seq: агент получает их с пометкой «слова после
+ *   материала № N» (кадр слов — after_material). Реплай на материал — не followup: у слов «слова к материалу № N»
+ *   (reply_to.material).
  */
 export const MATERIAL_STATES = ['waiting', 'after', 'before', 'none'] as const;
 export type MaterialState = (typeof MATERIAL_STATES)[number];
@@ -827,6 +830,8 @@ export interface MaterialHold {
   words_seq?: number;
   /** Сколько материал ждал слов (none), мс. */
   waited_ms?: number;
+  /** Слова владельца после материала, ушедшего без слов (none): № первого его сообщения со словами в пределах срока. */
+  followup_seq?: number;
 }
 
 /**
