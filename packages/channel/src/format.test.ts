@@ -414,6 +414,31 @@ describe('канал: инструменты, instructions, сроки', () => {
     assert.equal(formatEvent(ev()).meta.after_material, undefined);
   });
 
+  it('A11.25 · текст владельца из одних ссылок (0.3.6, #51) с пометкой окна — «ссылка владельца» («ссылки владельца»), а не «слово владельца» рядом со «слов владельца не было»; meta.trust — untrusted; без пометки (окно 0) — как раньше', () => {
+    const link = ev({ seq: 50, text: 'https://example.com/article' });
+    const none = formatEvent({ ...link, material: { words: 'none', words_seq: null, waited_ms: 60_000 } });
+    assert.equal(none.content, '[№ 50 · эп. 42 · ссылка владельца · слов владельца не было за 1 мин] https://example.com/article');
+    assert.deepEqual([none.meta.trust, none.meta.mixed, none.meta.material], ['untrusted', 'false', 'none']);
+    const after = formatEvent({ ...link, material: { words: 'after', words_seq: 51, waited_ms: null } });
+    assert.equal(after.content, '[№ 50 · эп. 42 · ссылка владельца · слова владельца — следом, № 51] https://example.com/article');
+    const before = formatEvent({ ...link, material: { words: 'before', words_seq: 49, waited_ms: null } });
+    assert.ok(before.content.startsWith('[№ 50 · эп. 42 · ссылка владельца · слова владельца — раньше, № 49] '), before.content);
+    const two = formatEvent(ev({ seq: 52, text: 'https://a.example\nhttps://b.example', material: { words: 'none', words_seq: null, waited_ms: 60_000 } }));
+    assert.ok(two.content.startsWith('[№ 52 · эп. 42 · ссылки владельца · слов владельца не было за 1 мин] '), two.content);
+    // Реплай ссылкой на материал — «ответ на материал» (слов нет), не «слова к материалу».
+    const reply = formatEvent({ ...link, reply_to: { kind: 'owner', event_seq: 21, material: true }, material: { words: 'none', words_seq: null, waited_ms: 60_000 } });
+    assert.ok(reply.content.includes('· ссылка владельца · ответ на материал № 21 · слов владельца не было за 1 мин]'), reply.content);
+    // Фото с подписью из одних ссылок — как фото без подписи: «чужое (фото)».
+    const photo = formatEvent(
+      ev({ seq: 53, kind: 'photo', text: 'https://example.com/a', mixed: true, attachments: [{ kind: 'photo', trust: 'untrusted' }], material: { words: 'none', words_seq: null, waited_ms: 60_000 } }),
+    );
+    assert.ok(photo.content.startsWith('[№ 53 · эп. 42 · фото · чужое (фото) · слов владельца не было за 1 мин] https://example.com/a'), photo.content);
+    // Без пометки (окно 0, прежний шлюз) — «слово владельца», как раньше; метка в кадре — owner.
+    const plain = formatEvent(link);
+    assert.equal(plain.content, '[№ 50 · эп. 42 · слово владельца] https://example.com/article');
+    assert.equal(plain.meta.trust, 'owner');
+  });
+
   it('A11.10 · instructions (0.3.6, #51): материал — отвечай на слова; без слов — суть в 3–5 строк и один вопрос; done — материал со словами владельца; пометки в заголовке; эпизод — сомневаешься, оставайся; версия — от нового текста', () => {
     assert.ok(
       INSTRUCTIONS.includes(

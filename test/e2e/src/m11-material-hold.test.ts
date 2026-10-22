@@ -15,7 +15,10 @@
 // исходным, окно не сдвигает · A11.21 «новая тема» в окне — материал агенту раньше «эпизод закрыт», с пометкой «слов не
 // было» · A11.22 прежний сценарий картинки (media(seq), 👀 → 👌) с окном по умолчанию · A11.23 реплай на материал — «слова к
 // материалу № N» (после окна, в окне, окно 0 — по классификации) · A11.24 слова после материала — первые слова владельца
-// после материала без слов в пределах 10 мин (голосовое — по приходу; перезапуск; 0 — выключено).
+// после материала без слов в пределах 10 мин (голосовое — по приходу; перезапуск; 0 — выключено) · A11.25 текст владельца
+// из одних ссылок (поделился страницей из браузера) — материал без слов: окно, «следом», «не было», одно окно на
+// несколько, не «слова после материала», правило «слова раньше», реплай на него; «посмотри https://…» — слова; окно 0 —
+// сразу.
 
 import assert from 'node:assert/strict';
 import { after, before, describe, it } from 'node:test';
@@ -431,6 +434,18 @@ describe('M11 · окно выключено: ui.material_hold_seconds: 0 (0.3.6
     assert.deepEqual([er.after_material, er2.after_material], [undefined, undefined]);
     await h.finish([r, w, r2]);
   });
+
+  it('A11.25 (окно 0): текст владельца из одной ссылки — агенту сразу, без пометки, метка owner, как до 0.3.6; реплай на него — материал по классификации (reply_to.material)', async () => {
+    const lu = h.says('https://example.com/now');
+    const l = await h.seqOf(lu);
+    const el = await b.ch.waitEvent(l);
+    assert.deepEqual([el.trust, el.material], ['owner', undefined]);
+    assert.deepEqual([h.row(l).hold_until, h.row(l).material], [null, null]);
+    await h.finish([l]);
+    const r = await b.ch.waitEvent(await h.seqOf(h.push(b.s.fake.builder.replyTo(OWNER, 'перескажи', lu.message!))));
+    assert.deepEqual([r.reply_to?.event_seq, r.reply_to?.material], [l, true]);
+    await h.finish([r.seq]);
+  });
 });
 
 describe('M11 · слова владельца к материалу после окна (0.3.6, #51): реплай на материал, слова после материала', () => {
@@ -536,6 +551,142 @@ describe('M11 · слова владельца к материалу после 
     const again = await b.ch.waitEvent(w.seq);
     assert.deepEqual([again.redelivery, again.after_material], [true, [f]]);
     await h.finish([w.seq]);
+  });
+});
+
+describe('M11 · текст владельца из одних ссылок — материал без слов (0.3.6, #51): поделился страницей из браузера', () => {
+  const b = {} as Bench;
+  const h = helpers(b);
+  before(() => start(b));
+  after(() => stop(b));
+
+  it('A11.25: текст из одной ссылки — в окне (held); слова через 20 с — ссылка и слова подряд, ссылка «слова владельца — следом, № M», метка в кадре — owner; без слов — по окну, «слов владельца не было за 1 мин»; следующие слова — «слова после материала»', async () => {
+    const l = await h.seqOf(h.says('https://example.com/article'));
+    h.held(l, 'ссылка');
+    assert.deepEqual(h.row(l).material, { state: 'waiting', window_ms: 60_000 });
+    assert.equal(h.journal('in', l)?.material, 'held');
+    await h.advance(20);
+    h.held(l, 'через 20 с');
+    const w = await h.seqOf(h.says('сохрани, прочитаю вечером'));
+    const ew = await b.ch.waitEvent(w);
+    h.inOneGo([l, w]);
+    const el = b.ch.events().find((e) => e.seq === l)!;
+    assert.deepEqual([el.trust, el.text, el.material], ['owner', 'https://example.com/article', { words: 'after', words_seq: w, waited_ms: null }]);
+    assert.deepEqual([ew.material, ew.after_material], [undefined, undefined]);
+    await h.finish([l, w]);
+    // Без слов — по окну.
+    await h.quiet();
+    const l2 = await h.seqOf(h.says('https://example.com/other'));
+    await h.advance(59, 17);
+    h.held(l2, 'через 59 с');
+    await h.advance(1);
+    const e2 = await b.ch.waitEvent(l2);
+    assert.deepEqual(e2.material, { words: 'none', words_seq: null, waited_ms: 60_000 });
+    assert.equal(h.journal('material_released', l2)?.words, 'none');
+    await h.finish([l2]);
+    const w2 = await b.ch.waitEvent(await h.seqOf(h.says('это на потом')));
+    assert.deepEqual(w2.after_material, [l2]);
+    await h.finish([w2.seq]);
+  });
+
+  it('A11.25: несколько ссылок подряд — одно окно (и с фото): ссылка окно не выпускает, а сдвигает; без слов — выходят вместе по окну; следующие слова — «слова после материала» ко всем', async () => {
+    await h.quiet();
+    const p = await h.seqOf(h.photo());
+    await h.advance(20);
+    const l1 = await h.seqOf(h.says('https://a.example/1'));
+    h.held(p, 'ссылка — не слова: фото держится');
+    assert.deepEqual(h.journal('in', l1)?.extended, [p]);
+    await h.advance(20);
+    const l2 = await h.seqOf(h.says('www.b.example/2\nt.me/c/3'));
+    assert.deepEqual(h.journal('in', l2)?.extended, [p, l1]);
+    const until = h.row(l2).hold_until;
+    assert.deepEqual([h.row(p).hold_until, h.row(l1).hold_until], [until, until], 'одно окно — от последней ссылки');
+    await h.advance(59, 17);
+    for (const x of [p, l1, l2]) h.held(x, 'через 59 с от последней ссылки');
+    await h.advance(1);
+    await b.ch.waitEvent(l2);
+    h.inOneGo([p, l1, l2]);
+    assert.deepEqual(
+      [p, l1, l2].map((x) => b.ch.events().find((e) => e.seq === x)?.material),
+      [
+        { words: 'none', words_seq: null, waited_ms: 100_000 },
+        { words: 'none', words_seq: null, waited_ms: 80_000 },
+        { words: 'none', words_seq: null, waited_ms: 60_000 },
+      ],
+    );
+    await h.finish([p, l1, l2]);
+    const w = await b.ch.waitEvent(await h.seqOf(h.says('выбери лучшее')));
+    assert.deepEqual(w.after_material, [p, l1, l2]);
+    await h.finish([w.seq]);
+  });
+
+  it('A11.25: ссылка после материала, ушедшего без слов, — не «слова после материала»: сама ждёт окна; первые слова после неё — «после материала» к прежнему, ссылка — «следом»', async () => {
+    await h.quiet();
+    const f = await h.seqOf(h.forward('Исследование: сон и память'));
+    await h.advance(60);
+    assert.equal((await b.ch.waitEvent(f)).material?.words, 'none');
+    await h.finish([f]);
+    await h.advance(60);
+    const l = await h.seqOf(h.says('https://example.com/sleep'));
+    h.held(l, 'ссылка после материала');
+    assert.equal(h.row(f).material?.followup_seq, undefined, 'ссылка — не слова после материала');
+    assert.equal(h.journal('in', l)?.after_material, undefined);
+    await h.advance(30);
+    const w = await h.seqOf(h.says('сравни с исследованием'));
+    const ew = await b.ch.waitEvent(w);
+    h.inOneGo([l, w]);
+    assert.deepEqual(ew.after_material, [f]);
+    assert.equal(h.row(f).material?.followup_seq, w);
+    const el = b.ch.events().find((e) => e.seq === l)!;
+    assert.deepEqual([el.material, el.after_material], [{ words: 'after', words_seq: w, waited_ms: null }, undefined]);
+    await h.finish([l, w]);
+  });
+
+  it('A11.25: слова раньше ссылки, в пределах окна, — ссылка сразу, «слова владельца — раньше, № K»; «посмотри https://…» — слова: сразу, без окна, и отпускают удерживаемое фото', async () => {
+    await h.quiet();
+    const w = await h.seqOf(h.says('сейчас скину статью — перескажи'));
+    await b.ch.waitEvent(w);
+    await h.advance(30);
+    const l = await h.seqOf(h.says('https://example.com/news'));
+    const el = await b.ch.waitEvent(l);
+    assert.deepEqual(el.material, { words: 'before', words_seq: w, waited_ms: null });
+    assert.equal(h.row(l).hold_until, null);
+    assert.equal(h.journal('in', l)?.material, 'words_before');
+    await h.finish([w, l]);
+    await h.quiet();
+    const p = await h.seqOf(h.photo());
+    h.held(p, 'фото');
+    await h.advance(10);
+    const s = await h.seqOf(h.says('посмотри https://example.com/related — то же, что на фото?'));
+    const es = await b.ch.waitEvent(s);
+    h.inOneGo([p, s]);
+    assert.deepEqual([h.row(s).hold_until, h.row(s).material, es.material], [null, null, undefined]);
+    assert.deepEqual(b.ch.events().find((e) => e.seq === p)?.material, { words: 'after', words_seq: s, waited_ms: null });
+    await h.finish([p, s]);
+  });
+
+  it('A11.25: реплай владельца на ссылку — «слова к материалу № N»: после окна (через 2 мин) и в окне (реплай отпускает ссылку, подряд)', async () => {
+    await h.quiet();
+    const lu = h.says('https://example.com/recipe');
+    const l = await h.seqOf(lu);
+    await h.advance(60);
+    assert.equal((await b.ch.waitEvent(l)).material?.words, 'none');
+    await h.finish([l]);
+    await h.advance(120);
+    const r = await b.ch.waitEvent(await h.seqOf(h.push(b.s.fake.builder.replyTo(OWNER, 'сохрани в рецепты', lu.message!))));
+    assert.deepEqual([r.reply_to?.kind, r.reply_to?.event_seq, r.reply_to?.material, r.after_material], ['owner', l, true, undefined]);
+    assert.equal(h.journal('in', r.seq)?.reply_to_material, true);
+    await h.finish([r.seq]);
+    await h.quiet();
+    const l2u = h.says('t.me/somechannel/7');
+    const l2 = await h.seqOf(l2u);
+    h.held(l2, 'ссылка в окне');
+    await h.advance(10);
+    const r2 = await b.ch.waitEvent(await h.seqOf(h.push(b.s.fake.builder.replyTo(OWNER, 'перескажи', l2u.message!))));
+    h.inOneGo([l2, r2.seq]);
+    assert.deepEqual([r2.reply_to?.event_seq, r2.reply_to?.material], [l2, true]);
+    assert.deepEqual(b.ch.events().find((e) => e.seq === l2)?.material, { words: 'after', words_seq: r2.seq, waited_ms: null });
+    await h.finish([l2, r2.seq]);
   });
 });
 

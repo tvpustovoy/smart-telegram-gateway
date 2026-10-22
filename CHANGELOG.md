@@ -15,11 +15,11 @@ The chat interface and the design documents are in Russian; the entries below de
 
 - A window for material without the owner's words (#51). Material is an owner's message with none of the owner's own
   words in it: a forward (of anything, including the owner's own old message), a message sent through an inline bot, a
-  photo, file or video without a caption, a location or contact. Until 0.3.6 it reached the agent at once, and the agent
-  had to guess what to do with it, while the owner was usually about to say. Now such an event is stored at once but
-  held (`held`, as the reaction undo window of 0.3.4 holds a reaction: same status, `hold_until`, exact timer, the rest
-  of the window counted after a restart) for `ui.material_hold_seconds` (default 60, `0` turns the window off, at most
-  600; #51: one minute rather than two).
+  message with nothing but links, a photo, file or video without a caption, a location or contact. Until 0.3.6 it
+  reached the agent at once, and the agent had to guess what to do with it, while the owner was usually about to say.
+  Now such an event is stored at once but held (`held`, as the reaction undo window of 0.3.4 holds a reaction: same
+  status, `hold_until`, exact timer, the rest of the window counted after a restart) for `ui.material_hold_seconds`
+  (default 60, `0` turns the window off, at most 600; #51: one minute rather than two).
 - Words release the window: the owner's next message with their own words in the same chat and Telegram topic — text,
   a caption, a voice message, a video note, their own audio file — releases all held material of that chat in the same
   transaction that stores the words. The agent gets the material and the words in one go, in order: material first,
@@ -29,6 +29,20 @@ The chat interface and the design documents are in Russian; the entries below de
   message is transcribed and then goes right before it; (2) several pieces of material in a row share one window,
   counted from the last one; (3) material that comes after the owner's words in the same chat within the window goes at
   once, marked `слова владельца — раньше, № K`.
+- An owner's message with nothing but links is material without words. This is how a page shared from the browser
+  ("Share" → Telegram) arrives: an ordinary text message from the owner holding only the link — not a forward and not an
+  inline bot, so the window used to miss it. A link is `http(s)://…`, `www.…` or `t.me/…`; spaces, line breaks and
+  separating punctuation around the links (commas, periods, brackets, quotes, dashes, list bullets) do not count. Such a
+  message is held like any material: it goes with the owner's next words (`слова владельца — следом, № M`) or after the
+  window (`слов владельца не было за 1 мин`); it does not release the window and is not "words after material"; several
+  link messages share one window; words sent just before it make it go at once (`слова владельца — раньше, № K`); a
+  reply to it is `слова к материалу № N`. A caption of only links on a photo or file is no words either. Any other word
+  next to a link — `посмотри https://…`, a page title above the link — makes it the owner's words, as before: a page title
+  cannot be told from the owner's words (the Bot API does not give the preview title), and a link on words (`text_link`)
+  shows words. The decision reads the text only, not Telegram's `url` entities: they are not stored, and the same
+  decision is made again from the stored event (a reply to material, words before material, words after material), so a
+  domain without `www` or a scheme (`example.com/…`) stays words. With the window off (`0`) a link goes at once, as
+  before.
 - A window that ends without words releases the material marked `слов владельца не было за N мин` (how long it
   actually waited).
   A forwarded voice message is material too: it is transcribed as before, and if the window is still open, it is held
@@ -63,8 +77,11 @@ The chat interface and the design documents are in Russian; the entries below de
   `reply_to.material` (`meta.to_material`) or `after_material` (the material numbers; `meta.after_material`). An older
   channel drops these fields and shows the event without the mark. The owner's own photo, file or video without a
   caption that carries the mark is labelled `чужое (фото)` rather than `слово владельца + чужое (фото)`, with
-  `meta.trust` `untrusted` and `meta.mixed` `false`: there are no owner's words in it. Without the mark (window 0) the
-  label is as before.
+  `meta.trust` `untrusted` and `meta.mixed` `false`: there are no owner's words in it. The owner's own message of only
+  links that carries the mark is labelled `ссылка владельца` (`ссылки владельца` for several) — sent by the owner, but
+  not `слово владельца` next to `слов владельца не было` — also with `meta.trust` `untrusted` and `meta.mixed` `false`;
+  the label stored in the database and sent in the frame stays `owner`. Without the mark (window 0) the label is as
+  before.
 - Journal: `in` with `material: held | words_before` (`joined` for an edit held with its original), `after_material`
   and `reply_to_material` for words to material, `material_released {seq, held_ms, words, words_seq?,
   episode_closed?}`, `material_linked {seq, words_seq}` (released by a voice message still being transcribed),
@@ -95,7 +112,7 @@ The chat interface and the design documents are in Russian; the entries below de
   0.3.6 keep sending captionless photos and forwards straight to the agent; the window has its own suite
   (`m11-material-hold`), which also runs a picture scenario of the earlier suites (`media(seq)`, 👀 then 👌) and a new
   topic during the window with the default window, and covers replies to material and words after material (A11.23,
-  A11.24).
+  A11.24) and messages of only links (A11.25).
 
 ## 0.3.5 - 2026-10-22
 

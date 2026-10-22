@@ -149,10 +149,12 @@ What you see in the chat:
 - `⚙ ↪ #N · topic` with [верно] [не то] — the agent named or changed the topic. [верно] removes the line (the topic
   stays in the pinned line; `ui.delete_confirmed_topic`), [не то] brings the previous topic back.
 - A reaction on an agent reply (👍, ❤, …) is passed to the agent after a short undo window.
-- Material without your own words — a forward, a message sent through an inline bot, a photo, file or video without a
-  caption — waits for your words in the same chat, one minute by default (`ui.material_hold_seconds`): text, a caption,
-  a voice message or a video note. Then the agent gets the material and your words together, material first. A voice
-  message counts as words as soon as it arrives: the material goes with it once it is transcribed. Several pieces of
+- Material without your own words — a forward, a message sent through an inline bot, a message with nothing but links
+  (a page shared from the browser), a photo, file or video without a caption — waits for your words in the same chat,
+  one minute by default (`ui.material_hold_seconds`): text, a caption, a voice message or a video note. A link with any
+  other word next to it ("look at https://…", or the page title above the link) already counts as words. Then the agent
+  gets the material and your words together, material first. A voice message counts as words as soon as it arrives:
+  the material goes with it once it is transcribed. Several pieces of
   material in a row share one window, counted from the last one. If you wrote first and sent the material within the
   window, it goes at once. If no words come, the material goes after the window, marked "no words from the owner for
   1 min". If the topic changes first (`новая тема`, the agent starts a new topic), the material goes at once, before the

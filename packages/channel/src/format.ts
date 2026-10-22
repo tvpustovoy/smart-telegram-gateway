@@ -18,13 +18,15 @@
 // «слов владельца не было за 1 мин» (окно кончилось без слов; сколько материал на деле ждал); meta.material = after ·
 // before · none, meta.words_seq. Своё фото или файл владельца без подписи в таком событии — «чужое (фото)», а не «слово
 // владельца + чужое (фото)»: его слов в нём нет (рядом стояло бы «слов владельца не было»); meta.trust — untrusted,
-// meta.mixed — false. Без пометки (окно 0, прежний шлюз) — метка прежняя.
+// meta.mixed — false. Его текст из одних ссылок (поделился страницей; core/material.ts, linksOnly) с пометкой — «ссылка
+// владельца» («ссылки владельца»): прислал он, но слов в нём нет; meta.trust — тоже untrusted (в базе и в кадре — owner).
+// Без пометки (окно 0, прежний шлюз) — метка прежняя.
 // Слова владельца к материалу после окна (0.3.6): реплай на материал (reply_to.material) — «слова к материалу № N» вместо
 // «ответ на своё сообщение № N» (meta.to_material); первые слова после материала, ушедшего без слов (after_material), —
 // «слова после материала № N» или «№ N, K» (meta.after_material). Прежний шлюз полей не шлёт — заголовок прежний.
 // Здесь же — слова, которыми инструменты возвращают модели исход.
 
-import { cutGraphemes, formatDuration, formatElapsed, localTime, ownerReactionChange, ownerReactionTarget, type EventMessage, type Mode } from 'stg-core';
+import { cutGraphemes, formatDuration, formatElapsed, linksOnly, localTime, ownerReactionChange, ownerReactionTarget, type EventMessage, type Mode } from 'stg-core';
 import { INSTRUCTIONS, INSTRUCTIONS_VERSION } from './instructions.js';
 
 export const CHANNEL_NOTIFICATION = 'notifications/claude/channel';
@@ -213,11 +215,21 @@ function bodyOf(ev: EventMessage): string {
 }
 
 /**
- * Материал владельца без его слов, отданный с пометкой окна (0.3.6, issue #51): фото, файл, видео без подписи. Метка
- * сообщения — его (owner, к «словам» приложено чужое), но слов в нём нет: агенту — как чужое.
+ * Материал владельца без его слов, отданный с пометкой окна (0.3.6, issue #51): фото, файл, видео без подписи, текст из
+ * одних ссылок. Метка сообщения — его (owner), но слов в нём нет: агенту — как чужое.
  */
 function ownerMaterialWithoutWords(ev: EventMessage): boolean {
   return ev.trust === 'owner' && !!ev.material && materialWords(ev.material) !== null;
+}
+
+/**
+ * Метка своего текста из одних ссылок с пометкой окна (0.3.6, issue #51; поделился страницей): «ссылка владельца» или
+ * «ссылки владельца» — прислал он, слов нет; не «чужое»: со стороны его не присылали, и не «слово владельца»: рядом стоит
+ * «слов владельца не было». Не из одних ссылок — null.
+ */
+function ownerLinksLabel(ev: EventMessage): string | null {
+  const n = linksOnly(ev.text);
+  return n === 0 ? null : n === 1 ? 'ссылка владельца' : 'ссылки владельца';
 }
 
 /** meta: только строки, пустые не кладутся. */
@@ -331,7 +343,7 @@ export function formatEvent(ev: EventMessage): ChannelNotice {
   let trust = ev.trust ? TRUST_WORDS[ev.trust] : 'без метки';
   const foreign = ev.attachments.filter((a) => a.trust !== 'owner' && a.kind !== 'via_bot').map((a) => ATTACHMENT_WORDS[a.kind]);
   const foreignWords = [...new Set(foreign)].join(', ');
-  if (ownerMaterialWithoutWords(ev)) trust = foreign.length ? `${TRUST_WORDS.untrusted} (${foreignWords})` : TRUST_WORDS.untrusted;
+  if (ownerMaterialWithoutWords(ev)) trust = foreign.length ? `${TRUST_WORDS.untrusted} (${foreignWords})` : (ownerLinksLabel(ev) ?? TRUST_WORDS.untrusted);
   else if (ev.mixed && foreign.length) trust += ` + чужое (${foreignWords})`;
   else if (ev.mixed) trust += ' + чужое';
   parts.push(trust);
