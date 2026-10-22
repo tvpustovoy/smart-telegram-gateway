@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "smart-telegram-gateway": {
+      "command": "{{NODE}}",
+      "args": ["{{CHANNEL_ENTRY}}"],
+      "env": { "STG_HOME": "{{STG_HOME}}" }
+    }
+  }
+}

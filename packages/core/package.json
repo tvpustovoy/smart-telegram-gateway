@@ -1,0 +1,29 @@
+{
+  "name": "stg-core",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Core: clock, fault points, config, secrets, database and migrations, gateway ⇄ channel protocol",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./package.json": "./package.json",
+    "./protocol": {
+      "types": "./dist/protocol.d.ts",
+      "default": "./dist/protocol.js"
+    },
+    "./agent-state": {
+      "types": "./dist/agent-state.d.ts",
+      "default": "./dist/agent-state.js"
+    }
+  },
+  "dependencies": {
+    "@grammyjs/types": "5.0.0",
+    "yaml": "2.9.1",
+    "zod": "4.6.7"
+  }
+}

@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- smart-telegram-gateway: служба шлюза, LaunchAgent пользователя (TECH-SPEC 5.3).
+     Собирает «stg service plist» из этого шаблона; руками не править: переустановка — scripts/install-macos.sh.
+     ProgramArguments: Node, его флаги памяти (GATEWAY_NODE_FLAGS, N-2) и stg-gateway.
+     KeepAlive и ThrottleInterval 10: упал — launchd поднимет через 10 с; ProcessType Interactive: без него launchd
+     ограничивает процессор и ввод-вывод фоновой службы. -->
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>{{LABEL}}</string>
+	<key>ProgramArguments</key>
+	<array>
+{{PROGRAM_ARGUMENTS}}
+	</array>
+	<key>EnvironmentVariables</key>
+	<dict>
+		<key>STG_HOME</key>
+		<string>{{STG_HOME}}</string>
+	</dict>
+	<key>WorkingDirectory</key>
+	<string>{{STG_HOME}}</string>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>KeepAlive</key>
+	<true/>
+	<key>ThrottleInterval</key>
+	<integer>10</integer>
+	<key>ProcessType</key>
+	<string>Interactive</string>
+	<key>StandardOutPath</key>
+	<string>{{LOG}}</string>
+	<key>StandardErrorPath</key>
+	<string>{{LOG}}</string>
+</dict>
+</plist>

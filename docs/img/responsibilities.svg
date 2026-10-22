@@ -1,0 +1,118 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 936" width="1200" height="936" font-family="Mulish, 'Golos Text', system-ui, -apple-system, 'Segoe UI', sans-serif" role="img" aria-labelledby="t1 d1">
+<title id="t1">Кто за что отвечает: шлюз и агент</title>
+<desc id="d1">Что проверяется кодом — делает шлюз; что требует понимания смысла — агент; решение агента становится действием только через инструмент, который проверяет шлюз (на сервере — устройством, на macOS — правами сессии); расширение доступа и роли шире — с касанием владельца.</desc>
+<defs><marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#3A3A38"/></marker><marker id="at" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#00695E"/></marker></defs>
+<rect width="1200" height="936" fill="#F3F7F7"/>
+<text x="24" y="40" font-size="22" fill="#1C1C1A" font-weight="700" text-anchor="start">Кто за что отвечает: шлюз и агент</text>
+<text x="24" y="64" font-size="13" fill="#6A6A66" font-weight="400" text-anchor="start">что проверяется кодом — шлюз · что требует смысла — агент · между ними — инструменты, их проверяет шлюз</text>
+<rect x="186" y="92" width="400" height="64" rx="8" fill="#F3F7F7" stroke="#1C1C1A" stroke-width="1.4"/>
+<text x="202" y="118" font-size="16" fill="#1C1C1A" font-weight="700" text-anchor="start">Шлюз</text>
+<text x="202" y="140" font-size="12" fill="#3A3A38" font-weight="400" text-anchor="start">код · исполняет правила · позже свои модели</text>
+<rect x="598" y="92" width="124" height="64" rx="8" fill="#E3EAEA" stroke="#6A6A66" stroke-width="1.2"/>
+<text x="660.0" y="118" font-size="13" fill="#1C1C1A" font-weight="700" text-anchor="middle">Инструменты</text>
+<text x="660.0" y="140" font-size="11" fill="#3A3A38" font-weight="400" text-anchor="middle">путь к действию</text>
+<rect x="734" y="92" width="442" height="64" rx="8" fill="#C7E2D8" stroke="#00695E" stroke-width="1.4"/>
+<text x="750" y="118" font-size="16" fill="#1C1C1A" font-weight="700" text-anchor="start">Агент</text>
+<text x="750" y="140" font-size="12" fill="#3A3A38" font-weight="400" text-anchor="start">модель · понимает смысл · решает внутри правил</text>
+<text x="24" y="190" font-size="13.5" fill="#1C1C1A" font-weight="700" text-anchor="start">Кто пишет и где</text>
+<rect x="186" y="168" width="400" height="61.0" rx="6" fill="#FFFFFF" stroke="#E3EAEA" stroke-width="1"/>
+<rect x="186" y="168" width="4" height="61.0" rx="2" fill="#1C1C1A"/>
+<text x="202" y="190.0" font-size="12.5" fill="#3A3A38" font-weight="400" text-anchor="start">сверяет номер с правилами доступа, ставит метку;</text>
+<text x="202" y="207.5" font-size="12.5" fill="#3A3A38" font-weight="400" text-anchor="start">незнакомым — молчание</text>
+<rect x="734" y="168" width="442" height="61.0" rx="6" fill="#FFFFFF" stroke="#E3EAEA" stroke-width="1"/>
+<rect x="734" y="168" width="4" height="61.0" rx="2" fill="#00695E"/>
+<text x="750" y="190.0" font-size="12.5" fill="#3A3A38" font-weight="400" text-anchor="start">видит метку; ставит её шлюз</text>
+<text x="24" y="259.0" font-size="13.5" fill="#1C1C1A" font-weight="700" text-anchor="start">Правила доступа</text>
+<rect x="186" y="237.0" width="400" height="87.0" rx="6" fill="#FFFFFF" stroke="#E3EAEA" stroke-width="1"/>
+<rect x="186" y="237.0" width="4" height="87.0" rx="2" fill="#1C1C1A"/>
+<text x="202" y="259.0" font-size="12.5" fill="#3A3A38" font-weight="400" text-anchor="start">хранит файлом и исполняет, не толкуя</text>
+<rect x="734" y="237.0" width="442" height="87.0" rx="6" fill="#FFFFFF" stroke="#E3EAEA" stroke-width="1"/>
+<rect x="734" y="237.0" width="4" height="87.0" rx="2" fill="#00695E"/>
+<text x="750" y="259.0" font-size="12.5" fill="#3A3A38" font-weight="400" text-anchor="start">меняет инструментом: сузить — сразу; расширить — только с</text>
+<text x="750" y="276.5" font-size="12.5" fill="#3A3A38" font-weight="400" text-anchor="start">касанием владельца</text>
+<rect x="750" y="286.0" width="134" height="22" rx="11" fill="#FAE5C4" stroke="#F28D20" stroke-width="1"/>
+<text x="817" y="301.0" font-size="11" fill="#1C1C1A" font-weight="700" text-anchor="middle">касание владельца</text>
+<rect x="604" y="267.5" width="112" height="26" rx="13" fill="#FFFFFF" stroke="#6A6A66" stroke-width="1"/>
+<text x="660.0" y="285.0" font-size="11.5" fill="#1C1C1A" font-weight="700" text-anchor="middle">правило</text>
+<line x1="734" y1="280.5" x2="716" y2="280.5" stroke="#00695E" stroke-width="1.6" marker-end="url(#at)"/>
+<line x1="604" y1="280.5" x2="586" y2="280.5" stroke="#3A3A38" stroke-width="1.6" marker-end="url(#a)"/>
+<text x="24" y="354.0" font-size="13.5" fill="#1C1C1A" font-weight="700" text-anchor="start">Внешняя роль</text>
+<rect x="186" y="332.0" width="400" height="87.0" rx="6" fill="#FFFFFF" stroke="#E3EAEA" stroke-width="1"/>
+<rect x="186" y="332.0" width="4" height="87.0" rx="2" fill="#1C1C1A"/>
+<text x="202" y="354.0" font-size="12.5" fill="#3A3A38" font-weight="400" text-anchor="start">по правилам: чат × человек → внешняя роль; на</text>
+<text x="202" y="371.5" font-size="12.5" fill="#3A3A38" font-weight="400" text-anchor="start">сервере внутреннюю применяет код</text>
+<rect x="734" y="332.0" width="442" height="87.0" rx="6" fill="#FFFFFF" stroke="#E3EAEA" stroke-width="1"/>
+<rect x="734" y="332.0" width="4" height="87.0" rx="2" fill="#00695E"/>
+<text x="750" y="354.0" font-size="12.5" fill="#3A3A38" font-weight="400" text-anchor="start">предлагает сменить; роль с доступом шире — с касанием</text>
+<text x="750" y="371.5" font-size="12.5" fill="#3A3A38" font-weight="400" text-anchor="start">владельца</text>
+<rect x="750" y="381.0" width="134" height="22" rx="11" fill="#FAE5C4" stroke="#F28D20" stroke-width="1"/>
+<text x="817" y="396.0" font-size="11" fill="#1C1C1A" font-weight="700" text-anchor="middle">касание владельца</text>
+<rect x="604" y="362.5" width="112" height="26" rx="13" fill="#FFFFFF" stroke="#6A6A66" stroke-width="1"/>
+<text x="660.0" y="380.0" font-size="11.5" fill="#1C1C1A" font-weight="700" text-anchor="middle">роль</text>
+<line x1="734" y1="375.5" x2="716" y2="375.5" stroke="#00695E" stroke-width="1.6" marker-end="url(#at)"/>
+<line x1="604" y1="375.5" x2="586" y2="375.5" stroke="#3A3A38" stroke-width="1.6" marker-end="url(#a)"/>
+<text x="24" y="449.0" font-size="13.5" fill="#1C1C1A" font-weight="700" text-anchor="start">Эпизод</text>
+<rect x="186" y="427.0" width="400" height="61.0" rx="6" fill="#FFFFFF" stroke="#E3EAEA" stroke-width="1"/>
+<rect x="186" y="427.0" width="4" height="61.0" rx="2" fill="#1C1C1A"/>
+<text x="202" y="449.0" font-size="12.5" fill="#3A3A38" font-weight="400" text-anchor="start">номер, журнал, тишина 33 минуты, тема Telegram,</text>
+<text x="202" y="466.5" font-size="12.5" fill="#3A3A38" font-weight="400" text-anchor="start">«новая тема», строка «Тема · Роль»</text>
+<rect x="734" y="427.0" width="442" height="61.0" rx="6" fill="#FFFFFF" stroke="#E3EAEA" stroke-width="1"/>
+<rect x="734" y="427.0" width="4" height="61.0" rx="2" fill="#00695E"/>
+<text x="750" y="449.0" font-size="12.5" fill="#3A3A38" font-weight="400" text-anchor="start">замечает смену темы по смыслу и объявляет; пишет итог</text>
+<rect x="604" y="444.5" width="112" height="26" rx="13" fill="#FFFFFF" stroke="#6A6A66" stroke-width="1"/>
+<text x="660.0" y="462.0" font-size="11.5" fill="#1C1C1A" font-weight="700" text-anchor="middle">эпизод · итог</text>
+<line x1="734" y1="457.5" x2="716" y2="457.5" stroke="#00695E" stroke-width="1.6" marker-end="url(#at)"/>
+<line x1="604" y1="457.5" x2="586" y2="457.5" stroke="#3A3A38" stroke-width="1.6" marker-end="url(#a)"/>
+<text x="24" y="518.0" font-size="13.5" fill="#1C1C1A" font-weight="700" text-anchor="start">Сохранность</text>
+<rect x="186" y="496.0" width="400" height="44" rx="6" fill="#FFFFFF" stroke="#E3EAEA" stroke-width="1"/>
+<rect x="186" y="496.0" width="4" height="44" rx="2" fill="#1C1C1A"/>
+<text x="202" y="518.0" font-size="12.5" fill="#3A3A38" font-weight="400" text-anchor="start">запись до «получил», очередь, повтор отданного</text>
+<rect x="734" y="496.0" width="442" height="44" rx="6" fill="#FFFFFF" stroke="#E3EAEA" stroke-width="1"/>
+<rect x="734" y="496.0" width="4" height="44" rx="2" fill="#00695E"/>
+<text x="750" y="518.0" font-size="12.5" fill="#3A3A38" font-weight="400" text-anchor="start">отвечает — это и есть «обработано»</text>
+<rect x="604" y="505.0" width="112" height="26" rx="13" fill="#FFFFFF" stroke="#6A6A66" stroke-width="1"/>
+<text x="660.0" y="522.5" font-size="11.5" fill="#1C1C1A" font-weight="700" text-anchor="middle">ответить</text>
+<line x1="734" y1="518.0" x2="716" y2="518.0" stroke="#00695E" stroke-width="1.6" marker-end="url(#at)"/>
+<line x1="604" y1="518.0" x2="586" y2="518.0" stroke="#3A3A38" stroke-width="1.6" marker-end="url(#a)"/>
+<text x="24" y="570.0" font-size="13.5" fill="#1C1C1A" font-weight="700" text-anchor="start">Команды</text>
+<rect x="186" y="548.0" width="400" height="61.0" rx="6" fill="#FFFFFF" stroke="#E3EAEA" stroke-width="1"/>
+<rect x="186" y="548.0" width="4" height="61.0" rx="2" fill="#1C1C1A"/>
+<text x="202" y="570.0" font-size="12.5" fill="#3A3A38" font-weight="400" text-anchor="start">стоп, пауза, продолжить, «где мы» — сам, мимо</text>
+<text x="202" y="587.5" font-size="12.5" fill="#3A3A38" font-weight="400" text-anchor="start">очереди; снять стоп — кнопкой</text>
+<rect x="734" y="548.0" width="442" height="61.0" rx="6" fill="#FFFFFF" stroke="#E3EAEA" stroke-width="1"/>
+<rect x="734" y="548.0" width="4" height="61.0" rx="2" fill="#00695E"/>
+<text x="750" y="570.0" font-size="12.5" fill="#3A3A38" font-weight="400" text-anchor="start">не участвует</text>
+<text x="24" y="639.0" font-size="13.5" fill="#1C1C1A" font-weight="700" text-anchor="start">Голос и ключи</text>
+<rect x="186" y="617.0" width="400" height="61.0" rx="6" fill="#FFFFFF" stroke="#E3EAEA" stroke-width="1"/>
+<rect x="186" y="617.0" width="4" height="61.0" rx="2" fill="#1C1C1A"/>
+<text x="202" y="639.0" font-size="12.5" fill="#3A3A38" font-weight="400" text-anchor="start">распознаёт и озвучивает; ключи и токен бота только</text>
+<text x="202" y="656.5" font-size="12.5" fill="#3A3A38" font-weight="400" text-anchor="start">здесь</text>
+<rect x="734" y="617.0" width="442" height="61.0" rx="6" fill="#FFFFFF" stroke="#E3EAEA" stroke-width="1"/>
+<rect x="734" y="617.0" width="4" height="61.0" rx="2" fill="#00695E"/>
+<text x="750" y="639.0" font-size="12.5" fill="#3A3A38" font-weight="400" text-anchor="start">решает: голосом или текстом</text>
+<rect x="604" y="634.5" width="112" height="26" rx="13" fill="#FFFFFF" stroke="#6A6A66" stroke-width="1"/>
+<text x="660.0" y="652.0" font-size="11.5" fill="#1C1C1A" font-weight="700" text-anchor="middle">ответить</text>
+<line x1="734" y1="647.5" x2="716" y2="647.5" stroke="#00695E" stroke-width="1.6" marker-end="url(#at)"/>
+<line x1="604" y1="647.5" x2="586" y2="647.5" stroke="#3A3A38" stroke-width="1.6" marker-end="url(#a)"/>
+<text x="24" y="708.0" font-size="13.5" fill="#1C1C1A" font-weight="700" text-anchor="start">Права агента</text>
+<rect x="186" y="686.0" width="400" height="61.0" rx="6" fill="#FFFFFF" stroke="#E3EAEA" stroke-width="1"/>
+<rect x="186" y="686.0" width="4" height="61.0" rx="2" fill="#1C1C1A"/>
+<text x="202" y="708.0" font-size="12.5" fill="#3A3A38" font-weight="400" text-anchor="start">сервер: отдельный пользователь ОС без сети и ключей,</text>
+<text x="202" y="725.5" font-size="12.5" fill="#3A3A38" font-weight="400" text-anchor="start">три инструмента; macOS: пока без песочниц</text>
+<rect x="734" y="686.0" width="442" height="61.0" rx="6" fill="#FFFFFF" stroke="#E3EAEA" stroke-width="1"/>
+<rect x="734" y="686.0" width="4" height="61.0" rx="2" fill="#00695E"/>
+<text x="750" y="708.0" font-size="12.5" fill="#3A3A38" font-weight="400" text-anchor="start">работает внутри своих прав; уговорённый — не дальше их</text>
+<text x="24" y="777.0" font-size="13.5" fill="#1C1C1A" font-weight="700" text-anchor="start">Смысл</text>
+<rect x="186" y="755.0" width="400" height="61.0" rx="6" fill="#FFFFFF" stroke="#E3EAEA" stroke-width="1"/>
+<rect x="186" y="755.0" width="4" height="61.0" rx="2" fill="#1C1C1A"/>
+<text x="202" y="777.0" font-size="12.5" fill="#3A3A38" font-weight="400" text-anchor="start">сейчас не толкует; позже — свои фильтры и модели под</text>
+<text x="202" y="794.5" font-size="12.5" fill="#3A3A38" font-weight="400" text-anchor="start">задачу</text>
+<rect x="734" y="755.0" width="442" height="61.0" rx="6" fill="#FFFFFF" stroke="#E3EAEA" stroke-width="1"/>
+<rect x="734" y="755.0" width="4" height="61.0" rx="2" fill="#00695E"/>
+<text x="750" y="777.0" font-size="12.5" fill="#3A3A38" font-weight="400" text-anchor="start">понимает, раскладывает, отвечает; управляет фильтрами</text>
+<text x="750" y="794.5" font-size="12.5" fill="#3A3A38" font-weight="400" text-anchor="start">шлюза</text>
+<rect x="24" y="834.0" width="1152" height="80" rx="8" fill="#FFFFFF" stroke="#E3EAEA" stroke-width="1"/>
+<rect x="24" y="834.0" width="5" height="80" rx="2" fill="#1C1C1A"/>
+<text x="42" y="860.0" font-size="13.5" fill="#1C1C1A" font-weight="700" text-anchor="start">Сейчас шлюз смысл не толкует, а агент действует через инструменты шлюза. Позже у шлюза — свои фильтры и модели, ими управляет агент.</text>
+<text x="42" y="882.0" font-size="12" fill="#3A3A38" font-weight="400" text-anchor="start">Шлюз только сопоставляет чат с пространством и ролью и ведёт журнал эпизодов.</text>
+</svg>

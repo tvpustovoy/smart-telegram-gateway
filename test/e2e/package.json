@@ -1,0 +1,17 @@
+{
+  "name": "stg-e2e",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Integration tests: the gateway as a child process against fakes; the channel under a fake Claude Code (MCP SDK client)",
+  "type": "module",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "1.32.1",
+    "stg-channel": "0.1.0",
+    "stg-cli": "0.1.0",
+    "stg-core": "0.1.0",
+    "stg-fake-channel": "0.1.0",
+    "stg-fake-elevenlabs": "0.1.0",
+    "stg-fake-telegram": "0.1.0",
+    "stg-gateway": "0.1.0"
+  }
+}

@@ -1,0 +1,258 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 1044" width="1200" height="1044" font-family="Mulish, 'Golos Text', system-ui, -apple-system, 'Segoe UI', sans-serif" role="img" aria-labelledby="t1 d1">
+<title id="t1">Циклы шлюза: что крутится внутри</title>
+<desc id="d1">Модели в шлюзе нет. В центре — база SQLite: статусы строк и есть состояние. Вокруг — группы циклов; стрелка от группы к строке базы — циклы группы меняют эту таблицу, тикер меняет всю базу. Слева Telegram, справа канал stg-channel и сессия Claude Code. Внизу — внешний перезапуск процесса.</desc>
+<defs><marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#3A3A38"/></marker><marker id="at" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#00695E"/></marker></defs>
+<rect width="1200" height="1044" fill="#F3F7F7"/>
+<text x="24" y="40" font-size="22" fill="#1C1C1A" font-weight="700" text-anchor="start">Циклы шлюза: что крутится внутри</text>
+<text x="24" y="64" font-size="13" fill="#6A6A66" font-weight="400" text-anchor="start">модели нет · состояние — статусы строк в базе · циклы их двигают · после падения продолжают с места</text>
+<rect x="24" y="92" width="130" height="848" rx="10" fill="#FFFFFF" stroke="#E3EAEA" stroke-width="1"/>
+<text x="38" y="118" font-size="16" fill="#1C1C1A" font-weight="700" text-anchor="start">Telegram</text>
+<rect x="206" y="92" width="798" height="848" rx="10" fill="#FFFFFF" stroke="#00695E" stroke-width="1.6"/>
+<text x="222" y="118" font-size="16" fill="#1C1C1A" font-weight="700" text-anchor="start">Шлюз</text>
+<text x="272" y="118" font-size="12" fill="#6A6A66" font-weight="400" text-anchor="start">один процесс Node · модели нет · ключи и база только здесь</text>
+<rect x="1024" y="92" width="152" height="848" rx="10" fill="#FFFFFF" stroke="#E3EAEA" stroke-width="1"/>
+<text x="1038" y="118" font-size="16" fill="#1C1C1A" font-weight="700" text-anchor="start">Агент</text>
+<rect x="490" y="136" width="240" height="70.5" rx="8" fill="#F3F7F7" stroke="#6A6A66" stroke-width="1.2" stroke-dasharray="5 4"/>
+<text x="502" y="155" font-size="11.5" fill="#1C1C1A" font-weight="700" text-anchor="start">Только в памяти процесса</text>
+<text x="502" y="171.0" font-size="10.5" fill="#3A3A38" font-weight="400" text-anchor="start">аренда · «печатает…» · «диск полон» ·</text>
+<text x="502" y="184.5" font-size="10.5" fill="#3A3A38" font-weight="400" text-anchor="start">сроки повтора · синтез — после</text>
+<text x="502" y="198.0" font-size="10.5" fill="#3A3A38" font-weight="400" text-anchor="start">перезапуска заново</text>
+<rect x="490" y="220.5" width="240" height="44" rx="8" fill="#C7E2D8" stroke="#00695E" stroke-width="1.2"/>
+<text x="610.0" y="239.5" font-size="13.5" fill="#1C1C1A" font-weight="700" text-anchor="middle">База SQLite</text>
+<text x="610.0" y="255.5" font-size="10" fill="#3A3A38" font-weight="400" text-anchor="middle">пишет шлюз · статус = состояние</text>
+<rect x="490" y="274.5" width="240" height="49.0" rx="6" fill="#F3F7F7" stroke="#3A3A38" stroke-width="1"/>
+<text x="502" y="291.5" font-size="12" fill="#1C1C1A" font-weight="700" text-anchor="start">updates</text>
+<text x="502" y="305.5" font-size="10.5" fill="#3A3A38" font-weight="400" text-anchor="start">in_progress · admitted · ignored ·</text>
+<text x="502" y="319.0" font-size="10.5" fill="#3A3A38" font-weight="400" text-anchor="start">deferred</text>
+<rect x="490" y="329.5" width="240" height="35.5" rx="6" fill="#F3F7F7" stroke="#3A3A38" stroke-width="1"/>
+<text x="502" y="346.5" font-size="12" fill="#1C1C1A" font-weight="700" text-anchor="start">events</text>
+<text x="502" y="360.5" font-size="10.5" fill="#3A3A38" font-weight="400" text-anchor="start">transcribing · new · delivered · processed</text>
+<rect x="490" y="371.0" width="240" height="35.5" rx="6" fill="#F3F7F7" stroke="#3A3A38" stroke-width="1"/>
+<text x="502" y="388.0" font-size="12" fill="#1C1C1A" font-weight="700" text-anchor="start">episodes</text>
+<text x="502" y="402.0" font-size="10.5" fill="#3A3A38" font-weight="400" text-anchor="start">открыт · закрыт · открыт снова</text>
+<rect x="490" y="412.5" width="240" height="49.0" rx="6" fill="#F3F7F7" stroke="#3A3A38" stroke-width="1"/>
+<text x="502" y="429.5" font-size="12" fill="#1C1C1A" font-weight="700" text-anchor="start">buttons · rules_log</text>
+<text x="502" y="443.5" font-size="10.5" fill="#3A3A38" font-weight="400" text-anchor="start">активна · использована · pending →</text>
+<text x="502" y="457.0" font-size="10.5" fill="#3A3A38" font-weight="400" text-anchor="start">applied</text>
+<rect x="490" y="467.5" width="240" height="35.5" rx="6" fill="#F3F7F7" stroke="#3A3A38" stroke-width="1"/>
+<text x="502" y="484.5" font-size="12" fill="#1C1C1A" font-weight="700" text-anchor="start">meta</text>
+<text x="502" y="498.5" font-size="10.5" fill="#3A3A38" font-weight="400" text-anchor="start">mode · turn · offset · status_line · флаги</text>
+<rect x="490" y="509.0" width="240" height="35.5" rx="6" fill="#F3F7F7" stroke="#3A3A38" stroke-width="1"/>
+<text x="502" y="526.0" font-size="12" fill="#1C1C1A" font-weight="700" text-anchor="start">outbox</text>
+<text x="502" y="540.0" font-size="10.5" fill="#3A3A38" font-weight="400" text-anchor="start">pending · held · sent · dropped</text>
+<rect x="490" y="550.5" width="240" height="49.0" rx="6" fill="#F3F7F7" stroke="#3A3A38" stroke-width="1"/>
+<text x="502" y="567.5" font-size="12" fill="#1C1C1A" font-weight="700" text-anchor="start">deliveries</text>
+<text x="502" y="581.5" font-size="10.5" fill="#3A3A38" font-weight="400" text-anchor="start">посылки: pending → sent · dropped ·</text>
+<text x="502" y="595.0" font-size="10.5" fill="#3A3A38" font-weight="400" text-anchor="start">failed</text>
+<rect x="490" y="605.5" width="240" height="35.5" rx="6" fill="#F3F7F7" stroke="#3A3A38" stroke-width="1"/>
+<text x="502" y="622.5" font-size="12" fill="#1C1C1A" font-weight="700" text-anchor="start">edits · deletions</text>
+<text x="502" y="636.5" font-size="10.5" fill="#3A3A38" font-weight="400" text-anchor="start">pending · sent · dropped</text>
+<rect x="490" y="647.0" width="240" height="49.0" rx="6" fill="#F3F7F7" stroke="#3A3A38" stroke-width="1"/>
+<text x="502" y="664.0" font-size="12" fill="#1C1C1A" font-weight="700" text-anchor="start">reactions</text>
+<text x="502" y="678.0" font-size="10.5" fill="#3A3A38" font-weight="400" text-anchor="start">pending (👀 / 👌; правка — снять) · done</text>
+<text x="502" y="691.5" font-size="10.5" fill="#3A3A38" font-weight="400" text-anchor="start">· failed</text>
+<rect x="222" y="136" width="208" height="199.5" rx="8" fill="#FFFFFF" stroke="#00695E" stroke-width="1.4"/>
+<rect x="222" y="136" width="5" height="199.5" rx="2" fill="#00695E"/>
+<text x="238" y="157" font-size="13.5" fill="#1C1C1A" font-weight="700" text-anchor="start">Жизнь процесса</text>
+<text x="238" y="174" font-size="10.5" fill="#6A6A66" font-weight="400" text-anchor="start">старт · сигнал остановки ·</text>
+<text x="238" y="188" font-size="10.5" fill="#6A6A66" font-weight="400" text-anchor="start">падение · команда stg</text>
+<text x="238" y="202" font-size="10.5" fill="#3A3A38" font-weight="400" text-anchor="start">отданное delivered → new</text>
+<text x="238" y="216" font-size="10.5" fill="#3A3A38" font-weight="400" text-anchor="start">(кроме той же сессии) ·</text>
+<text x="238" y="230" font-size="10.5" fill="#3A3A38" font-weight="400" text-anchor="start">зависшее in_progress →</text>
+<text x="238" y="244" font-size="10.5" fill="#3A3A38" font-weight="400" text-anchor="start">deferred · маркер чистой</text>
+<text x="238" y="258" font-size="10.5" fill="#3A3A38" font-weight="400" text-anchor="start">остановки · stg restore — база</text>
+<text x="238" y="272" font-size="10.5" fill="#3A3A38" font-weight="400" text-anchor="start">из копии</text>
+<text x="238" y="292" font-size="11" fill="#1C1C1A" font-weight="400" text-anchor="start">startup</text>
+<text x="285.575" y="292" font-size="11" fill="#1C1C1A" font-weight="400" text-anchor="start">token-wait</text>
+<text x="238" y="308.5" font-size="11" fill="#1C1C1A" font-weight="400" text-anchor="start">crash-recovery</text>
+<text x="328.75" y="308.5" font-size="11" fill="#1C1C1A" font-weight="400" text-anchor="start">shutdown</text>
+<text x="238" y="325.0" font-size="11" fill="#1C1C1A" font-weight="400" text-anchor="start">backup-restore</text>
+<rect x="222" y="357.5" width="208" height="141.0" rx="8" fill="#FFFFFF" stroke="#00695E" stroke-width="1.4"/>
+<rect x="222" y="357.5" width="5" height="141.0" rx="2" fill="#00695E"/>
+<text x="238" y="378.5" font-size="13.5" fill="#1C1C1A" font-weight="700" text-anchor="start">Приём из Telegram</text>
+<text x="238" y="395.5" font-size="10.5" fill="#6A6A66" font-weight="400" text-anchor="start">длинный опрос getUpdates (30</text>
+<text x="238" y="409.5" font-size="10.5" fill="#6A6A66" font-weight="400" text-anchor="start">с) · команда stg</text>
+<text x="238" y="423.5" font-size="10.5" fill="#3A3A38" font-weight="400" text-anchor="start">updates → admitted · событие ·</text>
+<text x="238" y="437.5" font-size="10.5" fill="#3A3A38" font-weight="400" text-anchor="start">эпизод · правка: снять реакцию</text>
+<text x="238" y="451.5" font-size="10.5" fill="#3A3A38" font-weight="400" text-anchor="start">· offset — одной транзакцией</text>
+<text x="238" y="471.5" font-size="11" fill="#1C1C1A" font-weight="400" text-anchor="start">reception</text>
+<text x="298.225" y="471.5" font-size="11" fill="#1C1C1A" font-weight="400" text-anchor="start">admission</text>
+<text x="238" y="488.0" font-size="11" fill="#1C1C1A" font-weight="400" text-anchor="start">deferred-retry</text>
+<rect x="222" y="532.5" width="208" height="155.5" rx="8" fill="#FFFFFF" stroke="#F28D20" stroke-width="1.4"/>
+<rect x="222" y="532.5" width="5" height="155.5" rx="2" fill="#F28D20"/>
+<text x="238" y="553.5" font-size="13.5" fill="#1C1C1A" font-weight="700" text-anchor="start">Решения владельца и</text>
+<text x="238" y="570.5" font-size="13.5" fill="#1C1C1A" font-weight="700" text-anchor="start">агента</text>
+<text x="238" y="587.5" font-size="10.5" fill="#6A6A66" font-weight="400" text-anchor="start">команда или кнопка владельца</text>
+<text x="238" y="601.5" font-size="10.5" fill="#6A6A66" font-weight="400" text-anchor="start">· кадр агента episode, rule</text>
+<text x="238" y="615.5" font-size="10.5" fill="#3A3A38" font-weight="400" text-anchor="start">mode и turn · эпизод открыт /</text>
+<text x="238" y="629.5" font-size="10.5" fill="#3A3A38" font-weight="400" text-anchor="start">закрыт · rules_log · held →</text>
+<text x="238" y="643.5" font-size="10.5" fill="#3A3A38" font-weight="400" text-anchor="start">pending, «стоп» → dropped (и</text>
+<text x="238" y="657.5" font-size="10.5" fill="#3A3A38" font-weight="400" text-anchor="start">посылки)</text>
+<text x="238" y="677.5" font-size="11" fill="#1C1C1A" font-weight="400" text-anchor="start">control</text>
+<text x="285.025" y="677.5" font-size="11" fill="#1C1C1A" font-weight="400" text-anchor="start">episodes</text>
+<text x="343.875" y="677.5" font-size="11" fill="#1C1C1A" font-weight="400" text-anchor="start">rules</text>
+<rect x="222" y="710.0" width="208" height="171.5" rx="8" fill="#FFFFFF" stroke="#00695E" stroke-width="1.4"/>
+<rect x="222" y="710.0" width="5" height="171.5" rx="2" fill="#00695E"/>
+<text x="238" y="731.0" font-size="13.5" fill="#1C1C1A" font-weight="700" text-anchor="start">Отправка в Telegram</text>
+<text x="238" y="748.0" font-size="10.5" fill="#6A6A66" font-weight="400" text-anchor="start">kick от других циклов · свой</text>
+<text x="238" y="762.0" font-size="10.5" fill="#6A6A66" font-weight="400" text-anchor="start">таймер на ближайший срок</text>
+<text x="238" y="776.0" font-size="10.5" fill="#3A3A38" font-weight="400" text-anchor="start">outbox, правки, удаления →</text>
+<text x="238" y="790.0" font-size="10.5" fill="#3A3A38" font-weight="400" text-anchor="start">sent · посылки — документом ·</text>
+<text x="238" y="804.0" font-size="10.5" fill="#3A3A38" font-weight="400" text-anchor="start">реакции → done · закреплённая</text>
+<text x="238" y="818.0" font-size="10.5" fill="#3A3A38" font-weight="400" text-anchor="start">строка</text>
+<text x="238" y="838.0" font-size="11" fill="#1C1C1A" font-weight="400" text-anchor="start">sender-outbox</text>
+<text x="325.45" y="838.0" font-size="11" fill="#1C1C1A" font-weight="400" text-anchor="start">sender-edits</text>
+<text x="238" y="854.5" font-size="11" fill="#1C1C1A" font-weight="400" text-anchor="start">sender-deletions</text>
+<text x="337.55" y="854.5" font-size="11" fill="#1C1C1A" font-weight="400" text-anchor="start">status-line</text>
+<text x="238" y="871.0" font-size="11" fill="#1C1C1A" font-weight="400" text-anchor="start">reactions</text>
+<line x1="430" y1="150.0" x2="490" y2="299.0" stroke="#3A3A38" stroke-width="1.3" marker-end="url(#a)"/>
+<line x1="430" y1="207.16666666666666" x2="490" y2="347.25" stroke="#3A3A38" stroke-width="1.3" marker-end="url(#a)"/>
+<line x1="430" y1="264.3333333333333" x2="490" y2="485.25" stroke="#3A3A38" stroke-width="1.3" marker-end="url(#a)"/>
+<line x1="430" y1="321.5" x2="490" y2="526.75" stroke="#3A3A38" stroke-width="1.3" marker-end="url(#a)"/>
+<line x1="430" y1="371.5" x2="490" y2="299.0" stroke="#3A3A38" stroke-width="1.3" marker-end="url(#a)"/>
+<line x1="430" y1="394.1" x2="490" y2="347.25" stroke="#3A3A38" stroke-width="1.3" marker-end="url(#a)"/>
+<line x1="430" y1="416.7" x2="490" y2="388.75" stroke="#3A3A38" stroke-width="1.3" marker-end="url(#a)"/>
+<line x1="430" y1="439.3" x2="490" y2="485.25" stroke="#3A3A38" stroke-width="1.3" marker-end="url(#a)"/>
+<line x1="430" y1="461.9" x2="490" y2="526.75" stroke="#3A3A38" stroke-width="1.3" marker-end="url(#a)"/>
+<line x1="430" y1="484.5" x2="490" y2="671.5" stroke="#3A3A38" stroke-width="1.3" marker-end="url(#a)"/>
+<line x1="430" y1="546.5" x2="490" y2="347.25" stroke="#F28D20" stroke-width="1.3" marker-end="url(#a)"/>
+<line x1="430" y1="567.75" x2="490" y2="388.75" stroke="#F28D20" stroke-width="1.3" marker-end="url(#a)"/>
+<line x1="430" y1="589.0" x2="490" y2="437.0" stroke="#F28D20" stroke-width="1.3" marker-end="url(#a)"/>
+<line x1="430" y1="610.25" x2="490" y2="485.25" stroke="#F28D20" stroke-width="1.3" marker-end="url(#a)"/>
+<line x1="430" y1="631.5" x2="490" y2="526.75" stroke="#F28D20" stroke-width="1.3" marker-end="url(#a)"/>
+<line x1="430" y1="652.75" x2="490" y2="575.0" stroke="#F28D20" stroke-width="1.3" marker-end="url(#a)"/>
+<line x1="430" y1="674.0" x2="490" y2="623.25" stroke="#F28D20" stroke-width="1.3" marker-end="url(#a)"/>
+<line x1="430" y1="724.0" x2="490" y2="485.25" stroke="#00695E" stroke-width="1.3" marker-end="url(#at)"/>
+<line x1="430" y1="759.875" x2="490" y2="526.75" stroke="#00695E" stroke-width="1.3" marker-end="url(#at)"/>
+<line x1="430" y1="795.75" x2="490" y2="575.0" stroke="#00695E" stroke-width="1.3" marker-end="url(#at)"/>
+<line x1="430" y1="831.625" x2="490" y2="623.25" stroke="#00695E" stroke-width="1.3" marker-end="url(#at)"/>
+<line x1="430" y1="867.5" x2="490" y2="671.5" stroke="#00695E" stroke-width="1.3" marker-end="url(#at)"/>
+<line x1="282" y1="498.5" x2="282" y2="532.5" stroke="#F28D20" stroke-width="1.3" marker-end="url(#a)"/>
+<text x="290" y="519.5" font-size="10" fill="#6A6A66" font-weight="400" text-anchor="start">команда, кнопка</text>
+<rect x="34" y="361.5" width="110" height="92" rx="6" fill="#FAE5C4" stroke="#F28D20" stroke-width="1"/>
+<text x="44" y="381.5" font-size="13" fill="#1C1C1A" font-weight="700" text-anchor="start">Владелец</text>
+<text x="44" y="399.5" font-size="11" fill="#1C1C1A" font-weight="400" text-anchor="start">пишет текстом,</text>
+<text x="44" y="414.0" font-size="11" fill="#1C1C1A" font-weight="400" text-anchor="start">голосом;</text>
+<text x="44" y="428.5" font-size="11" fill="#1C1C1A" font-weight="400" text-anchor="start">команды и</text>
+<text x="44" y="443.0" font-size="11" fill="#1C1C1A" font-weight="400" text-anchor="start">кнопки</text>
+<line x1="144" y1="391.5" x2="222" y2="391.5" stroke="#3A3A38" stroke-width="1.6" marker-end="url(#a)"/>
+<text x="180.0" y="384.5" font-size="9" fill="#6A6A66" font-weight="400" text-anchor="middle">пишет</text>
+<rect x="34" y="720.0" width="110" height="164.5" rx="6" fill="#FFFFFF" stroke="#00695E" stroke-width="1"/>
+<text x="44" y="740.0" font-size="13" fill="#1C1C1A" font-weight="700" text-anchor="start">Бот в чате</text>
+<text x="44" y="758.0" font-size="11" fill="#1C1C1A" font-weight="400" text-anchor="start">ответы и</text>
+<text x="44" y="772.5" font-size="11" fill="#1C1C1A" font-weight="400" text-anchor="start">файлы</text>
+<text x="44" y="787.0" font-size="11" fill="#1C1C1A" font-weight="400" text-anchor="start">агента,</text>
+<text x="44" y="801.5" font-size="11" fill="#1C1C1A" font-weight="400" text-anchor="start">реакции 👀 👌,</text>
+<text x="44" y="816.0" font-size="11" fill="#1C1C1A" font-weight="400" text-anchor="start">расшифровки,</text>
+<text x="44" y="830.5" font-size="11" fill="#1C1C1A" font-weight="400" text-anchor="start">строка</text>
+<text x="44" y="845.0" font-size="11" fill="#1C1C1A" font-weight="400" text-anchor="start">состояния,</text>
+<text x="44" y="859.5" font-size="11" fill="#1C1C1A" font-weight="400" text-anchor="start">правки,</text>
+<text x="44" y="874.0" font-size="11" fill="#1C1C1A" font-weight="400" text-anchor="start">удаления</text>
+<line x1="222" y1="760.0" x2="144" y2="760.0" stroke="#00695E" stroke-width="1.6" marker-end="url(#at)"/>
+<text x="180.0" y="753.0" font-size="9" fill="#6A6A66" font-weight="400" text-anchor="middle">отправка</text>
+<rect x="790" y="283.25" width="198" height="152.5" rx="8" fill="#FFFFFF" stroke="#00695E" stroke-width="1.4"/>
+<rect x="790" y="283.25" width="5" height="152.5" rx="2" fill="#00695E"/>
+<text x="806" y="304.25" font-size="13.5" fill="#1C1C1A" font-weight="700" text-anchor="start">Голос</text>
+<text x="806" y="321.25" font-size="10.5" fill="#6A6A66" font-weight="400" text-anchor="start">после записи голосового ·</text>
+<text x="806" y="335.25" font-size="10.5" fill="#6A6A66" font-weight="400" text-anchor="start">ответ агента голосом</text>
+<text x="806" y="349.25" font-size="10.5" fill="#3A3A38" font-weight="400" text-anchor="start">events: transcribing → new ·</text>
+<text x="806" y="363.25" font-size="10.5" fill="#3A3A38" font-weight="400" text-anchor="start">расшифровка ответом на</text>
+<text x="806" y="377.25" font-size="10.5" fill="#3A3A38" font-weight="400" text-anchor="start">голосовое, кружок, файл ·</text>
+<text x="806" y="391.25" font-size="10.5" fill="#3A3A38" font-weight="400" text-anchor="start">синтез не вышел —</text>
+<text x="806" y="405.25" font-size="10.5" fill="#3A3A38" font-weight="400" text-anchor="start">outbox.voice_failed</text>
+<text x="806" y="425.25" font-size="11" fill="#1C1C1A" font-weight="400" text-anchor="start">stt</text>
+<text x="829.65" y="425.25" font-size="11" fill="#1C1C1A" font-weight="400" text-anchor="start">tts</text>
+<rect x="790" y="457.75" width="198" height="185.5" rx="8" fill="#FFFFFF" stroke="#00695E" stroke-width="1.4"/>
+<rect x="790" y="457.75" width="5" height="185.5" rx="2" fill="#00695E"/>
+<text x="806" y="478.75" font-size="13.5" fill="#1C1C1A" font-weight="700" text-anchor="start">Обмен с агентом</text>
+<text x="806" y="495.75" font-size="10.5" fill="#6A6A66" font-weight="400" text-anchor="start">кадры канала · такт 15 с</text>
+<text x="806" y="509.75" font-size="10.5" fill="#3A3A38" font-weight="400" text-anchor="start">events: new → delivered →</text>
+<text x="806" y="523.75" font-size="10.5" fill="#3A3A38" font-weight="400" text-anchor="start">processed · ответ агента в</text>
+<text x="806" y="537.75" font-size="10.5" fill="#3A3A38" font-weight="400" text-anchor="start">outbox · 👀 и 👌 · флаги связи в</text>
+<text x="806" y="551.75" font-size="10.5" fill="#3A3A38" font-weight="400" text-anchor="start">meta · картинка агенту —</text>
+<text x="806" y="565.75" font-size="10.5" fill="#3A3A38" font-weight="400" text-anchor="start">events.media_ref · файл</text>
+<text x="806" y="579.75" font-size="10.5" fill="#3A3A38" font-weight="400" text-anchor="start">агента — deliveries и копия</text>
+<text x="806" y="599.75" font-size="11" fill="#1C1C1A" font-weight="400" text-anchor="start">socket-server</text>
+<text x="889.325" y="599.75" font-size="11" fill="#1C1C1A" font-weight="400" text-anchor="start">lease</text>
+<text x="806" y="616.25" font-size="11" fill="#1C1C1A" font-weight="400" text-anchor="start">delivery</text>
+<text x="858.525" y="616.25" font-size="11" fill="#1C1C1A" font-weight="400" text-anchor="start">redelivery</text>
+<text x="921.775" y="616.25" font-size="11" fill="#1C1C1A" font-weight="400" text-anchor="start">typing</text>
+<text x="806" y="632.75" font-size="11" fill="#1C1C1A" font-weight="400" text-anchor="start">media</text>
+<text x="849.725" y="632.75" font-size="11" fill="#1C1C1A" font-weight="400" text-anchor="start">parcels</text>
+<rect x="790" y="665.25" width="198" height="127.5" rx="8" fill="#FFFFFF" stroke="#00695E" stroke-width="1.4"/>
+<rect x="790" y="665.25" width="5" height="127.5" rx="2" fill="#00695E"/>
+<text x="806" y="686.25" font-size="13.5" fill="#1C1C1A" font-weight="700" text-anchor="start">Наблюдатель</text>
+<text x="806" y="703.25" font-size="13.5" fill="#1C1C1A" font-weight="700" text-anchor="start">agent-state</text>
+<text x="806" y="720.25" font-size="10.5" fill="#6A6A66" font-weight="400" text-anchor="start">файл изменился · опрос 5 с</text>
+<text x="806" y="734.25" font-size="10.5" fill="#3A3A38" font-weight="400" text-anchor="start">значки агента в закреплённой</text>
+<text x="806" y="748.25" font-size="10.5" fill="#3A3A38" font-weight="400" text-anchor="start">строке · строка об отказе</text>
+<text x="806" y="762.25" font-size="10.5" fill="#3A3A38" font-weight="400" text-anchor="start">модели</text>
+<text x="806" y="782.25" font-size="11" fill="#1C1C1A" font-weight="400" text-anchor="start">agent-state</text>
+<line x1="790" y1="297.25" x2="730" y2="347.25" stroke="#00695E" stroke-width="1.3" marker-end="url(#at)"/>
+<line x1="790" y1="338.75" x2="730" y2="437.0" stroke="#00695E" stroke-width="1.3" marker-end="url(#at)"/>
+<line x1="790" y1="380.25" x2="730" y2="526.75" stroke="#00695E" stroke-width="1.3" marker-end="url(#at)"/>
+<line x1="790" y1="421.75" x2="730" y2="623.25" stroke="#00695E" stroke-width="1.3" marker-end="url(#at)"/>
+<line x1="790" y1="471.75" x2="730" y2="347.25" stroke="#00695E" stroke-width="1.3" marker-end="url(#at)"/>
+<line x1="790" y1="511.125" x2="730" y2="485.25" stroke="#00695E" stroke-width="1.3" marker-end="url(#at)"/>
+<line x1="790" y1="550.5" x2="730" y2="526.75" stroke="#00695E" stroke-width="1.3" marker-end="url(#at)"/>
+<line x1="790" y1="589.875" x2="730" y2="575.0" stroke="#00695E" stroke-width="1.3" marker-end="url(#at)"/>
+<line x1="790" y1="629.25" x2="730" y2="671.5" stroke="#00695E" stroke-width="1.3" marker-end="url(#at)"/>
+<line x1="790" y1="679.25" x2="730" y2="485.25" stroke="#00695E" stroke-width="1.3" marker-end="url(#at)"/>
+<line x1="790" y1="778.75" x2="730" y2="526.75" stroke="#00695E" stroke-width="1.3" marker-end="url(#at)"/>
+<rect x="998" y="463.75" width="12" height="173.5" rx="3" fill="#00695E" stroke="#00695E" stroke-width="1"/>
+<line x1="988" y1="491.75" x2="1034" y2="491.75" stroke="#00695E" stroke-width="1.6" marker-end="url(#at)"/>
+<line x1="1034" y1="521.75" x2="988" y2="521.75" stroke="#3A3A38" stroke-width="1.6" marker-end="url(#a)"/>
+<text x="1004" y="583.5" font-size="9" fill="#FFFFFF" font-weight="700" text-anchor="middle" dominant-baseline="central" transform="rotate(-90 1004 583.5)">сокет</text>
+<rect x="1034" y="453.75" width="132" height="155.5" rx="8" fill="#FFFFFF" stroke="#00695E" stroke-width="1.4"/>
+<rect x="1034" y="453.75" width="5" height="155.5" rx="2" fill="#00695E"/>
+<text x="1050" y="474.75" font-size="13.5" fill="#1C1C1A" font-weight="700" text-anchor="start">Канал</text>
+<text x="1050" y="491.75" font-size="13.5" fill="#1C1C1A" font-weight="700" text-anchor="start">stg-channel</text>
+<text x="1050" y="508.75" font-size="10.5" fill="#6A6A66" font-weight="400" text-anchor="start">процесс на</text>
+<text x="1050" y="522.75" font-size="10.5" fill="#6A6A66" font-weight="400" text-anchor="start">сессию; ping 15 с</text>
+<text x="1050" y="536.75" font-size="10.5" fill="#3A3A38" font-weight="400" text-anchor="start">событие → в</text>
+<text x="1050" y="550.75" font-size="10.5" fill="#3A3A38" font-weight="400" text-anchor="start">сессию; назад</text>
+<text x="1050" y="564.75" font-size="10.5" fill="#3A3A38" font-weight="400" text-anchor="start">delivered, reply,</text>
+<text x="1050" y="578.75" font-size="10.5" fill="#3A3A38" font-weight="400" text-anchor="start">done</text>
+<text x="1050" y="598.75" font-size="11" fill="#1C1C1A" font-weight="400" text-anchor="start">channel-client</text>
+<rect x="1034" y="631.25" width="132" height="144.0" rx="8" fill="#C7E2D8" stroke="#00695E" stroke-width="1.4"/>
+<text x="1046" y="652.25" font-size="13.5" fill="#1C1C1A" font-weight="700" text-anchor="start">Claude Code</text>
+<text x="1046" y="670.25" font-size="10.5" fill="#3A3A38" font-weight="400" text-anchor="start">сессия агента:</text>
+<text x="1046" y="683.75" font-size="10.5" fill="#3A3A38" font-weight="400" text-anchor="start">модель отвечает</text>
+<text x="1046" y="697.25" font-size="10.5" fill="#3A3A38" font-weight="400" text-anchor="start">инструментами</text>
+<text x="1046" y="710.75" font-size="10.5" fill="#3A3A38" font-weight="400" text-anchor="start">reply, done, episode,</text>
+<text x="1046" y="724.25" font-size="10.5" fill="#3A3A38" font-weight="400" text-anchor="start">rule; смотрит</text>
+<text x="1046" y="737.75" font-size="10.5" fill="#3A3A38" font-weight="400" text-anchor="start">картинки — media;</text>
+<text x="1046" y="751.25" font-size="10.5" fill="#3A3A38" font-weight="400" text-anchor="start">отдаёт файлы —</text>
+<text x="1046" y="764.75" font-size="10.5" fill="#3A3A38" font-weight="400" text-anchor="start">send_file</text>
+<line x1="1100.0" y1="609.25" x2="1100.0" y2="631.25" stroke="#00695E" stroke-width="1.6" marker-end="url(#at)"/>
+<rect x="1034" y="797.25" width="132" height="101.5" rx="8" fill="#FFFFFF" stroke="#00695E" stroke-width="1.2"/>
+<text x="1046" y="818.25" font-size="12.5" fill="#1C1C1A" font-weight="700" text-anchor="start">agent-state.json</text>
+<text x="1046" y="835.25" font-size="10.5" fill="#3A3A38" font-weight="400" text-anchor="start">пишет stg</text>
+<text x="1046" y="848.75" font-size="10.5" fill="#3A3A38" font-weight="400" text-anchor="start">agent-state из</text>
+<text x="1046" y="862.25" font-size="10.5" fill="#3A3A38" font-weight="400" text-anchor="start">строки состояния и</text>
+<text x="1046" y="875.75" font-size="10.5" fill="#3A3A38" font-weight="400" text-anchor="start">перехватчиков</text>
+<text x="1046" y="889.25" font-size="10.5" fill="#3A3A38" font-weight="400" text-anchor="start">Claude Code</text>
+<line x1="1100.0" y1="775.25" x2="1100.0" y2="797.25" stroke="#3A3A38" stroke-width="1.6" marker-end="url(#a)"/>
+<line x1="1034" y1="847.25" x2="988" y2="778.75" stroke="#3A3A38" stroke-width="1.6" marker-end="url(#a)"/>
+<rect x="470" y="736.0" width="280" height="155.0" rx="8" fill="#FFFFFF" stroke="#00695E" stroke-width="1.4"/>
+<rect x="470" y="736.0" width="5" height="155.0" rx="2" fill="#00695E"/>
+<text x="486" y="757.0" font-size="13.5" fill="#1C1C1A" font-weight="700" text-anchor="start">Тикер сроков и обслуживание</text>
+<text x="486" y="774.0" font-size="10.5" fill="#6A6A66" font-weight="400" text-anchor="start">такт 15 с · сроки раз в минуту · хранение раз</text>
+<text x="486" y="788.0" font-size="10.5" fill="#6A6A66" font-weight="400" text-anchor="start">в сутки</text>
+<text x="486" y="802.0" font-size="10.5" fill="#3A3A38" font-weight="400" text-anchor="start">эпизод → закрыт по тишине · «агент не на</text>
+<text x="486" y="816.0" font-size="10.5" fill="#3A3A38" font-weight="400" text-anchor="start">связи» · in_progress → deferred через сутки ·</text>
+<text x="486" y="830.0" font-size="10.5" fill="#3A3A38" font-weight="400" text-anchor="start">rules_log → expired · чистка updates, реакций,</text>
+<text x="486" y="844.0" font-size="10.5" fill="#3A3A38" font-weight="400" text-anchor="start">удалений · «диск полон» → проба</text>
+<text x="486" y="864.0" font-size="11" fill="#1C1C1A" font-weight="400" text-anchor="start">ticker</text>
+<text x="525.875" y="864.0" font-size="11" fill="#1C1C1A" font-weight="400" text-anchor="start">offline-notice</text>
+<text x="604.795703125" y="864.0" font-size="11" fill="#1C1C1A" font-weight="400" text-anchor="start">purge</text>
+<text x="486" y="880.5" font-size="11" fill="#1C1C1A" font-weight="400" text-anchor="start">stale-in-progress</text>
+<text x="586.65" y="880.5" font-size="11" fill="#1C1C1A" font-weight="400" text-anchor="start">retention</text>
+<text x="644.125" y="880.5" font-size="11" fill="#1C1C1A" font-weight="400" text-anchor="start">disk-full</text>
+<rect x="485" y="215.5" width="250" height="485.5" rx="10" fill="none" stroke="#00695E" stroke-width="1" stroke-dasharray="3 3"/>
+<line x1="610.0" y1="736.0" x2="610.0" y2="701.0" stroke="#3A3A38" stroke-width="1.6" marker-end="url(#a)"/>
+<text x="618.0" y="722.5" font-size="10" fill="#6A6A66" font-weight="400" text-anchor="start">ко всей базе</text>
+<rect x="24" y="956" width="1152" height="42" rx="8" fill="#FFFFFF" stroke="#6A6A66" stroke-width="1.2" stroke-dasharray="6 4"/>
+<text x="40" y="982" font-size="11.5" fill="#3A3A38" font-weight="400" text-anchor="start">restart-wrapper — вне кода пакетов: упавший процесс поднимает служба launchd, через 10 с, без предела попыток</text>
+<text x="24" y="1022" font-size="11" fill="#3A3A38" font-weight="400" text-anchor="start">test-only (сокет часов, сторож родителя) — только под тестом; backup-restore и deferred-retry — по команде. Реакции шлюза (с 0.3.2): 👀 — событие отдано агенту, 👌 — агент ответил.</text>
+</svg>

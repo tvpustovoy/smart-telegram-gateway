@@ -1,0 +1,34 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "rootDir": "src",
+    "outDir": "dist",
+    "tsBuildInfoFile": "dist/.tsbuildinfo"
+  },
+  "include": [
+    "src"
+  ],
+  "references": [
+    {
+      "path": "../../packages/core"
+    },
+    {
+      "path": "../../packages/gateway"
+    },
+    {
+      "path": "../../packages/channel"
+    },
+    {
+      "path": "../../packages/cli"
+    },
+    {
+      "path": "../fake-telegram"
+    },
+    {
+      "path": "../fake-channel"
+    },
+    {
+      "path": "../fake-elevenlabs"
+    }
+  ]
+}

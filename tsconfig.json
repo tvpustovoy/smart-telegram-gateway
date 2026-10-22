@@ -1,0 +1,13 @@
+{
+  "files": [],
+  "references": [
+    { "path": "packages/core" },
+    { "path": "packages/gateway" },
+    { "path": "packages/channel" },
+    { "path": "packages/cli" },
+    { "path": "test/fake-telegram" },
+    { "path": "test/fake-channel" },
+    { "path": "test/fake-elevenlabs" },
+    { "path": "test/e2e" }
+  ]
+}

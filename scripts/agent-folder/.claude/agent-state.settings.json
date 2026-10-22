@@ -1,0 +1,18 @@
+{
+  "statusLine": {
+    "type": "command",
+    "command": "{{NODE}} {{CLI_ENTRY}} agent-state statusline --home {{STG_HOME}} --then {{STATUSLINE_THEN}}",
+    "padding": 0
+  },
+  "hooks": {
+    "PreCompact": [
+      { "hooks": [{ "type": "command", "command": "{{NODE}} {{CLI_ENTRY}} agent-state hook --home {{STG_HOME}}", "timeout": 10 }] }
+    ],
+    "PostCompact": [
+      { "hooks": [{ "type": "command", "command": "{{NODE}} {{CLI_ENTRY}} agent-state hook --home {{STG_HOME}}", "timeout": 10 }] }
+    ],
+    "StopFailure": [
+      { "hooks": [{ "type": "command", "command": "{{NODE}} {{CLI_ENTRY}} agent-state hook --home {{STG_HOME}}", "timeout": 10 }] }
+    ]
+  }
+}

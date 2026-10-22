@@ -1,0 +1,14 @@
+{
+  "permissions": {
+    "defaultMode": "dontAsk",
+    "allow": [
+      "mcp__smart-telegram-gateway__*",
+      "Read",
+      "Grep",
+      "Glob",
+      "Edit(./notes/**)",
+      "Edit(./parcels/**)"
+    ]
+  },
+  "enabledMcpjsonServers": ["smart-telegram-gateway"]
+}

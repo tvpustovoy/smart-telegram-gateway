@@ -1,0 +1,23 @@
+{
+  "name": "stg-channel",
+  "version": "0.1.0",
+  "private": true,
+  "description": "stg-channel MCP server — the channel adapter for Claude Code (server \"smart-telegram-gateway\")",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "bin": {
+    "stg-channel": "dist/index.js"
+  },
+  "dependencies": {
+    "stg-core": "0.1.0",
+    "@modelcontextprotocol/sdk": "1.32.1"
+  }
+}
