@@ -46,6 +46,7 @@ if (unknown.length > 0) {
 }
 const withHistory = args.includes('--history');
 const allowedAuthor = process.env.STG_ALLOWED_AUTHOR?.trim() || '';
+const allowedName = allowedAuthor.replace(/\s*<[^>]*>\s*$/, '');
 
 // ---------- rules ----------
 
@@ -148,6 +149,8 @@ function scanText(text) {
       for (const m of line.matchAll(rule.re)) {
         if (m[0] === '') continue;
         if (rule.accept && !rule.accept(m[0], line, m.index)) continue;
+        // The project's own copyright line (name from STG_ALLOWED_AUTHOR) is expected.
+        if (allowedName && /^\s*(?:Copyright|©)/i.test(line) && allowedName.toLowerCase().includes(m[0].toLowerCase())) continue;
         seen.add(rule.label);
         out.push({ line: n + 1, match: m[0], label: rule.label });
       }

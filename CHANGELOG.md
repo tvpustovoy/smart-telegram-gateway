@@ -9,6 +9,12 @@ an older version after a migration is only possible from a database backup taken
 
 The chat interface and the design documents are in Russian; the entries below describe behavior in English.
 
+## Unreleased
+
+### Changed
+
+- License: Apache License 2.0 (`LICENSE`, `NOTICE`); `CONTRIBUTING.md` added.
+
 ## 0.3.5 - 2026-10-22
 
 ### Added

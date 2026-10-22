@@ -1,6 +1,7 @@
 # smart-telegram-gateway
 
-A reliable gateway between Telegram and an AI agent that runs as a Claude Code session.
+A smart and reliable gateway between Telegram and an AI agent that runs as a Claude Code session: nothing gets lost,
+and your agent doesn't spend its turns on chores the gateway can do itself.
 
 [Русская версия](README.ru.md) · [Changelog](CHANGELOG.md) · [Issues][issues]
 
@@ -12,6 +13,9 @@ whether the agent even saw them.
 
 smart-telegram-gateway is a small always-on service that owns the bot and stands between Telegram and the agent:
 
+- **Your agent does only the work that needs it.** Receipts, the pinned status line, voice transcription, commands,
+  episode bookkeeping, undo windows for reactions, rules updates for the agent — the gateway does
+  all of this itself, deterministically. The agent spends its turns and tokens only on what needs thinking.
 - **Nothing is lost.** Every message is written to a local SQLite database before Telegram is told it was received.
   If the agent is offline, messages wait; when it comes back, they are delivered in order. Delivery to the agent is
   at-least-once, with redelivery when the agent stays silent.
@@ -242,7 +246,7 @@ zero-width joiner is still found. Built-in checks need no list: home-directory p
 addresses, phone numbers, Telegram bot tokens, `sk-…` API keys, GitHub and AWS keys, private keys. Each finding is
 printed as `file:line:match`; the exit code is 1 when anything is found. Without `STG_DENYLIST` only the built-in
 checks run. With `--history`, author and committer lines are scanned too; set `STG_ALLOWED_AUTHOR="Name <email>"` to
-accept the project's own commit identity.
+accept the project's own commit identity; the same name is also accepted on `Copyright` lines.
 
 ## Packages
 
@@ -279,7 +283,9 @@ needs a backup (`stg backup`).
 
 ## License
 
-Not yet chosen: `package.json` says `UNLICENSED`. Until a license file is added, all rights are reserved.
+[Apache License 2.0](LICENSE); see [NOTICE](NOTICE). Contributions are welcome — see [CONTRIBUTING.md](CONTRIBUTING.md).
+
+Copyright 2026 Taras Pustovoy
 
 ## Issues
 

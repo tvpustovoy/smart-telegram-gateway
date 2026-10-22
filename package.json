@@ -4,7 +4,7 @@
   "private": true,
   "description": "Reliable gateway between Telegram and an AI agent",
   "type": "module",
-  "license": "UNLICENSED",
+  "license": "Apache-2.0",
   "engines": {
     "node": ">=22.13"
   },
