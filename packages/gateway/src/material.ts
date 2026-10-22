@@ -6,10 +6,18 @@
 //   с пометкой before (правило 3); иначе — held (пересланное голосовое — transcribing) с hold_until = сейчас + окно;
 // - extendWindow — несколько материалов подряд — одно окно, отсчёт от последнего (правило 2);
 // - releaseByWords — слова владельца в том же чате и теме (текст, подпись, голосовое, кружок, свой аудиофайл; правка
-//   удерживаемого материала) отпускают весь удерживаемый материал с пометкой after. Голосовое и кружок — слова с момента
-//   прихода (правило 1): материал не обгоняет их и не ждёт окна — held до конца их распознавания, затем отдаётся с ними;
+//   удерживаемого материала, в которой есть слова, — дописал подпись) отпускают весь удерживаемый материал с пометкой
+//   after. Голосовое и кружок — слова с момента прихода (правило 1): материал не обгоняет их и не ждёт окна — held до
+//   конца их распознавания, затем отдаётся с ними;
+// - joinWindow — правка удерживаемого материала без слов (живое место шлёт координаты правками; фото заменено без
+//   подписи) — не слова: ждёт вместе с исходным, тем же сроком, окно не сдвигает, и отпускается с ним — иначе она ушла бы
+//   агенту раньше исходного ⟨предл.⟩;
 // - settleTranscribed — распознавание кончилось: сам материал (пересланное голосовое) снова held, если окно ещё идёт, а
-//   материал, ждавший этих слов, — new в той же транзакции.
+//   материал, ждавший этих слов, — new в той же транзакции;
+// - releaseOnEpisodeClose — эпизод материала закрылся раньше слов («новая тема», агент открыл новую, другая тема Telegram,
+//   тишина; episodes.ts): удерживаемый материал отдаётся с пометкой none до события «эпизод закрыт», чтобы итог эпизода
+//   агент писал, видя его ⟨предл.: материал — в эпизоде, где пришёл; правило роли «материал по ходу разговора — в тот же
+//   эпизод»⟩.
 // Конец окна без слов — таймер hold.ts: пометка none и сколько материал ждал.
 // Команды («стоп», «где мы» …), нажатия, реакции и жесты (стикер) окна не трогают; «стоп» — как прежде: окно идёт, затем
 // материал ждёт [продолжить] в new.
@@ -117,10 +125,46 @@ export function releaseByWords(ctx: Ctx, p: MaterialPlace, wordsSeq: number, wor
   return out;
 }
 
-/** Удерживаемый материал, который правит владелец (правка — тоже его слово, «дописал подпись»): правка отпускает окно. */
+/**
+ * Удерживаемый материал, который правит владелец: правка со словами (дописал подпись) — его слово, отпускает окно; без
+ * слов — ждёт вместе с исходным (joinWindow).
+ */
 export function isHeldMaterial(ctx: Ctx, seq: number | null): boolean {
   if (seq === null) return false;
   return !!sql(ctx.db, `SELECT 1 FROM events WHERE seq = ? AND ${HELD_MATERIAL_SQL}`).get(seq);
+}
+
+/**
+ * Правка удерживаемого материала без слов (до INSERT): held тем же сроком, что исходный, — окно не сдвигается (живое место
+ * шлёт правки всё время, пока им делятся: окно не кончилось бы никогда). Отпускается вместе с исходным — словами,
+ * концом окна или закрытием эпизода: в том же чате и теме, номер — после исходного.
+ */
+export function joinWindow(ctx: Ctx, editOf: number, status: EventStatus): MaterialDecision {
+  const row = sql(ctx.db, `SELECT hold_until, material_json FROM events WHERE seq = ? AND ${HELD_MATERIAL_SQL}`).get(editOf) as
+    | { hold_until: number | null; material_json: string }
+    | undefined;
+  if (!row || row.hold_until === null) return { status, holdUntil: null, material: null };
+  const m = JSON.parse(row.material_json) as MaterialHold;
+  return { status: status === 'new' ? 'held' : status, holdUntil: row.hold_until, material: { state: 'waiting', window_ms: m.window_ms } };
+}
+
+/**
+ * Эпизод закрывается (внутри транзакции закрытия, до записи события «эпизод закрыт»): удерживаемый материал этого эпизода
+ * — пометка none, сколько ждал; held → new. Распознаваемое пересланное голосовое остаётся transcribing, но уже с none:
+ * после расшифровки распознаватель его не придержит. Номер материала меньше номера события «эпизод закрыт» — агент
+ * получит материал раньше и напишет итог, видя его.
+ */
+export function releaseOnEpisodeClose(ctx: Ctx, episodeId: number, now: number): Released[] {
+  const rows = sql(ctx.db, `SELECT seq, status, material_json, created_at FROM events WHERE ${HELD_MATERIAL_SQL} AND episode_id = ? ORDER BY seq`).all(
+    episodeId,
+  ) as Array<{ seq: number; status: EventStatus; material_json: string; created_at: number }>;
+  const out: Released[] = [];
+  for (const r of rows) {
+    const m: MaterialHold = { ...(JSON.parse(r.material_json) as MaterialHold), state: 'none', waited_ms: now - r.created_at };
+    sql(ctx.db, `UPDATE events SET material_json = ?${r.status === 'held' ? ", status = 'new'" : ''} WHERE seq = ?`).run(JSON.stringify(m), r.seq);
+    out.push({ seq: r.seq, heldMs: now - r.created_at });
+  }
+  return out;
 }
 
 export interface SettleResult {

@@ -33,7 +33,8 @@
 // Окно для материала без слов владельца (0.3.6, issue #51; TECH-SPEC 5.18; material.ts): в главной транзакции сообщение
 // владельца получает роль — материал (пересылка, инлайн-бот, фото, файл, видео без подписи: held до его слов или конца
 // окна; слова были раньше в пределах окна — сразу), слова (текст, подпись, голосовое, свой кружок или аудиофайл; правка
-// удерживаемого материала: отпускают весь удерживаемый материал чата и темы) или никакую. После COMMIT — таймер окна.
+// удерживаемого материала, в которой есть слова: отпускают весь удерживаемый материал чата и темы), правка удерживаемого
+// материала без слов (ждёт вместе с исходным) или никакую. После COMMIT — таймер окна.
 // Команда и нажатие (5.6, 5.9) — события handled; их действие (режим, ход, эпизод, строка владельцу) исполняется в той
 // же главной транзакции (control.ts): упал после COMMIT — команда уже исполнена, повтор обновления её не повторит.
 // После COMMIT — кадр mode переходнику, отдача событий, answerCallbackQuery с текстом отказа (если отказ).
@@ -61,6 +62,7 @@ import {
   ensureDir,
   faultPoint,
   getMeta,
+  hasOwnerWords,
   isNotMp4Video,
   labelMessage,
   localDate,
@@ -92,7 +94,7 @@ import type { Control, Effects } from './control.js';
 import type { Directory, Resolved } from './directory.js';
 import type { Episodes } from './episodes.js';
 import { reactionHoldMs } from './hold.js';
-import { admitMaterial, extendWindow, isHeldMaterial, releaseByWords, type MaterialDecision, type MaterialPlace, type WordsRelease } from './material.js';
+import { admitMaterial, extendWindow, isHeldMaterial, joinWindow, releaseByWords, type MaterialDecision, type MaterialPlace, type WordsRelease } from './material.js';
 
 // Набор реакций без учёта порядка: у Premium их несколько, Telegram может вернуть их в другом порядке.
 const sameEmoji = (a: readonly string[], b: readonly string[]): boolean => [...a].sort().join(' ') === [...b].sort().join(' ');
@@ -865,10 +867,14 @@ export class Admission {
   /**
    * Окно для материала без слов владельца (0.3.6, issue #51; material.ts): что это сообщение для окна — материал (держать
    * или отдать сразу, если слова были раньше), слова владельца (отпустить удерживаемый материал этого чата) или ничего.
-   * Правка удерживаемого материала — тоже его слово (дописал подпись) ⟨предл.⟩.
+   * Правка удерживаемого материала со словами — тоже его слово (дописал подпись) ⟨предл.⟩; без слов (живое место шлёт
+   * координаты правками, фото заменено без подписи) — не слово: ждёт вместе с исходным (edit_material, joinWindow).
    */
-  private materialRole(d: Draft): 'material' | 'words' | null {
-    if (d.kind === 'edit') return d.who.isOwner && isHeldMaterial(this.ctx, d.editOf) ? 'words' : null;
+  private materialRole(d: Draft): 'material' | 'words' | 'edit_material' | null {
+    if (d.kind === 'edit') {
+      if (!d.who.isOwner || !isHeldMaterial(this.ctx, d.editOf)) return null;
+      return hasOwnerWords({ kind: 'text', trust: d.trust, text: d.text, attachments: [] }) ? 'words' : 'edit_material';
+    }
     return materialClass({
       fromOwner: d.who.isOwner,
       kind: d.kind,
@@ -888,7 +894,11 @@ export class Admission {
       const place: MaterialPlace = { chatId: d.chatId, threadId: d.threadId, subjectId };
       const role = this.materialRole(d);
       const decision: MaterialDecision =
-        role === 'material' ? admitMaterial(this.ctx, place, d.status, now) : { status: d.status, holdUntil: null, material: null };
+        role === 'material'
+          ? admitMaterial(this.ctx, place, d.status, now)
+          : role === 'edit_material'
+            ? joinWindow(this.ctx, d.editOf!, d.status)
+            : { status: d.status, holdUntil: null, material: null };
       let episodeId: number | null = null;
       let effects: Effects = {};
       if (d.episode === 'message') {
@@ -931,8 +941,8 @@ export class Admission {
         );
       const seq = Number(r.lastInsertRowid);
       // Окно материала (0.3.6): материал в окне — окно прочих в этом чате от него; слова — удерживаемый материал с ними.
-      const material: MaterialOutcome = { decision, extended: [], words: null };
-      if (decision.material?.state === 'waiting' && decision.holdUntil !== null) material.extended = extendWindow(this.ctx, place, seq, decision.holdUntil);
+      const material: MaterialOutcome = { decision, extended: [], words: null, joined: role === 'edit_material' && decision.material ? d.editOf : null };
+      if (role === 'material' && decision.material?.state === 'waiting' && decision.holdUntil !== null) material.extended = extendWindow(this.ctx, place, seq, decision.holdUntil);
       else if (role === 'words') {
         const w = releaseByWords(this.ctx, place, seq, d.status, now);
         if (w.released.length || w.linked.length) material.words = w;
@@ -993,7 +1003,12 @@ export class Admission {
         ...(d.rawRef ? { raw_ref: d.rawRef } : {}),
         // Окно материала (0.3.6): в окне — hold_ms и чьё окно сдвинуто; слова были раньше — их №.
         ...(material.decision.material?.state === 'waiting'
-          ? { material: 'held', hold_ms: material.decision.material.window_ms, ...(material.extended.length ? { extended: material.extended } : {}) }
+          ? {
+              material: 'held',
+              hold_ms: material.decision.material.window_ms,
+              ...(material.extended.length ? { extended: material.extended } : {}),
+              ...(material.joined !== null ? { joined: material.joined } : {}),
+            }
           : material.decision.material?.state === 'before'
             ? { material: 'words_before', words_seq: material.decision.material.words_seq }
             : {}),
@@ -1032,4 +1047,6 @@ interface MaterialOutcome {
   extended: number[];
   /** Это — слова владельца: какой материал они отпустили. */
   words: WordsRelease | null;
+  /** Это — правка удерживаемого материала без слов: № исходного, с которым она ждёт. */
+  joined: number | null;
 }

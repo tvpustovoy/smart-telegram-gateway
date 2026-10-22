@@ -10,7 +10,9 @@
 // материал ждёт [продолжить] · A11.15 голосовое — слова с момента прихода: материал не уходит раньше расшифровки и не
 // ждёт окна · A11.16 пересланное голосовое — материал: после расшифровки — в окно; слова — следом (и пока оно ещё
 // распознаётся) · A11.17 правка удерживаемого материала (дописал подпись) — слова · A11.19 участник по правилам — окна
-// нет.
+// нет · A11.20 правка удерживаемого материала без слов (живое место, фото заменено без подписи) — не слова: ждёт с
+// исходным, окно не сдвигает · A11.21 «новая тема» в окне — материал агенту раньше «эпизод закрыт», с пометкой «слов не
+// было» · A11.22 прежний сценарий картинки (media(seq), 👀 → 👌) с окном по умолчанию.
 
 import assert from 'node:assert/strict';
 import { after, before, describe, it } from 'node:test';
@@ -20,6 +22,7 @@ import { connectAdapter, pump, q1, readJournal, sleep, waitUntil, type GatewayPr
 import { OTHER, OWNER, reactionsOf, setup, type Setup } from './m1-common.js';
 import { buttonsOf, press, waitSent } from './m2-common.js';
 import { pushVoice, voiceSetup, waitSttReply, type VoiceSetup } from './m4-common.js';
+import { imageBytes, jpegBytes, mediaOf } from './m7-common.js';
 
 type Ev = Awaited<ReturnType<FakeChannel['waitEvent']>>;
 
@@ -268,6 +271,110 @@ describe('M11 · окно для материала без слов владел
     h.inOneGo([p, e]);
     assert.deepEqual(b.ch.events().find((x) => x.seq === p)?.material, { words: 'after', words_seq: e, waited_ms: null });
     await h.finish([p, e]);
+  });
+
+  it('A11.20: правка удерживаемого материала без слов — не слова: живое место шлёт координаты правками — окно не отпускают и не сдвигают, правки ждут с местом; слова — место, правки, слова подряд; фото заменено без подписи — по окну вместе', async () => {
+    await h.quiet();
+    const lu = h.push(b.s.fake.builder.location(OWNER, { latitude: 12.34, longitude: 56.78, livePeriod: 900 }));
+    const l = await h.seqOf(lu);
+    h.held(l, 'место');
+    const until = h.row(l).hold_until;
+    await h.advance(20);
+    const e1 = await h.seqOf(h.push(b.s.fake.builder.editedLocation(lu, { latitude: 12.35, longitude: 56.79 })));
+    await h.advance(20);
+    const e2 = await h.seqOf(h.push(b.s.fake.builder.editedLocation(lu, { latitude: 12.36, longitude: 56.8 })));
+    h.held(l, 'место после правок без слов');
+    h.held(e1, 'правка без слов — ждёт с местом');
+    h.held(e2, 'вторая правка — тоже');
+    assert.deepEqual([h.row(l).hold_until, h.row(e1).hold_until, h.row(e2).hold_until], [until, until, until], 'окно не сдвинуто');
+    assert.deepEqual([h.journal('in', e1)?.material, h.journal('in', e1)?.joined, h.journal('in', e1)?.extended], ['held', l, undefined]);
+    assert.equal(h.journal('material_released', l), undefined, 'правка без слов окно не отпустила');
+    const w = await b.ch.where();
+    assert.ok(w.type === 'where_result' && w.data?.held_material?.join() === String(l) && w.data.held_material_count === 1, JSON.stringify(w));
+    const words = await h.seqOf(h.says('я тут, подъезжай'));
+    await b.ch.waitEvent(words);
+    h.inOneGo([l, e1, e2, words]);
+    for (const x of [l, e1, e2]) assert.deepEqual(b.ch.events().find((e) => e.seq === x)?.material, { words: 'after', words_seq: words, waited_ms: null });
+    assert.deepEqual([b.ch.events().find((e) => e.seq === e1)?.edit_of, b.ch.events().find((e) => e.seq === e2)?.edit_of], [l, l]);
+    await h.finish([l, e1, e2, words]);
+    // Фото заменено без подписи: правка ждёт с фото; окно кончилось — оба с пометкой «слов не было», по порядку.
+    await h.quiet();
+    const pu = h.photo();
+    const p = await h.seqOf(pu);
+    await h.advance(30);
+    const pe = await h.seqOf(h.push(b.s.fake.builder.edited(pu, '')));
+    h.held(pe, 'правка фото без подписи');
+    await h.advance(89);
+    h.held(p, 'через 119 с');
+    await h.advance(1);
+    await b.ch.waitEvent(pe);
+    h.inOneGo([p, pe]);
+    assert.deepEqual(
+      [b.ch.events().find((e) => e.seq === p)?.material, b.ch.events().find((e) => e.seq === pe)?.material],
+      [
+        { words: 'none', words_seq: null, waited_ms: 120_000 },
+        { words: 'none', words_seq: null, waited_ms: 90_000 },
+      ],
+    );
+    await h.finish([p, pe]);
+  });
+
+  it('A11.21: «новая тема» в окне — материал эпизода агенту раньше события «эпизод закрыт», с пометкой «слов владельца не было»; слова после — в новом эпизоде, отпускать нечего', async () => {
+    await h.quiet();
+    const w0 = await h.seqOf(h.says('собираю отпуск'));
+    await b.ch.waitEvent(w0);
+    await h.finish([w0]);
+    await h.quiet();
+    const f = await h.seqOf(h.forward('Билеты подешевели'));
+    h.held(f, 'пересылка');
+    const ep = q1<{ episode_id: number }>(b.s.home, 'SELECT episode_id FROM events WHERE seq = ?', f)!.episode_id;
+    assert.equal(q1<{ episode_id: number }>(b.s.home, 'SELECT episode_id FROM events WHERE seq = ?', w0)!.episode_id, ep, 'материал — в эпизоде разговора');
+    await h.advance(15);
+    h.push(b.s.fake.builder.text(OWNER, 'новая тема'));
+    const closed = await waitUntil(() => q1<{ seq: number }>(b.s.home, "SELECT seq FROM events WHERE kind = 'episode_closed' AND episode_id = ?", ep)?.seq, 5000, 'события «эпизод закрыт»');
+    await b.ch.waitEvent(closed);
+    const order = b.ch.events().map((e) => e.seq);
+    assert.ok(order.indexOf(f) >= 0 && order.indexOf(f) < order.indexOf(closed), `материал раньше «эпизод закрыт»: ${order.join(', ')}`);
+    const ef = b.ch.events().find((e) => e.seq === f)!;
+    assert.deepEqual(ef.material, { words: 'none', words_seq: null, waited_ms: 15_000 });
+    assert.equal(ef.episode?.id, ep);
+    const rel = h.journal('material_released', f);
+    assert.deepEqual([rel?.words, rel?.episode_closed, rel?.held_ms], ['none', ep, 15_000]);
+    assert.ok(f < closed);
+    await h.finish([f]);
+    assert.equal((await b.ch.episodeSummary(ep, 'Собирали отпуск; пришла пересылка о билетах.')).type, 'ack');
+    const w = await h.seqOf(h.says('глянь, что там с ценами'));
+    const ew = await b.ch.waitEvent(w);
+    assert.notEqual(ew.episode?.id, ep, 'слова — в новом эпизоде');
+    assert.equal(readJournal(b.s.home).filter((l) => l.ev === 'material_released' && l.seq === f).length, 1, 'материал отдан один раз');
+    await h.finish([w]);
+  });
+
+  it('A11.22: прежний сценарий картинки (A7.1, A7.4) с окном по умолчанию — фото без подписи в окне: media(seq) «агенту ещё не отдавался», 👀 нет; слова — фото и слова подряд; media(seq) — картинка; 👀, затем 👌 на фото и словах', async () => {
+    await h.quiet();
+    const data = jpegBytes(800, 600, 5000, 3);
+    b.s.fake.addFile(data, { fileId: 'm11ph', path: 'photos/m11ph.jpg' });
+    const pu = h.push(b.s.fake.builder.photo(OWNER, null, { sizes: [{ fileId: 'm11ph', width: 800, height: 600, fileSize: data.length }] }));
+    const p = await h.seqOf(pu);
+    h.held(p, 'фото');
+    const refused = await mediaOf(b.ch, p);
+    assert.deepEqual(refused.ok ? null : { code: refused.code, text: refused.text }, { code: 'not_your_lease', text: `№ ${p} агенту ещё не отдавался` });
+    assert.deepEqual(reactionsOf(b.s.fake, pu), [], '👀 нет');
+    await h.advance(25);
+    const wu = h.says('что на фото?');
+    const w = await h.seqOf(wu);
+    await b.ch.waitEvent(w);
+    h.inOneGo([p, w]);
+    const ep = b.ch.events().find((e) => e.seq === p)!;
+    assert.deepEqual([ep.trust, ep.mixed, ep.media, ep.material], ['owner', true, { what: 'photo' }, { words: 'after', words_seq: w, waited_ms: null }]);
+    const shown = await mediaOf(b.ch, p);
+    assert.ok(shown.ok, JSON.stringify(shown));
+    assert.deepEqual(imageBytes(shown.r), data);
+    for (const x of [p, w]) await b.ch.delivered(x);
+    await pump(b.gw, () => (reactionsOf(b.s.fake, pu).at(-1) === '👀' && reactionsOf(b.s.fake, wu).at(-1) === '👀') || null, { what: '👀 на фото и словах' });
+    assert.equal((await b.ch.done([p])).type, 'ack');
+    assert.equal((await b.ch.reply(w, 'На фото — чек из магазина.', b.ch.currentTurn() ?? b.turn)).type, 'ack');
+    await pump(b.gw, () => (reactionsOf(b.s.fake, pu).at(-1) === '👌' && reactionsOf(b.s.fake, wu).at(-1) === '👌') || null, { what: '👌 на фото и словах' });
   });
 
   it('A11.19: участник по правилам: его пересылка и фото без подписи — агенту сразу, без окна и пометки (окно — только у владельца)', async () => {

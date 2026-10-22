@@ -488,7 +488,7 @@ describe('база: v13 (0.3.6) — окно для материала без с
     return db;
   }
 
-  it('A11.13 · v12 → v13: события (реакция в окне отмены, правила канала, проба) целы, material_json пуст, номер не переиспользуется; CHECK: held — у реакции и у материала, cancelled — только у реакции, material_json — только у сообщений', () => {
+  it('A11.13 · v12 → v13: события (реакция в окне отмены, правила канала, проба) целы, material_json пуст, номер не переиспользуется; CHECK: held — у реакции и у материала, cancelled — только у реакции, material_json — только у сообщений и правок', () => {
     const db = dbAt(12);
     insertSample(db);
     transaction(db, () => {
@@ -529,7 +529,9 @@ describe('база: v13 (0.3.6) — окно для материала без с
       db.prepare("INSERT INTO events(chat_id, kind, status, created_at, material_json) VALUES (1, 'photo', 'new', 1, '{\"state\":\"before\",\"window_ms\":120000,\"words_seq\":6}')").run();
       assert.throws(() => db.prepare("INSERT INTO events(chat_id, kind, status, created_at, material_json) VALUES (1, 'photo', 'held', 1, ?)").run(waiting), /CHECK/, 'held без срока');
       assert.throws(() => db.prepare("INSERT INTO events(chat_id, kind, status, created_at, hold_until) VALUES (1, 'photo', 'held', 1, 3001)").run(), /CHECK/, 'held — не у реакции и не у материала');
-      assert.throws(() => db.prepare("INSERT INTO events(chat_id, kind, status, created_at, hold_until, material_json) VALUES (1, 'edit', 'held', 1, 3001, ?)").run(waiting), /CHECK/, 'material_json — не у правки');
+      // Правка удерживаемого материала без слов (живое место, фото заменено без подписи) ждёт вместе с исходным.
+      db.prepare("INSERT INTO events(chat_id, kind, status, created_at, hold_until, material_json, edit_of) VALUES (1, 'edit', 'held', 1, 120001, ?, 7)").run(waiting);
+      assert.throws(() => db.prepare("INSERT INTO events(chat_id, kind, status, created_at, hold_until, material_json) VALUES (1, 'command', 'held', 1, 3001, ?)").run(waiting), /CHECK/, 'material_json — не у команды');
       assert.throws(() => db.prepare("INSERT INTO events(chat_id, kind, status, created_at, material_json) VALUES (1, 'photo', 'cancelled', 1, ?)").run(waiting), /CHECK/, 'cancelled — только у реакции');
       assert.throws(() => db.prepare("INSERT INTO events(kind, status, created_at, instructions_json, material_json) VALUES ('instructions', 'new', 1, '{}', ?)").run(waiting), /CHECK/);
       db.prepare("INSERT INTO events(chat_id, kind, status, created_at, reaction_json) VALUES (1, 'reaction', 'cancelled', 1, '{}')").run();

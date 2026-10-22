@@ -15,7 +15,10 @@
 // instructions, meta.version.
 // Материал без слов владельца (0.3.6, issue #51): шлюз держит его окном и отдаёт вместе со словами владельца — в заголовке
 // «слова владельца — следом, № M» (слова — следующее событие), «слова владельца — раньше, № K» (сказал до материала) или
-// «слов владельца не было 2 мин» (окно кончилось без слов); meta.material = after · before · none, meta.words_seq.
+// «слов владельца не было 2 мин» (окно кончилось без слов); meta.material = after · before · none, meta.words_seq. Своё
+// фото или файл владельца без подписи в таком событии — «чужое (фото)», а не «слово владельца + чужое (фото)»: его слов
+// в нём нет (рядом стояло бы «слов владельца не было»); meta.trust — untrusted, meta.mixed — false. Без пометки (окно 0,
+// прежний шлюз) — метка прежняя.
 // Здесь же — слова, которыми инструменты возвращают модели исход.
 
 import { cutGraphemes, formatDuration, formatElapsed, localTime, ownerReactionChange, ownerReactionTarget, type EventMessage, type Mode } from 'stg-core';
@@ -201,10 +204,19 @@ function bodyOf(ev: EventMessage): string {
   return '(без текста)';
 }
 
+/**
+ * Материал владельца без его слов, отданный с пометкой окна (0.3.6, issue #51): фото, файл, видео без подписи. Метка
+ * сообщения — его (owner, к «словам» приложено чужое), но слов в нём нет: агенту — как чужое.
+ */
+function ownerMaterialWithoutWords(ev: EventMessage): boolean {
+  return ev.trust === 'owner' && !!ev.material && materialWords(ev.material) !== null;
+}
+
 /** meta: только строки, пустые не кладутся. */
 function metaOf(ev: EventMessage): Record<string, string> {
-  const m: Record<string, string> = { seq: String(ev.seq), kind: ev.kind, mixed: String(ev.mixed), redelivery: String(ev.redelivery) };
-  if (ev.trust) m.trust = ev.trust;
+  const bare = ownerMaterialWithoutWords(ev);
+  const m: Record<string, string> = { seq: String(ev.seq), kind: ev.kind, mixed: String(bare ? false : ev.mixed), redelivery: String(ev.redelivery) };
+  if (ev.trust) m.trust = bare ? 'untrusted' : ev.trust;
   if (ev.reply_to) m.reply_to = ev.reply_to.event_seq !== null && ev.reply_to.event_seq !== undefined ? `${ev.reply_to.kind}:${ev.reply_to.event_seq}` : ev.reply_to.kind;
   if (ev.episode) {
     m.episode = String(ev.episode.id);
@@ -302,7 +314,9 @@ export function formatEvent(ev: EventMessage): ChannelNotice {
   if (media) parts.push(media);
   let trust = ev.trust ? TRUST_WORDS[ev.trust] : 'без метки';
   const foreign = ev.attachments.filter((a) => a.trust !== 'owner' && a.kind !== 'via_bot').map((a) => ATTACHMENT_WORDS[a.kind]);
-  if (ev.mixed && foreign.length) trust += ` + чужое (${[...new Set(foreign)].join(', ')})`;
+  const foreignWords = [...new Set(foreign)].join(', ');
+  if (ownerMaterialWithoutWords(ev)) trust = foreign.length ? `${TRUST_WORDS.untrusted} (${foreignWords})` : TRUST_WORDS.untrusted;
+  else if (ev.mixed && foreign.length) trust += ` + чужое (${foreignWords})`;
   else if (ev.mixed) trust += ' + чужое';
   parts.push(trust);
   if (ev.attachments.some((a) => a.kind === 'via_bot')) parts.push('через инлайн-бота');

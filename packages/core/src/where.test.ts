@@ -230,7 +230,7 @@ describe('A2.11 · «где мы» по базе (модульно)', () => {
     }
   });
 
-  it('A11.8 · материал без слов владельца в окне (0.3.6, #51) — строка «Ждут слов владельца» (held и распознаваемое пересланное голосовое); отпущенный словами, но ждущий их расшифровки, и отданный — нет; нет такого — строки нет', () => {
+  it('A11.8 · материал без слов владельца в окне (0.3.6, #51) — строка «Ждут слов владельца» (held и распознаваемое пересланное голосовое; число — всего, не длина списка); отпущенный словами, но ждущий их расшифровки, отданный и правка без слов — нет; нет такого — строки нет', () => {
     const { db } = openForGateway(tmpDb());
     try {
       db.exec("INSERT INTO subjects(id, who) VALUES ('owner', 'owner')");
@@ -243,8 +243,14 @@ describe('A2.11 · «где мы» по базе (модульно)', () => {
       ev.run(2, 'untrusted', 'voice', 'transcribing', T, T + 120_000, waiting);
       ev.run(3, 'untrusted', 'text', 'held', T, T + 120_000, JSON.stringify({ state: 'after', window_ms: 120_000, words_seq: 5 }));
       ev.run(4, 'untrusted', 'text', 'new', T, null, JSON.stringify({ state: 'none', window_ms: 120_000, waited_ms: 120_000 }));
+      // Правка удерживаемого фото без слов ждёт вместе с ним — в списке и в числе её нет.
+      db.prepare(
+        `INSERT INTO events(update_id, chat_id, subject_id, trust, kind, text, status, created_at, hold_until, material_json, edit_of)
+         VALUES (5, 111, 'owner', 'owner', 'edit', NULL, 'held', ?, ?, ?, 1)`,
+      ).run(T, T + 120_000, waiting);
       const d = whereData(db, input);
       assert.deepEqual(d.held_material, [1, 2]);
+      assert.equal(d.held_material_count, 2);
       assert.deepEqual(d.waiting, [2, 4], 'ждут ответа агента — как прежде (new, delivered, transcribing)');
       const lines = whereText(d, input).split('\n');
       assert.equal(lines[2], 'Ждут ответа агента: 2 (№ 2, 4)');
@@ -255,8 +261,13 @@ describe('A2.11 · «где мы» по базе (модульно)', () => {
       assert.deepEqual(d2.held_material, []);
       assert.ok(!whereText(d2, input).includes('Ждут слов владельца'));
       // Прежний шлюз поля не шлёт — строки нет.
-      const { held_material: _h, ...old } = d;
+      const { held_material: _h, held_material_count: _n, ...old } = d;
       assert.ok(!whereText(old, input).includes('Ждут слов владельца'));
+      // Число — всего, а не длина списка (список — первые 50); без числа (шлюз без поля) — длина списка.
+      const many = Array.from({ length: 50 }, (_x, i) => 100 + i);
+      assert.equal(whereText({ ...d, held_material: many, held_material_count: 63 }, input).split('\n')[3], `Ждут слов владельца: 63 (№ ${many.slice(0, 10).join(', ')}, …)`);
+      const { held_material_count: _c, ...noCount } = d;
+      assert.equal(whereText(noCount, input).split('\n')[3], 'Ждут слов владельца: 2 (№ 1, 2)');
     } finally {
       db.close();
     }

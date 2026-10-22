@@ -108,7 +108,10 @@ export function whereData(db: Db, input: WhereInput): WhereData {
   const waitingRows = sql(db, `SELECT seq FROM events WHERE status IN ('new', 'delivered', 'transcribing') AND kind IN (${MSG_KINDS_SQL}) ORDER BY seq LIMIT ${WAITING_LIMIT}`)
     .all() as Array<{ seq: number }>;
   const waiting = waitingCount(db);
-  const heldMaterial = (sql(db, `SELECT seq FROM events WHERE ${HELD_MATERIAL_SQL} ORDER BY seq LIMIT ${WAITING_LIMIT}`).all() as Array<{ seq: number }>).map((r) => r.seq);
+  // Правка удерживаемого материала без слов ждёт вместе с исходным (0.3.6) — в списке её нет: живое место дало бы десятки №.
+  const heldWhere = `${HELD_MATERIAL_SQL} AND kind <> 'edit'`;
+  const heldMaterial = (sql(db, `SELECT seq FROM events WHERE ${heldWhere} ORDER BY seq LIMIT ${WAITING_LIMIT}`).all() as Array<{ seq: number }>).map((r) => r.seq);
+  const heldMaterialCount = (sql(db, `SELECT count(*) AS n FROM events WHERE ${heldWhere}`).get() as { n: number }).n;
   const deferred = (sql(db, "SELECT update_id, raw_json, received_at FROM updates WHERE status = 'deferred' ORDER BY update_id").all() as Array<{
     update_id: number;
     raw_json: string | null;
@@ -130,6 +133,7 @@ export function whereData(db: Db, input: WhereInput): WhereData {
     waiting: waitingRows.map((r) => r.seq),
     waiting_count: waiting,
     held_material: heldMaterial,
+    held_material_count: heldMaterialCount,
     agent_online: input.agentOnline,
     deferred,
     closed_silent: closedSilent,
@@ -172,7 +176,9 @@ export function whereText(d: WhereData, input: WhereInput): string {
   }
   lines.push(d.waiting_count ? `Ждут ответа агента: ${d.waiting_count} (${seqList(d.waiting)})` : 'Ждут ответа агента: нет');
   // Материал без слов владельца в окне (0.3.6, issue #51) — строка только когда он есть ⟨предл.⟩.
-  if (d.held_material?.length) lines.push(`Ждут слов владельца: ${d.held_material.length} (${seqList(d.held_material)})`);
+  // Число — всего (held_material — первые 50), как у «Ждут ответа агента»; прежний шлюз числа не шлёт — длина списка.
+  const heldCount = d.held_material_count ?? d.held_material?.length ?? 0;
+  if (heldCount && d.held_material?.length) lines.push(`Ждут слов владельца: ${heldCount} (${seqList(d.held_material)})`);
   lines.push(`Агент: ${d.agent_online === null ? 'неизвестно — шлюз не отвечает' : d.agent_online ? 'на связи' : 'не на связи'}`);
   lines.push(`Режим: ${modeWord(d.mode)}`);
   lines.push(

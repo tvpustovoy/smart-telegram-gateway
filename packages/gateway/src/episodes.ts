@@ -7,12 +7,15 @@
 //   «новая тема» (owner_new_topic), агент объявил новую (agent_new), [не то] (owner_rejected) — control.ts.
 // - Закрытие кладёт в очередь событие episode_closed с № (итог присылает агент). Эпизод без единого сообщения
 //   (открыт «новой темой» или агентом, а владелец не писал) закрывается без episode_closed: итога у пустого нет.
+//   Материал без слов владельца, который этот эпизод ещё держит окном (0.3.6, issue #51), отдаётся до episode_closed с
+//   пометкой «слов владельца не было» (material.ts, releaseOnEpisodeClose): итог агент пишет, видя его ⟨предл.⟩.
 // - Открытый снова ([не то]) — тот же эпизод (closed_at снят), агенту — событие episode_reopened с №.
 // - Итог эпизода, где было хоть одно событие untrusted или owner_forward, — summary_trust = untrusted кодом (Ш-25);
 //   смешанное (к словам владельца приложено чужое) — тоже: итог мог быть сделан по чужому.
 
 import { sql, MESSAGE_EVENT_KINDS, NEW_TOPIC, transaction, type ChatRule, type EpisodeCloseReason, type EpisodeOpenedBy } from 'stg-core';
 import type { Ctx } from './context.js';
+import { releaseOnEpisodeClose } from './material.js';
 
 export { NEW_TOPIC };
 
@@ -163,6 +166,10 @@ export class Episodes {
     if (!Number(r.changes)) return null;
     ep.closed_at = now;
     ep.close_reason = reason;
+    // Удерживаемый окном материал эпизода (0.3.6) — агенту раньше события «эпизод закрыт»: его № меньше.
+    for (const m of releaseOnEpisodeClose(this.ctx, ep.id, now)) {
+      this.ctx.journal.write('material_released', { seq: m.seq, held_ms: m.heldMs, words: 'none', episode_closed: ep.id });
+    }
     let seq: number | null = null;
     if (this.hasMessages(ep.id)) {
       const ins = sql(this.ctx.db,

@@ -719,7 +719,8 @@ CREATE TABLE conversations (
  * списком).
  * - events.material_json — материал без слов владельца (пересылка, инлайн-бот, файл, фото, видео без подписи; MaterialHold):
  *   окно ui.material_hold_seconds держит его до слов владельца в том же чате или до конца окна. Только у видов text, voice,
- *   photo, document (CHECK).
+ *   photo, document и у правки удерживаемого материала без слов (edit: живое место, фото заменено без подписи — ждёт
+ *   вместе с исходным, material.ts) (CHECK).
  * - held — теперь и у материала (с material_json); cancelled — по-прежнему только у реакции; у held срок hold_until
  *   обязателен, как в v11.
  */
@@ -760,7 +761,7 @@ CREATE TABLE events_v13 (
   material_json     TEXT,
   CHECK ((kind = 'reaction') = (reaction_json IS NOT NULL)),
   CHECK ((kind = 'instructions') = (instructions_json IS NOT NULL)),
-  CHECK (material_json IS NULL OR kind IN ('text','voice','photo','document')),
+  CHECK (material_json IS NULL OR kind IN ('text','voice','photo','document','edit')),
   CHECK (status <> 'held' OR kind = 'reaction' OR material_json IS NOT NULL),
   CHECK (status <> 'cancelled' OR kind = 'reaction'),
   CHECK (status <> 'held' OR hold_until IS NOT NULL)
@@ -805,13 +806,15 @@ export const MIGRATIONS: readonly Migration[] = [
 /**
  * Материал без слов владельца (0.3.6, issue #51), events.material_json. Только у сообщения владельца видов text, voice,
  * photo, document, в котором его собственных слов нет: пересылка, сообщение через инлайн-бота, файл, фото, видео без
- * подписи (material.ts). Окно ui.material_hold_seconds держит такое событие, пока владелец не скажет, что с ним делать.
+ * подписи (material.ts); и у правки такого материала, пока он в окне, если слов нет и в ней (edit: ждёт вместе с
+ * исходным). Окно ui.material_hold_seconds держит такое событие, пока владелец не скажет, что с ним делать.
  * - waiting — в окне: held (или transcribing, пока распознаётся пересланное голосовое); hold_until — конец окна (окно
  *   отсчитывается от последнего материала в этом чате);
  * - after — следом пришли слова владельца (words_seq): материал отдаётся вместе с ними; пока слова — голосовое в
  *   распознавании, материал held и ждёт его;
  * - before — слова владельца были раньше, в пределах окна (words_seq): материал отдан сразу, без окна;
- * - none — окно кончилось без слов: отдан с пометкой, сколько ждал (waited_ms — от записи до отдачи).
+ * - none — окно кончилось без слов (или раньше закрылся эпизод материала): отдан с пометкой, сколько ждал (waited_ms —
+ *   от записи до отдачи).
  */
 export const MATERIAL_STATES = ['waiting', 'after', 'before', 'none'] as const;
 export type MaterialState = (typeof MATERIAL_STATES)[number];

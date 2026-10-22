@@ -156,6 +156,31 @@ export class UpdateBuilder {
     } as AnyMessage);
   }
 
+  /**
+   * Место (0.3.6: материал без слов владельца). livePeriod — живое место: Telegram шлёт новые координаты правками
+   * (editedLocation).
+   */
+  location(from: User, at: { latitude: number; longitude: number; livePeriod?: number }, opts: MessageOpts = {}): Update {
+    return this.wrap({
+      ...this.base(from, opts),
+      location: { latitude: at.latitude, longitude: at.longitude, ...(at.livePeriod !== undefined ? { live_period: at.livePeriod } : {}) },
+    } as AnyMessage);
+  }
+
+  /** Правка живого места: те же сообщение и чат, новые координаты, edit_date; текста и подписи нет. */
+  editedLocation(original: Update, at: { latitude: number; longitude: number }, editDate?: number): Update {
+    const msg = (original.message ?? original.edited_message) as (AnyMessage & { location?: Record<string, unknown> }) | undefined;
+    if (!msg?.location) throw new Error('editedLocation: в обновлении нет места');
+    return {
+      update_id: this.ids.nextUpdateId(),
+      edited_message: {
+        ...msg,
+        location: { ...msg.location, latitude: at.latitude, longitude: at.longitude },
+        edit_date: editDate ?? this.ids.nowSeconds(),
+      } as unknown as Message & Update.Edited & Update.NonChannel,
+    };
+  }
+
   /** Через инлайн-бота. */
   viaBot(from: User, text: string, bot: User, opts: MessageOpts = {}): Update {
     return this.wrap({ ...this.base(from, opts), text, via_bot: { ...bot, is_bot: true } } as AnyMessage);

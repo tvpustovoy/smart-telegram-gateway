@@ -31,36 +31,50 @@ The chat interface and the design documents are in Russian; the entries below de
   once, marked `слова владельца — раньше, № K`.
 - A window that ends without words releases the material marked `слов владельца не было N мин` (how long it waited).
   A forwarded voice message is material too: it is transcribed as before, and if the window is still open, it is held
-  again afterwards. An edit of held material (the owner adds a caption) counts as words.
+  again afterwards. An edit of held material counts as words only if it carries the owner's words (a caption added). An
+  edit without words — a live location sending new coordinates, a photo replaced without a caption — does not release
+  the window and does not extend it: it is held with its original, with the same deadline, and goes right after it.
+- If the material's episode closes before any words come (`новая тема`, the agent starts a new topic, another Telegram
+  topic, silence), the held material is released in the same transaction, marked as having no words, before the
+  "episode closed" event — the agent writes the episode summary having seen it.
 - Commands (`стоп`, `где мы`, …) and button presses are not words; a sticker, dice or GIF neither opens nor closes the
   window. `стоп` works as before: the window runs, then the material waits in `new` for [продолжить]. Messages of other
   participants are not held.
 - 👀 is set when the material is given to the agent, that is after the window: 👀 still means "the agent has seen it".
-- `where` (owner, agent, `stg where`): the line `Ждут слов владельца: N (№ …)` lists held material; the field
-  `held_material` in the where data.
+- `where` (owner, agent, `stg where`): the line `Ждут слов владельца: N (№ …)` lists held material — N is the total,
+  the numbers are the first ones; the fields `held_material` (first 50) and `held_material_count` in the where data.
+  Edits held with their original are not listed.
 - Event frames carry the optional field `material {words: after | before | none, words_seq, waited_ms}`; the channel
   turns it into the header mark (`meta.material`, `meta.words_seq`). An older channel drops the field and shows the
-  event without the mark.
-- Journal: `in` with `material: held | words_before`, `material_released {seq, held_ms, words, words_seq?}`,
-  `material_linked {seq, words_seq}` (released by a voice message still being transcribed), `material_held` (a
-  transcribed forwarded voice message back in its window).
+  event without the mark. The owner's own photo, file or video without a caption that carries the mark is labelled
+  `чужое (фото)` rather than `слово владельца + чужое (фото)`, with `meta.trust` `untrusted` and `meta.mixed` `false`:
+  there are no owner's words in it. Without the mark (window 0) the label is as before.
+- Journal: `in` with `material: held | words_before` (`joined` for an edit held with its original), `material_released
+  {seq, held_ms, words, words_seq?, episode_closed?}`, `material_linked {seq, words_seq}` (released by a voice message
+  still being transcribed), `material_held` (a transcribed forwarded voice message back in its window).
 - Role rules (channel instructions and the agent folder template): "Material (link, forward, file, picture) comes
   together with the owner's words — answer the words. If it comes marked that there were no words from the owner — the
   gist in 3–5 lines and one question"; for episodes: "When in doubt, stay in the current episode. A new one — when the
   owner changed the topic or an unrelated matter came up; material along the way (a link, a forward) stays in the same
-  episode." The instructions have a new version, so a resumed conversation gets them as a "channel rules" event (0.3.5).
-- `scripts/agent-folder/README.md`: what to add by hand to an agent folder deployed before 0.3.6.
+  episode." The line about `done` is narrowed so it does not contradict the material rule: `done` is for material that
+  came together with the owner's words (the answer goes to the words), "just note it", the channel check and the episode
+  summary — no longer "only material: a forward, a file", which would let the agent close wordless material silently.
+  The instructions have a new version, so a resumed conversation gets them as a "channel rules" event (0.3.5).
+- `scripts/agent-folder/README.md`: what to change by hand in an agent folder deployed before 0.3.6 (the `done` line,
+  the material rule, the episode rule).
 
 ### Changed
 
 - License: Apache License 2.0 (`LICENSE`, `NOTICE`); `CONTRIBUTING.md` added.
-- Database schema v13: the `events` table is rebuilt with the column `material_json`; `held` is allowed for material as
-  well as for reactions, `cancelled` stays reaction-only. Going back to 0.3.5 is possible only from a backup taken
-  before the upgrade.
+- Database schema v13: the `events` table is rebuilt with the column `material_json` (on `text`, `voice`, `photo`,
+  `document`, and on `edit` for an edit held with its original); `held` is allowed for material as well as for
+  reactions, `cancelled` stays reaction-only. Going back to 0.3.5 is possible only from a backup taken before the
+  upgrade.
 - `packages/gateway/src/reaction-hold.ts` is now `hold.ts` (`Hold`): one timer for both windows.
 - Tests: test homes write `ui.material_hold_seconds: 0` unless a test asks for the window, so tests written before
   0.3.6 keep sending captionless photos and forwards straight to the agent; the window has its own suite
-  (`m11-material-hold`).
+  (`m11-material-hold`), which also runs a picture scenario of the earlier suites (`media(seq)`, 👀 then 👌) and a new
+  topic during the window with the default window.
 
 ## 0.3.5 - 2026-10-22
 

@@ -150,14 +150,15 @@ What you see in the chat:
   stays in the pinned line; `ui.delete_confirmed_topic`), [не то] brings the previous topic back.
 - A reaction on an agent reply (👍, ❤, …) is passed to the agent after a short undo window.
 - Material without your own words — a forward, a message sent through an inline bot, a photo, file or video without a
-  caption — waits for your words in the same chat, two minutes by default (`ui.material_hold_seconds`): text, a
-  caption, a voice message or a video note. Then the agent gets the material and your words together, material first. A voice
+  caption — waits for your words in the same chat, two minutes by default (`ui.material_hold_seconds`): text, a caption,
+  a voice message or a video note. Then the agent gets the material and your words together, material first. A voice
   message counts as words as soon as it arrives: the material goes with it once it is transcribed. Several pieces of
   material in a row share one window, counted from the last one. If you wrote first and sent the material within the
-  window, it goes at once. If no words come, the material goes after the window, marked "no words from the owner for
-  2 min". Commands do not count as words; a sticker neither opens nor closes the window. Until the agent gets the
-  material, it has no 👀: 👀 still means "the agent has seen it". `/where` lists such material as waiting for your
-  words.
+  window, it goes at once. If no words come, the material goes after the window, marked "no words from the owner for 2
+  min". If the topic changes first (`новая тема`, the agent starts a new topic), the material goes at once, before the
+  old topic is closed. Commands do not count as words; a sticker neither opens nor closes the window; an edit counts
+  only if it adds words (a caption) — a live location updating itself does not. Until the agent gets the material, it
+  has no 👀: 👀 still means "the agent has seen it". `/where` lists such material as waiting for your words.
 
 The agent's tools (MCP): `reply`, `done`, `episode`, `episode_summary`, `where`, `rule`, `media`, `send_file`.
 

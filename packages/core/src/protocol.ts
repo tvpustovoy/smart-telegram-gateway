@@ -451,6 +451,8 @@ export const WhereDataSchema = z.object({
    * отданы. Необязательное: прежний шлюз его не шлёт.
    */
   held_material: z.array(seq).optional(),
+  /** Сколько всего материала ждёт слов владельца (held_material — первые 50); необязательное, как held_material. */
+  held_material_count: z.int().nonnegative().optional(),
   /** На связи ли агент; null — неизвестно (шлюз не ответил, CLI читал базу сам). */
   agent_online: z.boolean().nullable(),
   deferred: z.array(z.object({ update_id: z.int(), message_at: z.int() })),
