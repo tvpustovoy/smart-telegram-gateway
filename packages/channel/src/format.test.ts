@@ -439,6 +439,12 @@ describe('канал: инструменты, instructions, сроки', () => {
     assert.equal(plain.meta.trust, 'owner');
   });
 
+  it('A11.26 · ссылка владельца реплаем на сообщение агента (0.3.6, #51) — ответ: шлюз отдаёт её без пометки окна — «слово владельца · ответ на твоё сообщение к № N», meta.trust — owner, без «ссылка владельца»', () => {
+    const n = formatEvent(ev({ seq: 60, text: 'https://example.com/article', reply_to: { kind: 'agent', event_seq: 59, excerpt: 'Пришли ссылку на статью', episode_topic: 'Новая тема' } }));
+    assert.equal(n.content, '[№ 60 · эп. 42 · слово владельца · ответ на твоё сообщение к № 59: «Пришли ссылку на статью»] https://example.com/article');
+    assert.deepEqual([n.meta.trust, n.meta.mixed, n.meta.reply_to, n.meta.material], ['owner', 'false', 'agent:59', undefined]);
+  });
+
   it('A11.10 · instructions (0.3.6, #51): материал — отвечай на слова; без слов — суть в 3–5 строк и один вопрос; done — материал со словами владельца; пометки в заголовке; эпизод — сомневаешься, оставайся; версия — от нового текста', () => {
     assert.ok(
       INSTRUCTIONS.includes(
@@ -446,6 +452,8 @@ describe('канал: инструменты, instructions, сроки', () => {
       ),
     );
     assert.ok(INSTRUCTIONS.includes('«слова владельца — следом, № M»'));
+    // Метка своего текста из одних ссылок (A11.25) — рядом с прочими метками.
+    assert.ok(INSTRUCTIONS.includes('«ссылка владельца» («ссылки владельца») — его ссылка без его слов: материал.'));
     assert.ok(INSTRUCTIONS.includes('«слов владельца не было за N мин»'));
     // Слова к материалу после окна (A11.23, A11.24): правила дословно и что значат пометки.
     assert.ok(INSTRUCTIONS.includes('Ответ владельца на материал — его слова к этому материалу, в любое время: отвечай на них, держа материал в виду.'));

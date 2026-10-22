@@ -31,18 +31,30 @@ The chat interface and the design documents are in Russian; the entries below de
   once, marked `слова владельца — раньше, № K`.
 - An owner's message with nothing but links is material without words. This is how a page shared from the browser
   ("Share" → Telegram) arrives: an ordinary text message from the owner holding only the link — not a forward and not an
-  inline bot, so the window used to miss it. A link is `http(s)://…`, `www.…` or `t.me/…`; spaces, line breaks and
-  separating punctuation around the links (commas, periods, brackets, quotes, dashes, list bullets) do not count. Such a
-  message is held like any material: it goes with the owner's next words (`слова владельца — следом, № M`) or after the
-  window (`слов владельца не было за 1 мин`); it does not release the window and is not "words after material"; several
-  link messages share one window; words sent just before it make it go at once (`слова владельца — раньше, № K`); a
-  reply to it is `слова к материалу № N`. A caption of only links on a photo or file is no words either. Any other word
-  next to a link — `посмотри https://…`, a page title above the link — makes it the owner's words, as before: a page title
-  cannot be told from the owner's words (the Bot API does not give the preview title), and a link on words (`text_link`)
-  shows words. The decision reads the text only, not Telegram's `url` entities: they are not stored, and the same
-  decision is made again from the stored event (a reply to material, words before material, words after material), so a
-  domain without `www` or a scheme (`example.com/…`) stays words. With the window off (`0`) a link goes at once, as
-  before.
+  inline bot, so the window used to miss it. A link is `http(s)://…`, `www.…` or `t.me/…`. It ends the way Telegram ends
+  it: a trailing `.` `,` `;` `:` `?` `!` `)` `»` `"` `'` is not part of it; an emoji, `«`, `»`, `<`, `>`, a space or an
+  invisible character cuts it; after the domain (and port) only `/`, `?` or `#` continue it, so
+  `https://a.com,посмотри`, `https://a.com🔥` and `https://a.com?` are words; Cyrillic in the address (`…/wiki/Сон`) is
+  part of the link. Spaces, line breaks, invisible characters (zero-width, LRM and RLM, U+FFFC) and separating
+  punctuation around the links (commas, periods, brackets, quotes, dashes, list bullets) do not count. Such a message is
+  held like any material: it goes with the owner's next words (`слова владельца — следом, № M`) or after the window
+  (`слов владельца не было за 1 мин`); it does not release the window and is not "words after material"; several link
+  messages share one window; words sent just before it make it go at once (`слова владельца — раньше, № K`); a reply to
+  it is `слова к материалу № N`; an edit of a held link to another link waits with it, an edit that adds words releases
+  the window. A caption of only links on a photo or file is no words either. Any other word next to a link — `посмотри
+  https://…`, a page title above the link — makes it the owner's words, as before: a page title cannot be told from the
+  owner's words (the Bot API does not give the preview title), and a link on words (`text_link`) shows words. The
+  decision reads the text only, not Telegram's `url` entities: they are not stored, and the same decision is made again
+  from the stored event (a reply to material, words before material, words after material), so a domain without `www` or
+  a scheme (`example.com/…`) stays words. With the window off (`0`) a link goes at once, as before.
+- A message of only links sent as a reply to an agent message is the owner's answer to the agent, not material (the
+  agent asked for a link, the owner answered with it): it goes at once as the owner's words — `слово владельца · ответ
+  на твоё сообщение к № N`, with no material marks and no `ссылка владельца`. It neither opens nor releases the window:
+  it answers the agent, not the material, so held material keeps waiting and its window is not extended; it is not
+  "words before" (rule 3) or "words after material" and does not take the place of the first words. The decision is
+  made at intake and again from the stored event the same way (`reply_to` is stored with the event): a reply to such an
+  answer is `ответ на своё сообщение`, not `слова к материалу`. A photo, file, forward, inline-bot message or a caption
+  of only links sent as a reply to the agent is material, as before.
 - A window that ends without words releases the material marked `слов владельца не было за N мин` (how long it
   actually waited).
   A forwarded voice message is material too: it is transcribed as before, and if the window is still open, it is held
@@ -64,8 +76,8 @@ The chat interface and the design documents are in Russian; the entries below de
   the window. After material has gone out marked as having no words, the owner's first next message with their own
   words (text, voice message, video note, caption) in the same chat, Telegram topic and episode, no later than
   `ui.material_followup_minutes` after the material was released (default 10, `0` turns it off, a whole number up to
-  120), reaches the agent marked `слова после материала № N` (`№ N, K` for several). Only the first such message; a voice
-  message counts from its arrival, not from its transcription. A reply to material takes priority: it is marked
+  120), reaches the agent marked `слова после материала № N` (`№ N, K` for several). Only the first such message; a
+  voice message counts from its arrival, not from its transcription. A reply to material takes priority: it is marked
   `слова к материалу`, not `после`, and it still counts as the first words. The link is stored with the material
   (`material_json.followup_seq`) and survives a restart.
 - 👀 is set when the material is given to the agent, that is after the window: 👀 still means "the agent has seen it".
@@ -95,10 +107,13 @@ The chat interface and the design documents are in Russian; the entries below de
   summary — no longer "only material: a forward, a file", which would let the agent close wordless material silently.
   For words to material after the window: "The owner's reply to material is their words to that material, at any time:
   answer them with the material in mind" and "Words after material No. N are the owner's words to that material: answer
-  them with the material in mind; the short gist has already gone out, do not repeat it." The instructions have a new
-  version, so a resumed conversation gets them as a "channel rules" event (0.3.5).
+  them with the material in mind; the short gist has already gone out, do not repeat it." Among the labels: "`ссылка
+  владельца` (`ссылки владельца`) — the owner's link without their words: material"; the agent folder template also
+  lists it among the labels of a note. The instructions have a new version, so a resumed conversation gets them as a
+  "channel rules" event (0.3.5).
 - `scripts/agent-folder/README.md`: what to change by hand in an agent folder deployed before 0.3.6 (the `done` line,
-  the material rule, the two lines on words to material after the window, the episode rule).
+  the material rule, the two lines on words to material after the window, the episode rule, the `ссылка владельца`
+  label).
 
 ### Changed
 
@@ -112,7 +127,7 @@ The chat interface and the design documents are in Russian; the entries below de
   0.3.6 keep sending captionless photos and forwards straight to the agent; the window has its own suite
   (`m11-material-hold`), which also runs a picture scenario of the earlier suites (`media(seq)`, 👀 then 👌) and a new
   topic during the window with the default window, and covers replies to material and words after material (A11.23,
-  A11.24) and messages of only links (A11.25).
+  A11.24), messages of only links (A11.25) and a link sent as a reply to the agent (A11.26).
 
 ## 0.3.5 - 2026-10-22
 

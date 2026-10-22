@@ -60,7 +60,7 @@ The chat interface (gateway lines, `/help`, command names) and the agent's instr
 | 0.3.3 | Parcels: the agent sends files with `send_file` |
 | 0.3.4 | Transcripts as quotes, owner reactions reach the agent, with an undo window |
 | 0.3.5 | Current channel rules reach a resumed conversation; the confirmed topic line is deleted from the chat |
-| 0.3.6 | A forward, file or photo without your words waits for them a minute and reaches the agent together with them; a later reply to it or your next words stay tied to it |
+| 0.3.6 | A forward, link, file or photo without your words waits for them a minute and reaches the agent together with them; a later reply to it or your next words stay tied to it |
 
 Details are in [CHANGELOG.md](CHANGELOG.md).
 
@@ -152,15 +152,16 @@ What you see in the chat:
 - Material without your own words — a forward, a message sent through an inline bot, a message with nothing but links
   (a page shared from the browser), a photo, file or video without a caption — waits for your words in the same chat,
   one minute by default (`ui.material_hold_seconds`): text, a caption, a voice message or a video note. A link with any
-  other word next to it ("look at https://…", or the page title above the link) already counts as words. Then the agent
-  gets the material and your words together, material first. A voice message counts as words as soon as it arrives:
-  the material goes with it once it is transcribed. Several pieces of
-  material in a row share one window, counted from the last one. If you wrote first and sent the material within the
-  window, it goes at once. If no words come, the material goes after the window, marked "no words from the owner for
-  1 min". If the topic changes first (`новая тема`, the agent starts a new topic), the material goes at once, before the
-  old topic is closed. Commands do not count as words; a sticker neither opens nor closes the window; an edit counts
-  only if it adds words (a caption) — a live location updating itself does not. Until the agent gets the material, it
-  has no 👀: 👀 still means "the agent has seen it". `/where` lists such material as waiting for your words.
+  other word next to it ("look at https://…", or the page title above the link) already counts as words. A link sent as
+  a reply to an agent message is your answer to the agent: it goes at once and does not release the waiting material.
+  Then the agent gets the material and your words together, material first. A voice message counts as words as soon
+  as it arrives: the material goes with it once it is transcribed. Several pieces of material in a row share one
+  window, counted from the last one. If you wrote first and sent the material within the window, it goes at once. If
+  no words come, the material goes after the window, marked "no words from the owner for 1 min". If the topic changes
+  first (`новая тема`, the agent starts a new topic), the material goes at once, before the old topic is closed.
+  Commands do not count as words; a sticker neither opens nor closes the window; an edit counts only if it adds words
+  (a caption) — a live location updating itself does not. Until the agent gets the material, it has no 👀: 👀 still
+  means "the agent has seen it". `/where` lists such material as waiting for your words.
 - Words to material after the window. Reply to the material at any time — the agent sees "words to material No. N" and
   answers with it in mind. Or just send your words next, for example a voice message recorded a few minutes later: your
   first message with words in the same chat and topic within 10 minutes after the material went out

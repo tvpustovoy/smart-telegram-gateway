@@ -17,8 +17,10 @@
 // материалу № N» (после окна, в окне, окно 0 — по классификации) · A11.24 слова после материала — первые слова владельца
 // после материала без слов в пределах 10 мин (голосовое — по приходу; перезапуск; 0 — выключено) · A11.25 текст владельца
 // из одних ссылок (поделился страницей из браузера) — материал без слов: окно, «следом», «не было», одно окно на
-// несколько, не «слова после материала», правило «слова раньше», реплай на него; «посмотри https://…» — слова; окно 0 —
-// сразу.
+// несколько, не «слова после материала», правило «слова раньше», реплай на него, правка удерживаемой ссылки (на другую
+// ссылку — ждёт с исходной, со словами — слова); «посмотри https://…» — слова; окно 0 — сразу · A11.26 ссылка реплаем на
+// сообщение агента — ответ, а не материал: сразу, словом владельца; удерживаемое не отпускает, окно не сдвигает; не
+// «слова после материала» и не «слова раньше»; реплай на неё — не «к материалу».
 
 import assert from 'node:assert/strict';
 import { after, before, describe, it } from 'node:test';
@@ -687,6 +689,86 @@ describe('M11 · текст владельца из одних ссылок — 
     assert.deepEqual([r2.reply_to?.event_seq, r2.reply_to?.material], [l2, true]);
     assert.deepEqual(b.ch.events().find((e) => e.seq === l2)?.material, { words: 'after', words_seq: r2.seq, waited_ms: null });
     await h.finish([l2, r2.seq]);
+  });
+
+  it('A11.25: правка удерживаемой ссылки — на другую ссылку: не слова, ждёт с исходной тем же сроком (окно не сдвигает); правка со словами — слова: ссылка, обе правки подряд, ссылка и первая правка «слова владельца — следом»', async () => {
+    await h.quiet();
+    const lu = h.says('https://example.com/draft');
+    const l = await h.seqOf(lu);
+    h.held(l, 'ссылка');
+    const until = h.row(l).hold_until;
+    await h.advance(20);
+    const e1 = await h.seqOf(h.push(b.s.fake.builder.edited(lu, 'https://example.com/final')));
+    h.held(e1, 'правка на другую ссылку — ждёт с исходной');
+    h.held(l, 'исходная после правки без слов');
+    assert.deepEqual([h.row(l).hold_until, h.row(e1).hold_until], [until, until], 'окно не сдвинуто');
+    assert.deepEqual([h.journal('in', e1)?.material, h.journal('in', e1)?.joined], ['held', l]);
+    assert.equal(h.journal('material_released', l), undefined, 'правка на ссылку окно не отпустила');
+    await h.advance(20);
+    const e2 = await h.seqOf(h.push(b.s.fake.builder.edited(lu, 'https://example.com/final — перескажи')));
+    const ee2 = await b.ch.waitEvent(e2);
+    h.inOneGo([l, e1, e2]);
+    for (const x of [l, e1]) assert.deepEqual(b.ch.events().find((e) => e.seq === x)?.material, { words: 'after', words_seq: e2, waited_ms: null });
+    assert.deepEqual([ee2.edit_of, ee2.material, b.ch.events().find((e) => e.seq === e1)?.edit_of], [l, undefined, l]);
+    await h.finish([l, e1, e2]);
+  });
+
+  it('A11.26: ссылка реплаем на сообщение агента — ответ, а не материал: сразу, слово владельца («ответ на твоё сообщение к № N»), без окна и пометки; удерживаемое фото не отпускает и окна не сдвигает; не «слова после материала» и не «слова раньше»; реплай на неё — не «к материалу»', async () => {
+    await h.quiet();
+    // Агент просит ссылку.
+    const w0 = await h.seqOf(h.says('найди ту статью о сне'));
+    await b.ch.waitEvent(w0);
+    assert.equal((await b.ch.reply(w0, 'Пришли ссылку на статью', b.ch.currentTurn() ?? b.turn)).type, 'ack');
+    const ask = await waitSent(b.s, b.gw, (m) => m.text === 'Пришли ссылку на статью', 'просьбы агента');
+    const answer = (url: string): Update => h.push(b.s.fake.builder.replyTo(OWNER, url, ask.message));
+    // Фото без подписи — в окне; через 10 с владелец отвечает агенту ссылкой: она уходит сразу, фото держится.
+    await h.quiet();
+    const p = await h.seqOf(h.photo());
+    h.held(p, 'фото');
+    await h.advance(10);
+    const au = answer('https://example.com/sleep');
+    const a = await h.seqOf(au);
+    const ea = await b.ch.waitEvent(a);
+    assert.deepEqual(
+      [ea.trust, ea.text, ea.reply_to?.kind, ea.reply_to?.event_seq, ea.reply_to?.material, ea.material, ea.after_material],
+      ['owner', 'https://example.com/sleep', 'agent', w0, undefined, undefined, undefined],
+    );
+    assert.deepEqual([h.row(a).hold_until, h.row(a).material], [null, null], 'не материал: без окна и material_json');
+    const inA = h.journal('in', a);
+    assert.deepEqual([inA?.reply_to, inA?.material, inA?.extended], ['agent', undefined, undefined]);
+    h.held(p, 'ссылка-ответ фото не отпускает');
+    assert.equal(h.journal('material_released', p), undefined);
+    await h.finish([a]);
+    // Окно фото — от самого фото (ответ его не сдвинул): ещё 50 с — фото «слов владельца не было за 1 мин».
+    await h.advance(49);
+    h.held(p, 'через 59 с от фото');
+    await h.advance(1);
+    assert.deepEqual((await b.ch.waitEvent(p)).material, { words: 'none', words_seq: null, waited_ms: 60_000 });
+    await h.finish([p]);
+    // После фото, ушедшего без слов, — ещё ответ ссылкой: не «слова после материала» и первым словам места не занимает.
+    const a2 = await b.ch.waitEvent(await h.seqOf(answer('https://example.com/sleep-2')));
+    assert.deepEqual([a2.after_material, a2.material], [undefined, undefined]);
+    assert.equal(h.row(p).material?.followup_seq, undefined, 'ссылка-ответ — не слова после материала');
+    await h.finish([a2.seq]);
+    const w = await b.ch.waitEvent(await h.seqOf(h.says('а что на фото?')));
+    assert.deepEqual(w.after_material, [p], 'первые слова после фото — эти');
+    await h.finish([w.seq]);
+    // Ответ ссылкой — не «слова раньше»: фото через 20 с — в окне. Реплай владельца на ответ — «ответ на своё
+    // сообщение», не «слова к материалу»; его слова отпускают фото.
+    await h.quiet();
+    const a3u = answer('https://example.com/sleep-3');
+    const a3 = await h.seqOf(a3u);
+    await b.ch.waitEvent(a3);
+    await h.finish([a3]);
+    await h.advance(20);
+    const p2 = await h.seqOf(h.photo());
+    h.held(p2, 'фото после ответа ссылкой');
+    assert.equal(h.row(p2).material?.state, 'waiting');
+    const r = await b.ch.waitEvent(await h.seqOf(h.push(b.s.fake.builder.replyTo(OWNER, 'вот эта, и фото к ней', a3u.message!))));
+    assert.deepEqual([r.reply_to?.kind, r.reply_to?.event_seq, r.reply_to?.material], ['owner', a3, undefined]);
+    h.inOneGo([p2, r.seq]);
+    assert.deepEqual(b.ch.events().find((e) => e.seq === p2)?.material, { words: 'after', words_seq: r.seq, waited_ms: null });
+    await h.finish([p2, r.seq]);
   });
 });
 

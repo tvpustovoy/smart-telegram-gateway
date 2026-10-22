@@ -20,6 +20,9 @@
 //   агент писал, видя его ⟨предл.: материал — в эпизоде, где пришёл; правило роли «материал по ходу разговора — в тот же
 //   эпизод»⟩.
 // Конец окна без слов — таймер hold.ts: пометка none и сколько материал ждал.
+// Текст владельца из одних ссылок реплаем на сообщение агента — ответ агенту, а не материал (core/material.ts,
+// replyToAgent): окна не открывает и не отпускает, словами раньше и словами после материала не считается. По строке базы
+// (isMaterialEvent; lastOwnerWords — hasOwnerWords: текст из одних ссылок не слова) — тот же ответ.
 // После окна (#51):
 // - isMaterialEvent — реплай владельца на материал (в любое время): reply_to.material, у слов — «слова к материалу № N»;
 // - linkFollowup — владелец не отвечает реплаем, а наговаривает голосовое позже окна: первое следующее его сообщение со
@@ -49,7 +52,8 @@ export interface MaterialDecision {
 /**
  * Последние слова владельца в этом чате и теме (cond — где искать: не раньше времени или между №): № события или null.
  * Слова — по тем же правилам, что при приёме (hasOwnerWords): текст и подпись не из одних ссылок, голосовое, свой кружок
- * и аудиофайл; команды, правки и текст из одних ссылок — не слова.
+ * и аудиофайл; команды, правки и текст из одних ссылок — не слова (и реплаем на агента: это ответ ему, а не слова к
+ * материалу).
  */
 function lastOwnerWords(ctx: Ctx, p: MaterialPlace, cond: string, ...args: number[]): number | null {
   const rows = sql(ctx.db,
@@ -230,11 +234,21 @@ export function settleTranscribed(ctx: Ctx, seq: number, now: number): SettleRes
 /**
  * Реплай на сообщение (0.3.6, issue #51; reply_to.material): материал ли оно — событие с material_json (окно его держало:
  * в окне, со словами, без слов) или материал без слов владельца по классификации (core/material.ts: окно 0, событие до
- * 0.3.6). Правка сюда не попадает: реплай ищет исходное сообщение.
+ * 0.3.6). Его ссылка реплаем на сообщение агента — ответ агенту, не материал: по reply_to события, как при приёме.
+ * Правка сюда не попадает: реплай ищет исходное сообщение.
  */
 export function isMaterialEvent(ctx: Ctx, seq: number): boolean {
-  const r = sql(ctx.db, 'SELECT subject_id, kind, trust, text, attachments_json, forward_json, material_json FROM events WHERE seq = ?').get(seq) as
-    | { subject_id: string | null; kind: EventKind; trust: TrustLabel | null; text: string | null; attachments_json: string | null; forward_json: string | null; material_json: string | null }
+  const r = sql(ctx.db, 'SELECT subject_id, kind, trust, text, attachments_json, forward_json, reply_to, material_json FROM events WHERE seq = ?').get(seq) as
+    | {
+        subject_id: string | null;
+        kind: EventKind;
+        trust: TrustLabel | null;
+        text: string | null;
+        attachments_json: string | null;
+        forward_json: string | null;
+        reply_to: string | null;
+        material_json: string | null;
+      }
     | undefined;
   if (!r) return false;
   if (r.material_json !== null) return true;
@@ -247,6 +261,7 @@ export function isMaterialEvent(ctx: Ctx, seq: number): boolean {
       text: r.text,
       attachments: r.attachments_json ? (JSON.parse(r.attachments_json) as Attachment[]) : [],
       forwarded: r.forward_json !== null,
+      replyToAgent: r.reply_to !== null && (JSON.parse(r.reply_to) as { kind?: string }).kind === 'agent',
     }) === 'material'
   );
 }

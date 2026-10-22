@@ -11,11 +11,20 @@ const OWNER = { id: 111, is_bot: false, first_name: 'Владелец' };
 const OTHER = { id: 222, is_bot: false, first_name: 'Участник' };
 const chat = { id: 111, type: 'private', first_name: 'Владелец' };
 
-function classOf(msg: Record<string, unknown>, opts: { fromOwner?: boolean; kind?: 'command' } = {}): MaterialClass {
+/** replyToAgent — реплай на сообщение агента (при приёме — reply_to.kind = agent по messages_out, admission.ts). */
+function classOf(msg: Record<string, unknown>, opts: { fromOwner?: boolean; kind?: 'command'; replyToAgent?: boolean } = {}): MaterialClass {
   const fromOwner = opts.fromOwner ?? true;
   const m = { message_id: 1, date: 1, chat, from: fromOwner ? OWNER : OTHER, ...msg } as unknown as Message;
   const l = labelMessage(m, { ownerId: OWNER.id, fromOwner });
-  return materialClass({ fromOwner, kind: opts.kind ?? l.kind, trust: l.trust, text: l.text, attachments: l.attachments, forwarded: l.forward !== null });
+  return materialClass({
+    fromOwner,
+    kind: opts.kind ?? l.kind,
+    trust: l.trust,
+    text: l.text,
+    attachments: l.attachments,
+    forwarded: l.forward !== null,
+    replyToAgent: opts.replyToAgent ?? false,
+  });
 }
 
 const file = (extra: Record<string, unknown> = {}): Record<string, unknown> => ({ file_id: 'f', file_unique_id: 'uf', ...extra });
@@ -76,11 +85,27 @@ describe('A11.11 · окно материала (0.3.6, #51): слова вла�
       '• https://a.example\n• https://b.example',
       '<https://example.com/a>.',
       'https://ru.wikipedia.org/wiki/Сон',
+      // Конец ссылки — как у Telegram: замыкающие . , ; : ? ! ) » " ' — не часть ссылки, а разделители вокруг неё.
+      'https://ru.wikipedia.org/wiki/Сон.',
+      'https://ru.wikipedia.org/wiki/Sleep_(film)',
+      'https://example.com/a;',
+      '"https://example.com/a"',
+      "'https://example.com/a'",
+      'https://example.com/a?x=1&y=2#top',
+      'https://example.com:8080/a',
+      'https://пример.рф/статья',
+      't.me/some_channel/42.',
+      // Невидимые знаки вокруг: LRM и RLM (U+200E, U+200F), знак вставленного объекта (U+FFFC), нулевой ширины.
+      '\u200Fhttps://example.com/a\u200E',
+      'https://example.com/a\uFFFC',
+      '\uFFFC https://example.com/a',
+      '\u200Bhttps://example.com/a/\u200E',
     ]) {
       assert.equal(classOf({ text }), 'material', text);
       assert.ok(linksOnly(text) > 0, text);
     }
     assert.deepEqual([linksOnly('https://a.example'), linksOnly('https://a.example, https://b.example'), linksOnly('https://a.example\nwww.b.example\nt.me/c')], [1, 2, 3]);
+    assert.equal(linksOnly('https://a.example,https://b.example'), 2, 'запятая за доменом — конец ссылки');
     // Слово рядом со ссылкой — слова: «посмотри …», заголовок страницы над ссылкой (от слов владельца не отличить), вопрос,
     // эмодзи, номер в списке, хэштег; ссылка на словах (text_link) — в тексте видны слова, адреса нет.
     for (const text of [
@@ -91,6 +116,18 @@ describe('A11.11 · окно материала (0.3.6, #51): слова вла�
       '1. https://example.com/a',
       '#читать https://example.com/a',
       'посмотри:https://example.com/a',
+      // Слово или знак вплотную к ссылке: за доменом ссылку продолжают только порт, «/», «?», «#»; эмодзи и « » < > её
+      // обрывают; «?» и «!» в конце — не часть ссылки, а вопрос владельца.
+      'https://a.com,посмотри',
+      'https://a.com🔥',
+      'https://a.com/статья🔥',
+      'https://a.com?',
+      'https://a.com/a?',
+      'https://a.com/a!',
+      'https://a.com/a?x=1?',
+      'https://a.com/a«важно»',
+      'https://a.com/a<b>',
+      'https://a.com: посмотри',
     ]) {
       assert.equal(classOf({ text }), 'words', text);
       assert.equal(linksOnly(text), 0, text);
@@ -112,7 +149,24 @@ describe('A11.11 · окно материала (0.3.6, #51): слова вла�
     // По строке базы (реплай на материал, «слова раньше», «слова после материала»; правка удерживаемого) — тот же ответ.
     assert.equal(hasOwnerWords({ kind: 'text', trust: 'owner', text: 'https://example.com/a', attachments: [] }), false);
     assert.equal(hasOwnerWords({ kind: 'text', trust: 'owner', text: 'посмотри https://example.com/a', attachments: [] }), true);
-    assert.equal(materialClass({ fromOwner: true, kind: 'text', trust: 'owner', text: 'https://example.com/a', attachments: [], forwarded: false }), 'material');
+    assert.equal(materialClass({ fromOwner: true, kind: 'text', trust: 'owner', text: 'https://example.com/a', attachments: [], forwarded: false, replyToAgent: false }), 'material');
+  });
+
+  it('A11.26 · текст из одних ссылок реплаем на сообщение агента — ответ ему, а не материал: ни то ни другое (сразу, окна не открывает и не отпускает); прочее — как без реплая', () => {
+    // Агент попросил ссылку — владелец ответил ею реплаем: это его ответ, не материал.
+    assert.equal(classOf({ text: 'https://example.com/a' }, { replyToAgent: true }), null);
+    assert.equal(classOf({ text: 'https://a.example\nt.me/b' }, { replyToAgent: true }), null);
+    // Словами он не становится: окно не отпускает, «словами раньше» и «после материала» не считается.
+    assert.equal(hasOwnerWords({ kind: 'text', trust: 'owner', text: 'https://example.com/a', attachments: [] }), false);
+    // Слова реплаем на агента — слова, как раньше; ссылка без реплая — материал.
+    assert.equal(classOf({ text: 'вот она: https://example.com/a' }, { replyToAgent: true }), 'words');
+    assert.equal(classOf({ text: 'https://example.com/a' }, { replyToAgent: false }), 'material');
+    // Фото, файл, пересылка и инлайн-бот реплаем на агента — материал, как были: ответ — только свой текст из ссылок.
+    assert.equal(classOf({ photo: [{ ...file(), width: 10, height: 10 }] }, { replyToAgent: true }), 'material');
+    assert.equal(classOf({ photo: [{ ...file(), width: 10, height: 10 }], caption: 'https://example.com/a' }, { replyToAgent: true }), 'material');
+    assert.equal(classOf({ text: 'https://example.com/a', via_bot: { id: 9, is_bot: true, first_name: 'wiki', username: 'wiki' } }, { replyToAgent: true }), 'material');
+    // По строке базы (isMaterialEvent: реплай на такое сообщение) — тот же ответ: reply_to хранится в событии.
+    assert.equal(materialClass({ fromOwner: true, kind: 'text', trust: 'owner', text: 'https://example.com/a', attachments: [], forwarded: false, replyToAgent: true }), null);
   });
 
   it('hasOwnerWords — по строке базы: метка owner и текст, голос или свой звук файлом; пустая подпись и чужая метка — нет', () => {
