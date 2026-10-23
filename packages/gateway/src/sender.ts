@@ -60,6 +60,11 @@
 //   размеру (минута + время на 1 Мбит/с, documentTimeoutMs), после трёх таймаутов — failed «не успел загрузить», а
 //   «стоп» прерывает документ в пути (kick → cancelStoppedUpload): «⚙ Остановлен» не ждёт конца загрузки; Telegram мог
 //   успеть принять прерванный документ — доставка dropped с пометкой «мог уйти».
+// - Картинка — фото (#60): доставка с send_as photo уходит sendPhoto (поле photo) — подпись, «↪ Имя», «⚙ обновлено»,
+//   реплай, стоп, ход, повторы, 429, предел загрузки — как у документа. Telegram фото не принял (400 или 413: размеры,
+//   IMAGE_PROCESS_FAILED, PHOTO_SAVE_FILE_INVALID, слишком большое) — той же записью send_as становится document,
+//   причина — в note, и та же строка уходит документом (как голосовое, не принятое Telegram, уходит текстом): одна
+//   доставка, не брошена. В журнале out — method: sendPhoto или sendDocument.
 // - «Стоп» посреди длинного ответа агента: следующая часть не уходит (строка уже dropped); то же — для части, которая
 //   ждала повтора (429, повтор без разметки): после паузы строка проверяется снова. Часть, уже бывшая в пути, когда
 //   пришёл «стоп», не отзывается: строка остаётся dropped, в журнале — sent_after_stop.
@@ -93,6 +98,7 @@ import {
   documentTimeoutMs,
   parcelContentType,
   parcelFailedText,
+  parcelNotePhotoRejected,
   relayLabel,
   relayPrefix,
   setMeta,
@@ -103,6 +109,7 @@ import {
   startsWithMark,
   transaction,
   voiceDurationSeconds,
+  type DeliverySendAs,
   type Message,
   type MessageOutKind,
   type MultipartFile,
@@ -189,7 +196,7 @@ interface GroupRow extends OutRow {
   ev_message_id: number | null;
 }
 
-/** Посылка строки ответа агента (0.3.3): доставка в Telegram (deliveries). */
+/** Посылка строки ответа агента (0.3.3): доставка в Telegram (deliveries); send_as — документом или фото (#60). */
 interface DeliveryRow {
   id: number;
   parcel: string;
@@ -197,11 +204,17 @@ interface DeliveryRow {
   bytes: number;
   copy_ref: string | null;
   updated: number;
+  send_as: DeliverySendAs;
 }
 
-/** Часть отправки: сообщение, голосовое или документ (посылка); чьё оно — для messages_out. */
+/** Часть с файлом посылки: документ или фото (#60). */
+function isParcelMethod(m: Part['method']): m is 'sendDocument' | 'sendPhoto' {
+  return m === 'sendDocument' || m === 'sendPhoto';
+}
+
+/** Часть отправки: сообщение, голосовое, документ или фото (посылка); чьё оно — для messages_out. */
 export interface Part {
-  method: 'sendMessage' | 'sendVoice' | 'sendDocument';
+  method: 'sendMessage' | 'sendVoice' | 'sendDocument' | 'sendPhoto';
   /** Текст сообщения или подпись голосового и документа; null — без подписи. */
   text: string | null;
   html: boolean;
@@ -231,8 +244,13 @@ class Stopped extends Error {}
 /** Строку не записать: диск полон — отправка стоит. */
 class DiskFullPause extends Error {}
 
-/** cancelled — «стоп» во время повтора или загрузки; upload — прерван документ в пути (Telegram мог успеть принять). */
-type Outcome = { ok: true; message: Message; plain: boolean } | { ok: false; voiceRejected?: boolean; cancelled?: boolean; upload?: boolean };
+/**
+ * cancelled — «стоп» во время повтора или загрузки; upload — прерван документ в пути (Telegram мог успеть принять);
+ * voiceRejected и photoRejected — Telegram не принял голосовое или фото: строку возьмут снова, текстом или документом.
+ */
+type Outcome =
+  | { ok: true; message: Message; plain: boolean }
+  | { ok: false; voiceRejected?: boolean; photoRejected?: boolean; cancelled?: boolean; upload?: boolean };
 
 type Item =
   | { type: 'out'; row: OutRow }
@@ -687,12 +705,12 @@ export class Sender {
 
   /** Посылка строки ответа агента (0.3.3); null — обычный ответ. */
   private deliveryOf(outboxId: number): DeliveryRow | null {
-    return (sql(this.ctx.db, "SELECT id, parcel, file, bytes, copy_ref, updated FROM deliveries WHERE outbox_id = ? AND target = 'telegram' ORDER BY id LIMIT 1").get(outboxId) as
+    return (sql(this.ctx.db, "SELECT id, parcel, file, bytes, copy_ref, updated, send_as FROM deliveries WHERE outbox_id = ? AND target = 'telegram' ORDER BY id LIMIT 1").get(outboxId) as
       | DeliveryRow
       | undefined) ?? null;
   }
 
-  /** Предел запроса документа (documentTimeoutMs); под тестом — STG_TEST_DOCUMENT_TIMEOUT_MS (настоящие мс). */
+  /** Предел запроса документа и фото (documentTimeoutMs); под тестом — STG_TEST_DOCUMENT_TIMEOUT_MS (настоящие мс). */
   private documentTimeout(bytes: number): number {
     const t = this.ctx.test ? Number(this.ctx.env.STG_TEST_DOCUMENT_TIMEOUT_MS) : Number.NaN;
     return Number.isFinite(t) && t > 0 ? t : documentTimeoutMs(bytes);
@@ -703,22 +721,24 @@ export class Sender {
    * «⚙ обновлено»), иначе документ с короткой подписью — «↪ <имя>» чужого файла и «⚙ обновлено» новой версии (или без
    * подписи) — и следом текст ⟨предл.⟩. Чужой файл (from) помечен всегда — и без подписи агента (находка проверки:
    * иначе он приходил как собственный файл агента). Порядок частей зависит только от строки — после перезапуска уходят
-   * оставшиеся части того же порядка.
+   * оставшиеся части того же порядка. Картинка (send_as photo, #60) — фото с той же подписью; фото не принято — та же
+   * строка документом: фото — всегда первая часть, поэтому порядок прежний.
    */
   private documentParts(r0: GroupRow, d: DeliveryRow): Part[] {
+    const method = d.send_as === 'photo' ? 'sendPhoto' : 'sendDocument';
     const updated = d.updated === 1 ? PARCEL_UPDATED_TEXT : null;
     const text = r0.text ?? '';
     const short = [r0.from_name ? relayLabel(r0.from_name) : null, updated].filter((x): x is string => x !== null).join('\n\n');
-    const bare: Part = { method: 'sendDocument', text: short || null, html: false, kind: 'agent' };
+    const bare: Part = { method, text: short || null, html: false, kind: 'agent' };
     if (!text.trim()) return [bare];
     const relay = r0.from_name ? relayPrefix(r0.from_name) : null;
     try {
       const body = markdownToTelegramHtml(text);
       const h = (relay ? escapeHtml(relay) + body : markAgentPart(body, true)) + (updated ? `\n\n${escapeHtml(updated)}` : '');
-      if (htmlToPlain(h).length <= CAPTION_LIMIT && h.length <= TELEGRAM_CAPTION_HTML_MAX) return [{ method: 'sendDocument', text: h, html: true, kind: 'agent' }];
+      if (htmlToPlain(h).length <= CAPTION_LIMIT && h.length <= TELEGRAM_CAPTION_HTML_MAX) return [{ method, text: h, html: true, kind: 'agent' }];
     } catch {
       const p = (relay ? relay + text : markAgentPart(text, false)) + (updated ? `\n\n${updated}` : '');
-      if (p.length <= CAPTION_LIMIT) return [{ method: 'sendDocument', text: p, html: false, kind: 'agent' }];
+      if (p.length <= CAPTION_LIMIT) return [{ method, text: p, html: false, kind: 'agent' }];
     }
     return [bare, ...this.agentTextParts(r0)];
   }
@@ -773,7 +793,7 @@ export class Sender {
       }
       const params: Record<string, unknown> = { chat_id: r0.chat_id };
       let files: Record<string, MultipartFile> | null = null;
-      if (part.method === 'sendDocument') {
+      if (isParcelMethod(part.method)) {
         const doc = parcel ? await this.parcelFile(parcel) : null;
         if (!doc) {
           // Копии нет (удалена по сроку, диск чистили руками): доставить нечего — строка брошена, доставка failed.
@@ -781,7 +801,7 @@ export class Sender {
           this.drop(group, 'копии посылки нет');
           return;
         }
-        files = { document: doc };
+        files = part.method === 'sendPhoto' ? { photo: doc } : { document: doc };
         if (part.text !== null) params.caption = part.text;
       } else if (part.method === 'sendVoice') {
         if (!audio) {
@@ -807,7 +827,7 @@ export class Sender {
         params,
         files,
         part.html && part.text !== null ? (part.plain ?? htmlToPlain(part.text)) : null,
-        part.method === 'sendDocument' ? parcel : null,
+        isParcelMethod(part.method) ? parcel : null,
       );
       if (!out.ok) {
         if (out.cancelled) {
@@ -820,8 +840,8 @@ export class Sender {
           this.synth?.forget(r0.id);
           return;
         }
-        // Голосовое не принято — строку возьмут снова, теперь текстом.
-        if (out.voiceRejected) this.again = true;
+        // Голосовое не принято — строку возьмут снова, теперь текстом; фото не принято — документом (#60).
+        if (out.voiceRejected || out.photoRejected) this.again = true;
         return;
       }
       plainUsed ||= out.plain;
@@ -832,9 +852,9 @@ export class Sender {
         sql(ctx.db, 'UPDATE outbox SET tg_message_ids = ? WHERE id IN (SELECT value FROM json_each(?))').run(JSON.stringify(sent), idsJson);
         sql(ctx.db, 'INSERT OR REPLACE INTO messages_out(chat_id, tg_message_id, kind, outbox_id, event_seq) VALUES (?, ?, ?, ?, ?)')
           .run(r0.chat_id, out.message.message_id, part.kind, r0.id, r0.event_seq);
-        // Посылка: документ дошёл — доставка sent сразу, что бы ни стало с текстом подписи следом (400, «стоп» между
-        // частями; находка проверки). «Стоп» пришёл, пока документ был в пути, а он дошёл — тоже sent, с пометкой.
-        if (part.method === 'sendDocument' && parcel) {
+        // Посылка: документ (фото) дошёл — доставка sent сразу, что бы ни стало с текстом подписи следом (400, «стоп»
+        // между частями; находка проверки). «Стоп» пришёл, пока документ был в пути, а он дошёл — тоже sent, с пометкой.
+        if (isParcelMethod(part.method) && parcel) {
           sql(ctx.db,
             `UPDATE deliveries SET status = 'sent', tg_message_id = ?, sent_at = ?, note = CASE status WHEN 'dropped' THEN ? ELSE note END
              WHERE id = ? AND status IN ('pending', 'dropped')`,
@@ -880,14 +900,14 @@ export class Sender {
       ...(r0.voice && isAgent ? { voice: parts[0]?.method === 'sendVoice' ? { seconds: audio ? Math.round(audio.seconds * 10) / 10 : null } : 'failed' } : {}),
       ...(replyTo !== null ? { reply_to_message_id: replyTo } : {}),
       ...(plainUsed ? { plain_fallback: true } : {}),
-      ...(parcel ? { delivery: parcel.id, parcel: parcel.parcel, file: parcel.file } : {}),
+      ...(parcel ? { delivery: parcel.id, parcel: parcel.parcel, file: parcel.file, method: parts[0]!.method } : {}),
       ...(r0.quote && !isAgent ? { quote: true } : {}),
       ...(receiptsCleared ? { receipt_cleared: true } : {}),
     });
     if (isAgent) this.hooks.onAgentSent?.(r0);
   }
 
-  /** Документ посылки из копии шлюза — с диска по ходу отправки; копии нет — null. */
+  /** Документ (фото) посылки из копии шлюза — с диска по ходу отправки; копии нет — null. */
   private async parcelFile(d: DeliveryRow): Promise<MultipartFile | null> {
     if (!d.copy_ref) return null;
     const full = path.join(this.ctx.paths.home, d.copy_ref);
@@ -927,8 +947,9 @@ export class Sender {
 
   /**
    * Одна часть: 429 — ждать и повторить (до 3 раз); 400 разбора — без разметки; остальное — отложить или бросить.
-   * sendVoice и sendDocument — с файлом (multipart). Документ посылки (doc) — свой сигнал отмены («стоп» прерывает
-   * загрузку), предел запроса по размеру, после DOCUMENT_MAX_TIMEOUTS таймаутов — брошен (0.3.3).
+   * sendVoice, sendDocument и sendPhoto — с файлом (multipart). Документ (фото) посылки (doc) — свой сигнал отмены
+   * («стоп» прерывает загрузку), предел запроса по размеру, после DOCUMENT_MAX_TIMEOUTS таймаутов — брошен (0.3.3). Фото
+   * не принято (400, 413) — не брошено: доставка — документом (#60).
    */
   private async attempt(
     group: GroupRow[],
@@ -1011,6 +1032,17 @@ export class Sender {
             this.synth?.forget(r0.id);
             return { ok: false, voiceRejected: true };
           }
+          // Фото не принято (#60): размеры, формат, размер (PHOTO_INVALID_DIMENSIONS, IMAGE_PROCESS_FAILED,
+          // PHOTO_SAVE_FILE_INVALID, 413) — та же доставка уходит документом: send_as → document той же записью, поэтому
+          // и после перезапуска, и при повторном отказе документа второго круга нет.
+          if (method === 'sendPhoto' && doc && (err.errorCode === 400 || err.errorCode === 413)) {
+            const why = err.description.slice(0, 300);
+            this.ctx.journal.write('photo_rejected', { outbox_id: r0.id, delivery: doc.id, error: err.description });
+            this.record(group, () =>
+              sql(ctx.db, "UPDATE deliveries SET send_as = 'document', note = ? WHERE id = ? AND send_as = 'photo'").run(parcelNotePhotoRejected(why), doc.id),
+            );
+            return { ok: false, photoRejected: true };
+          }
           this.drop(group, err.message);
           return { ok: false };
         }
@@ -1064,7 +1096,7 @@ export class Sender {
       sql(this.ctx.db, "UPDATE deliveries SET status = 'failed', note = ? WHERE status = 'pending' AND outbox_id IN (SELECT value FROM json_each(?))").run(why.slice(0, 500), JSON.stringify(ids));
       const owner = this.ctx.config.owner_id;
       for (const d of failed) {
-        const words = why.replace(/^sendDocument: /, 'Telegram не принял: ').slice(0, 300);
+        const words = why.replace(/^send(Document|Photo): /, 'Telegram не принял: ').slice(0, 300);
         enqueueServiceLine(this.ctx, parcelFailedText(`${d.parcel}/${d.file}`, words, d.chat_id !== null && d.chat_id !== owner ? d.chat_id : null));
       }
     });

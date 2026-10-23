@@ -4,10 +4,11 @@
 //
 // Папка посылок — единственное место, откуда агент отдаёт что-то наружу: посылка — подпапка `<папка посылок>/<имя>/` с
 // файлами, которые агент создаёт и обновляет сам. Шлюз отдаёт файл (send_file) так: проверяет путь, снимает копию в своё
-// хранилище (`raw/parcels/<sha256>`) и ставит доставку в очередь цели (сейчас одна — telegram, sendDocument). Состояние
-// доставок — в базе шлюза (deliveries), а не в папке посылки.
+// хранилище (`raw/parcels/<sha256>`) и ставит доставку в очередь цели (сейчас одна — telegram: документом, sendDocument;
+// картинка — фото, sendPhoto, #60). Состояние доставок — в базе шлюза (deliveries), а не в папке посылки.
 
 import path from 'node:path';
+import { formatBytes, imageInfo } from './media.js';
 
 /**
  * Предел файла: 50 МБ — столько бот отправляет через общий сервер Bot API (описание sendDocument, `@grammyjs/types` 5.0.0,
@@ -30,12 +31,60 @@ export const PARCEL_TARGET_RE = /^[a-z][a-z0-9_-]{0,31}$/;
 /** Новая версия того же файла в тот же чат — пометка шлюза последней строкой подписи ⟨предл.: текст⟩. */
 export const PARCEL_UPDATED_TEXT = '⚙ обновлено';
 
+/**
+ * Картинка — фото (#60): владелец просил «не файлом, а картинкой». Картинка jpg, jpeg, png, webp в пределах фото Telegram
+ * (описание sendPhoto, `@grammyjs/types` 5.0.0, methods.d.ts:255: до 10 МБ, ширина и высота вместе — до 10 000, стороны
+ * — не вытянутее 1:20) уходит фото (sendPhoto: Telegram её сжимает); остальное — документом (sendDocument, оригинал без
+ * сжатия). send_file(as: "file") — документом и картинку; as: "photo" — фото явно (не годится — документом, с пометкой
+ * агенту). Telegram фото не принял — та же доставка уходит документом (sender.ts).
+ */
+export const PHOTO_EXTS: readonly string[] = ['jpg', 'jpeg', 'png', 'webp'];
+export const PHOTO_MAX_BYTES = 10 * 1024 * 1024;
+/** Ширина и высота фото вместе, точек. */
+export const PHOTO_MAX_SIDES = 10_000;
+/** Длинная сторона фото — не больше стольких коротких. */
+export const PHOTO_MAX_RATIO = 20;
+/**
+ * Сколько начала файла держать при снимке, чтобы прочесть размеры картинки (imageInfo): у PNG и WebP они в первых
+ * десятках байт, у JPEG — в маркере SOF после EXIF и цветового профиля (обычно десятки КБ). Не нашлись — документом.
+ */
+export const PHOTO_HEAD_BYTES = 1024 * 1024;
+
+/** send_file.as: как агент просит прислать — фото или файлом (документом); без него — картинка фото, остальное файлом. */
+export const SEND_FILE_AS = ['photo', 'file'] as const;
+export type SendFileAs = (typeof SEND_FILE_AS)[number];
+
+/** Имя файла — картинка, которую можно попробовать отправить фото (по расширению). */
+export function isPhotoName(name: string): boolean {
+  return PHOTO_EXTS.includes(path.extname(name).slice(1).toLowerCase());
+}
+
+/**
+ * Почему файл не уйдёт фото — словами агенту; null — годится. head — начало файла (до PHOTO_HEAD_BYTES): формат и
+ * размеры читаются из заголовка, без зависимостей (imageInfo). GIF фото не шлём: Telegram сделал бы из него снимок.
+ */
+export function photoProblem(name: string, bytes: number, head: Buffer | null): string | null {
+  if (!isPhotoName(name)) return 'фото — только картинка jpg, png или webp';
+  if (bytes > PHOTO_MAX_BYTES) return `${formatBytes(bytes)} — фото в Telegram до 10 МБ`;
+  const info = head ? imageInfo(head) : null;
+  if (!info || info.format === 'gif') return 'размеры картинки не прочитать: содержимое — не jpg, png или webp';
+  const { width: w, height: h } = info;
+  if (w <= 0 || h <= 0) return `размеры картинки ${w}×${h} — не прочитать`;
+  if (w + h > PHOTO_MAX_SIDES) return `${w}×${h} — у фото в Telegram ширина и высота вместе до 10 000`;
+  if (Math.max(w, h) > PHOTO_MAX_RATIO * Math.min(w, h)) return `${w}×${h} — фото в Telegram не вытянутее 1:20`;
+  return null;
+}
+
 /** deliveries.note: брошена «стопом» (control.ts). */
 export const PARCEL_NOTE_STOP = 'стоп';
 /** deliveries.note: «стоп» прервал загрузку документа в пути (sender.ts) — Telegram мог успеть его принять. */
 export const PARCEL_NOTE_STOP_UPLOAD = 'стоп во время загрузки: документ мог уйти';
 /** deliveries.note: документ был в пути при «стопе» и дошёл — доставка sent (sender.ts). */
 export const PARCEL_NOTE_AFTER_STOP = 'ушёл после стопа';
+/** deliveries.note: Telegram не принял фото (#60) — та же доставка уходит документом (sender.ts). */
+export function parcelNotePhotoRejected(why: string): string {
+  return `Telegram не принял фото (${why}) — отправка документом`;
+}
 
 /**
  * Загрузка документа в Telegram: предел запроса — минута на соединение и ответ плюс время загрузки на 1 Мбит/с
@@ -122,7 +171,7 @@ const CONTENT_TYPES: Record<string, string> = {
   pptx: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
 };
 
-/** Тип содержимого для sendDocument — по расширению; неизвестное — application/octet-stream. */
+/** Тип содержимого для sendDocument и sendPhoto — по расширению; неизвестное — application/octet-stream. */
 export function parcelContentType(name: string): string {
   const ext = path.extname(name).slice(1).toLowerCase();
   return CONTENT_TYPES[ext] ?? 'application/octet-stream';

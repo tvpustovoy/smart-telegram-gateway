@@ -787,6 +787,16 @@ CREATE INDEX events_update ON events(update_id);
 CREATE INDEX events_episode ON events(episode_id);
 `;
 
+/**
+ * Версия 14 (#60): deliveries.send_as — как цель telegram отдаёт файл: document (sendDocument, как до v14) или photo
+ * (sendPhoto: картинка в пределах фото Telegram, если агент не просил файлом). Решается при send_file и хранится, чтобы
+ * повтор после сбоя и перезапуска ушёл тем же способом; Telegram фото не принял — отправитель меняет photo на document той
+ * же записью, и доставка уходит документом. Доставки прежних версий — document.
+ */
+const SCHEMA_V14 = `
+ALTER TABLE deliveries ADD COLUMN send_as TEXT NOT NULL DEFAULT 'document' CHECK (send_as IN ('document','photo'));
+`;
+
 export const MIGRATIONS: readonly Migration[] = [
   { version: 1, name: 'схема 0.1: все таблицы 5.2', sql: SCHEMA_V1 },
   { version: 2, name: 'кнопки в outbox, тема Telegram у эпизода', sql: SCHEMA_V2 },
@@ -801,6 +811,7 @@ export const MIGRATIONS: readonly Migration[] = [
   { version: 11, name: 'реакция владельца на ответ агента; расшифровка цитатой', sql: SCHEMA_V11, foreignKeysOff: true },
   { version: 12, name: 'правила канала разговору; удаление строки темы после [верно]', sql: SCHEMA_V12, foreignKeysOff: true },
   { version: 13, name: 'окно для материала без слов владельца', sql: SCHEMA_V13, foreignKeysOff: true },
+  { version: 14, name: 'посылки: картинка — фото (send_as)', sql: SCHEMA_V14 },
 ];
 
 /**
@@ -840,6 +851,13 @@ export interface MaterialHold {
  */
 export const DELIVERY_STATUSES = ['pending', 'sent', 'dropped', 'failed'] as const;
 export type DeliveryStatus = (typeof DELIVERY_STATUSES)[number];
+
+/**
+ * deliveries.send_as (схема v14, #60): как цель telegram отдаёт файл — документом (sendDocument) или фото (sendPhoto).
+ * photo → document — Telegram фото не принял (sender.ts); обратно — никогда.
+ */
+export const DELIVERY_SEND_AS = ['document', 'photo'] as const;
+export type DeliverySendAs = (typeof DELIVERY_SEND_AS)[number];
 
 /**
  * Реакция владельца на сообщение бота (0.3.4), events.reaction_json. Событие заводится только на ответ агента (строка

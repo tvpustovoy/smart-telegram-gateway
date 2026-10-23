@@ -1661,6 +1661,7 @@ export class AdapterService {
         target: msg.target,
         leaseCwd: lease.hint?.cwd ?? null,
         idem: msg.idem ?? null,
+        ...(msg.as !== undefined ? { as: msg.as } : {}),
         req: { seq: msg.seq, chatId, threadId: ev?.thread_id ?? null, caption: msg.caption ?? '', fromName, turn: msg.turn, held },
         inTx: () => {
           if (!marks) return;
@@ -1696,6 +1697,9 @@ export class AdapterService {
       sha256: out.sha256,
       sent_before: r.sent_before,
       updated: r.updated,
+      as: r.as,
+      ...(msg.as !== undefined ? { asked: msg.as } : {}),
+      ...(r.as_note ? { as_note: r.as_note } : {}),
       caption: msg.caption ?? '',
       ...(fromName ? { from: fromName } : {}),
       held,

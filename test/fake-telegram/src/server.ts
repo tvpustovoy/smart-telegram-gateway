@@ -7,6 +7,7 @@ import { EventEmitter } from 'node:events';
 import http from 'node:http';
 import type { AddressInfo, Socket } from 'node:net';
 import type { Chat, Message, Update, User } from '@grammyjs/types';
+import { imageInfo } from 'stg-core';
 import { UpdateBuilder, privateChatOf, updateType } from './builders.js';
 import { checkTelegramHtml } from './html.js';
 import { isUploadedFile, parseBody, type Params } from './multipart.js';
@@ -64,7 +65,7 @@ export interface ScenarioRule {
 export interface SentMessage {
   chat_id: number;
   message_id: number;
-  method: 'sendMessage' | 'sendVoice' | 'sendDocument';
+  method: 'sendMessage' | 'sendVoice' | 'sendDocument' | 'sendPhoto';
   text: string | null;
   caption: string | null;
   parse_mode: string | null;
@@ -74,6 +75,8 @@ export interface SentMessage {
   voice: { bytes: number; duration: number | null } | null;
   /** Документ (sendDocument, посылки 0.3.3): имя, тип, содержимое. */
   document?: { filename: string | null; contentType: string | null; data: Buffer } | null;
+  /** Фото (sendPhoto, посылки #60): имя, тип, содержимое — как пришло от бота (Telegram его потом сжимает). */
+  photo?: { filename: string | null; contentType: string | null; data: Buffer } | null;
   edits: Array<{ text: string; reply_markup: unknown; at: number }>;
   at: number;
   message: Message;
@@ -584,6 +587,8 @@ export class FakeTelegram extends EventEmitter {
         return this.sendVoice(p, res, record);
       case 'sendDocument':
         return this.sendDocument(p, res, record);
+      case 'sendPhoto':
+        return this.sendPhoto(p, res, record);
       case 'editMessageText':
         return this.editMessageText(p, res, record);
       case 'editMessageReplyMarkup':
@@ -915,6 +920,60 @@ export class FakeTelegram extends EventEmitter {
       link_preview_options: null,
       voice: null,
       document: { filename: doc.filename, contentType: doc.contentType, data: doc.data },
+      edits: [],
+      at: Date.now(),
+      message: msg,
+      disable_notification: p.disable_notification === true || p.disable_notification === 'true',
+      deletedAt: null,
+    });
+    this.ok(res, record, msg);
+  }
+
+  /**
+   * Фото (посылки, #60): как настоящий API — файл загрузкой (multipart), подпись до 1024 знаков; пределы фото из описания
+   * sendPhoto (до 10 МБ, ширина и высота вместе до 10 000, стороны не вытянутее 1:20) — отказ 400, как у Telegram
+   * (PHOTO_SAVE_FILE_INVALID, PHOTO_INVALID_DIMENSIONS); не картинка — IMAGE_PROCESS_FAILED. Размеры — по заголовку
+   * (imageInfo из stg-core).
+   */
+  private sendPhoto(p: Params, res: http.ServerResponse, record: CallRecord): void {
+    const chat_id = num(p.chat_id);
+    if (chat_id === undefined) return this.fail(res, record, reply.error(400, 'Bad Request: chat not found'));
+    const photo = p.photo;
+    if (!isUploadedFile(photo)) return this.fail(res, record, reply.error(400, 'Bad Request: there is no photo in the request'));
+    if (photo.data.length === 0) return this.fail(res, record, reply.error(400, 'Bad Request: file must be non-empty'));
+    if (photo.data.length > 10 * 1024 * 1024) return this.fail(res, record, reply.error(400, 'Bad Request: PHOTO_SAVE_FILE_INVALID'));
+    const info = imageInfo(photo.data);
+    if (!info) return this.fail(res, record, reply.error(400, 'Bad Request: IMAGE_PROCESS_FAILED'));
+    const { width, height } = info;
+    if (width + height > 10_000 || Math.max(width, height) > 20 * Math.min(width, height)) {
+      return this.fail(res, record, reply.error(400, 'Bad Request: PHOTO_INVALID_DIMENSIONS'));
+    }
+    const caption = str(p.caption);
+    const parse_mode = str(p.parse_mode);
+    if (caption) {
+      const bad = this.checkText(caption, parse_mode, 1024, 'caption');
+      if (bad) return this.fail(res, record, bad);
+    }
+    const retry = this.rateLimited(chat_id);
+    if (retry !== null) return this.fail(res, record, errors.tooManyRequests(retry));
+    const fileId = `sent_photo_${++this.fileSeq}`;
+    this.addFile(photo.data, { fileId, path: `photos/${fileId}.jpg` });
+    const msg = this.newMessage(chat_id, {
+      photo: [{ file_id: fileId, file_unique_id: `u${fileId}`, width, height, file_size: photo.data.length }],
+      ...(caption ? { caption } : {}),
+    });
+    this.sent.push({
+      chat_id,
+      message_id: msg.message_id,
+      method: 'sendPhoto',
+      text: null,
+      caption,
+      parse_mode,
+      reply_markup: p.reply_markup ?? null,
+      reply_parameters: p.reply_parameters ?? null,
+      link_preview_options: null,
+      voice: null,
+      photo: { filename: photo.filename, contentType: photo.contentType, data: photo.data },
       edits: [],
       at: Date.now(),
       message: msg,

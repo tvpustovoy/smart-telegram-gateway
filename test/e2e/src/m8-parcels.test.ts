@@ -19,6 +19,11 @@
 // Сведение 0.3.4 поверх 0.3.3 (раздел M9 — реакции): A9.16 реакция владельца на документ посылки — событие реакции, как
 // на текстовый ответ (с 0.3.4 — через окно отмены 3 с); на строку шлюза о неотправленном файле — нет. A8.21 (проверка
 // сведения) — подпись документа целиком цитатой — «💬 » впереди; цитата и свой текст — без пометки.
+// Картинка — фото (#60): A8.22 png по просьбе — sendPhoto с подписью и реплаем, 👀 снят · A8.23 as: "file" — документом;
+// чужая картинка — «↪ Имя»; новая версия — «⚙ обновлено» · A8.24 не годится в фото (> 10 МБ, вытянутая, стороны вместе
+// > 10 000, GIF, не картинка) — документом; as: "photo" — пометка почему · A8.25 Telegram не принял фото (400, 413) — та
+// же строка документом, одна доставка; документ тоже не принят — failed, одна строка владельцу · A8.26 502, обрыв, 429 —
+// фото повторяется; перезапуск — способ из доставки · A8.27 «стоп» — ждущее фото dropped.
 
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
@@ -26,9 +31,9 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { after, before, describe, it } from 'node:test';
-import { AGENT_MARK, PARCEL_NOTE_STOP_UPLOAD, STOPPED_TEXT, ownerReactionText, type GatewayMessage, type OwnerReaction, type SendFileResult } from 'stg-core';
+import { AGENT_MARK, PARCEL_NOTE_STOP_UPLOAD, STOPPED_TEXT, ownerReactionText, type GatewayMessage, type OwnerReaction, type SendFileResult, type Update } from 'stg-core';
 import { FakeChannel } from 'stg-fake-channel';
-import { errors, reply, type SentMessage } from 'stg-fake-telegram';
+import { errors, reply, type FakeReply, type SentMessage } from 'stg-fake-telegram';
 import { connectAdapter, count, makeTempDir, meta, pump, q, q1, readJournal, sleep, waitUntil, type GatewayProcess } from './harness.js';
 import { OTHER, OWNER, reactionOf, reactionsOf, receiptCleared, setup, type Setup } from './m1-common.js';
 import { press } from './m2-common.js';
@@ -700,5 +705,255 @@ describe('M8 · «стоп» и документ в пути (0.3.3; наход�
     assert.ok(!s.fake.sentTo(OWNER.id).some((m) => m.text === t502), 'текст после стопа не ушёл');
     assert.ok(!s.fake.sentTo(OWNER.id).some((m) => m.text?.startsWith('⚙ файл подпись/')), 'строки «не отправлен» нет: документ дошёл');
     await resume(line);
+  });
+});
+
+/** Заголовок PNG (IHDR с размерами) — шлюз и подделка читают только его; pad — добить до размера. */
+function png(w: number, h: number, pad = 0, fill = 0): Buffer {
+  const b = Buffer.alloc(33 + pad, fill);
+  Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]).copy(b, 0);
+  b.writeUInt32BE(13, 8);
+  b.write('IHDR', 12, 'latin1');
+  b.writeUInt32BE(w, 16);
+  b.writeUInt32BE(h, 20);
+  return b;
+}
+
+/** Заголовок JPEG: SOI, APP1 (EXIF) на exif байт, SOF0 с размерами, EOI. */
+function jpeg(w: number, h: number, exif = 64): Buffer {
+  const app1 = Buffer.alloc(4 + exif);
+  app1.writeUInt16BE(0xffe1, 0);
+  app1.writeUInt16BE(2 + exif, 2);
+  const sof = Buffer.alloc(19);
+  sof.writeUInt16BE(0xffc0, 0);
+  sof.writeUInt16BE(17, 2);
+  sof[4] = 8;
+  sof.writeUInt16BE(h, 5);
+  sof.writeUInt16BE(w, 7);
+  sof[9] = 3;
+  return Buffer.concat([Buffer.from([0xff, 0xd8]), app1, sof, Buffer.from([0xff, 0xd9])]);
+}
+
+describe('M8 · картинка — фото (#60): «не файлом, а картинкой»', () => {
+  let s: Setup;
+  let gw: GatewayProcess;
+  let ch: FakeChannel;
+  let turn: number;
+  let parcels: string;
+  const delivery = (id: number): DeliveryRow & { send_as: string } => q1<DeliveryRow & { send_as: string }>(s.home, 'SELECT * FROM deliveries WHERE id = ?', id)!;
+  const put = (rel: string, content: string | Buffer): void => {
+    const f = path.join(parcels, rel);
+    fs.mkdirSync(path.dirname(f), { recursive: true });
+    fs.writeFileSync(f, content);
+  };
+  /** Сообщение владельца отдано агенту, и 👀 на нём уже стоит: ответ потом её снимет (иначе снимать нечего). */
+  const says = async (text: string): Promise<{ seq: number; update: Update }> => {
+    const u = s.fake.push(s.fake.builder.text(OWNER, text))[0]!;
+    const seq = await waitUntil(() => q1<{ seq: number }>(s.home, 'SELECT seq FROM events WHERE update_id = ?', u.update_id)?.seq, 5000, 'приёма');
+    await ch.waitEvent(seq);
+    await ch.delivered(seq);
+    await pump(gw, () => reactionOf(s.fake, u) === '👀' || null, { what: '👀' });
+    return { seq, update: u };
+  };
+  const sent = (id: number): Promise<DeliveryRow & { send_as: string }> => pump(gw, () => (delivery(id).status === 'sent' ? delivery(id) : null), { what: `доставки ${id}` });
+  const shown = (d: DeliveryRow): SentMessage => s.fake.sentTo(d.chat_id).find((m) => m.message_id === d.tg_message_id)!;
+  const calls = (): { photo: number; doc: number } => ({ photo: s.fake.callsOf('sendPhoto').length, doc: s.fake.callsOf('sendDocument').length });
+  /** Строка журнала out доставки — пишется после последней записи строки outbox. */
+  const outOf = (id: number): Promise<Record<string, unknown>> => pump(gw, () => readJournal(s.home).find((l) => l.ev === 'out' && l.delivery === id), { what: `out доставки ${id}` });
+
+  before(async () => {
+    const root = makeTempDir('parcels-photo-');
+    parcels = path.join(root, 'parcels');
+    fs.mkdirSync(parcels);
+    s = await setup({ home: { rules: RULES, extraConfig: `parcels: { dir: "${parcels}" }\n` } });
+    gw = await s.start();
+    ({ ch, turn } = await connectAdapter(s.home));
+  });
+  after(async () => {
+    ch?.close();
+    if (gw?.alive) await gw.stop();
+    await s.close();
+  });
+
+  it('A8.22: картинка по просьбе — фото (sendPhoto), а не документ: подпись HTML, реплаем на просьбу; доставка sent; ack, журнал send_file и out — как фото; 👀 снят', async () => {
+    const image = png(1280, 720, 2048, 7);
+    put('схемы/plan.png', image);
+    const ask = await says('пришли схему картинкой');
+    const more = await says('и подпиши, что на ней');
+    await ch.done([more.seq]);
+    const before = calls();
+    const r = result(await ch.sendFile('схемы/plan.png', ask.seq, turn, { caption: '**Схема** этажа' }));
+    assert.deepEqual([r.status, r.as, r.as_note], ['queued', 'photo', undefined]);
+    const d = await sent(r.delivery!);
+    const m = shown(d);
+    assert.equal(m.method, 'sendPhoto');
+    assert.deepEqual([m.photo?.filename, m.photo?.contentType], ['plan.png', 'image/png']);
+    assert.ok(m.photo?.data.equals(image), 'фото — копия файла как есть');
+    assert.deepEqual([m.caption, m.parse_mode], ['<b>Схема</b> этажа', 'HTML']);
+    assert.deepEqual(m.reply_parameters, { message_id: ask.update.message!.message_id, allow_sending_without_reply: true }, 'после просьбы были сообщения — реплаем на неё');
+    assert.deepEqual(m.message.photo?.map((p) => [p.width, p.height]), [[1280, 720]]);
+    assert.deepEqual(calls(), { photo: before.photo + 1, doc: before.doc }, 'документом не уходило');
+    assert.deepEqual([d.send_as, d.event_seq, d.note], ['photo', ask.seq, null]);
+    assert.equal(q1<{ kind: string }>(s.home, 'SELECT kind FROM messages_out WHERE tg_message_id = ?', m.message_id)?.kind, 'agent');
+    assert.equal(q1<{ status: string }>(s.home, 'SELECT status FROM events WHERE seq = ?', ask.seq)?.status, 'processed');
+    await pump(gw, () => receiptCleared(s.fake, ask.update) || null, { what: 'снятия 👀' });
+    assert.ok(readJournal(s.home).some((l) => l.ev === 'send_file' && l.delivery === r.delivery && l.as === 'photo'), 'send_file с as');
+    // out пишется после последней записи строки (доставка sent — раньше, в записи части): ждём её.
+    assert.equal((await outOf(r.delivery!)).method, 'sendPhoto', 'out с method sendPhoto');
+  });
+
+  it('A8.23: as: "file" — та же картинка документом (оригинал без сжатия); чужая картинка без подписи — фото с «↪ Имя»; новая версия — «⚙ обновлено» в подписи фото', async () => {
+    const r1 = result(await ch.sendFile('схемы/plan.png', null, turn, { as: 'file', caption: 'оригинал' }));
+    assert.deepEqual([r1.as, r1.sent_before], ['file', 1]);
+    const d1 = await sent(r1.delivery!);
+    const m1 = shown(d1);
+    assert.deepEqual([m1.method, m1.document?.filename, m1.document?.contentType, m1.caption], ['sendDocument', 'plan.png', 'image/png', 'оригинал']);
+    assert.equal(d1.send_as, 'document');
+    assert.equal((await outOf(r1.delivery!)).method, 'sendDocument');
+    put('эскизы/кухня.jpg', jpeg(4000, 3000, 30_000));
+    const r2 = result(await ch.sendFile('эскизы/кухня.jpg', null, turn, { from: 'Дизайнер' }));
+    const m2 = shown(await sent(r2.delivery!));
+    assert.deepEqual([m2.method, m2.caption, m2.photo?.contentType], ['sendPhoto', '↪ Дизайнер', 'image/jpeg']);
+    put('схемы/plan.png', png(1280, 720, 2048, 8));
+    const r3 = result(await ch.sendFile('схемы/plan.png', null, turn, { caption: 'поправил' }));
+    assert.deepEqual([r3.as, r3.updated], ['photo', true]);
+    const m3 = shown(await sent(r3.delivery!));
+    assert.equal(m3.method, 'sendPhoto');
+    assert.equal(m3.caption?.replace(/\r\n/g, '\n'), 'поправил\n\n⚙ обновлено');
+  });
+
+  it('A8.24: не годится в фото — документом: больше 10 МБ, вытянутая, стороны вместе больше 10 000, GIF, не картинка под именем картинки; as: "photo" — пометка агенту почему', async () => {
+    put('большие/big.png', png(100, 100, 10 * 1024 * 1024));
+    put('большие/wide.png', png(2001, 100));
+    put('большие/huge.png', png(6000, 4001));
+    const gif = Buffer.alloc(13);
+    gif.write('GIF89a', 0, 'latin1');
+    gif.writeUInt16LE(400, 6);
+    gif.writeUInt16LE(300, 8);
+    put('большие/anim.gif', gif);
+    put('большие/fake.jpg', '<html>это не картинка</html>');
+    put('большие/report.pdf', '%PDF-1.7');
+    const before = calls();
+    const cases: Array<[string, RegExp]> = [
+      ['большие/big.png', /^10,0 МБ — фото в Telegram до 10 МБ$/],
+      ['большие/wide.png', /^2001×100 — фото в Telegram не вытянутее 1:20$/],
+      ['большие/huge.png', /^6000×4001 — у фото в Telegram ширина и высота вместе до 10 000$/],
+      ['большие/anim.gif', /только картинка jpg, png или webp/],
+      ['большие/fake.jpg', /размеры картинки не прочитать/],
+      ['большие/report.pdf', /только картинка jpg, png или webp/],
+    ];
+    for (const [p, why] of cases) {
+      const plain = result(await ch.sendFile(p, null, turn));
+      assert.deepEqual([plain.as, plain.as_note], ['file', undefined], `${p}: без as — документом, без пометки`);
+      assert.equal(shown(await sent(plain.delivery!)).method, 'sendDocument', p);
+      const asked = result(await ch.sendFile(p, null, turn, { as: 'photo' }));
+      assert.equal(asked.as, 'file', p);
+      assert.match(asked.as_note ?? '', why, p);
+      assert.equal(shown(await sent(asked.delivery!)).method, 'sendDocument', p);
+      assert.ok(readJournal(s.home).some((l) => l.ev === 'send_file' && l.delivery === asked.delivery && l.asked === 'photo' && l.as === 'file' && typeof l.as_note === 'string'), p);
+    }
+    assert.deepEqual(calls(), { photo: before.photo, doc: before.doc + 2 * cases.length }, 'фото не пробовали — сразу документом');
+  });
+
+  it('A8.25: Telegram не принял фото (400 PHOTO_INVALID_DIMENSIONS, IMAGE_PROCESS_FAILED; 413) — та же строка документом: подпись и реплай те же, одна доставка, sent; документ тоже не принят — failed, одна строка владельцу', async () => {
+    const answers: Array<[string, FakeReply, RegExp]> = [
+      ['отказ/dims.png', reply.error(400, 'Bad Request: PHOTO_INVALID_DIMENSIONS'), /PHOTO_INVALID_DIMENSIONS/],
+      ['отказ/process.png', reply.error(400, 'Bad Request: IMAGE_PROCESS_FAILED'), /IMAGE_PROCESS_FAILED/],
+      ['отказ/large.png', reply.error(413, 'Request Entity Too Large'), /Request Entity Too Large/],
+    ];
+    for (const [i, [p, answer, why]] of answers.entries()) {
+      const image = png(640, 480, 512, i + 1);
+      put(p, image);
+      const ask = await says(`пришли картинку ${i + 1}`);
+      const more = await says('и коротко, что на ней');
+      await ch.done([more.seq]);
+      const before = calls();
+      s.fake.scenario({ method: 'sendPhoto', nth: before.photo + 1, reply: answer });
+      const r = result(await ch.sendFile(p, ask.seq, turn, { caption: `картинка _${i + 1}_` }));
+      assert.equal(r.as, 'photo');
+      const d = await sent(r.delivery!);
+      const m = shown(d);
+      assert.equal(m.method, 'sendDocument', p);
+      assert.ok(m.document?.data.equals(image), `${p}: та же копия`);
+      assert.deepEqual([m.caption, m.parse_mode], [`картинка <i>${i + 1}</i>`, 'HTML'], `${p}: подпись та же`);
+      assert.deepEqual(m.reply_parameters, { message_id: ask.update.message!.message_id, allow_sending_without_reply: true }, `${p}: реплай тот же`);
+      assert.deepEqual(calls(), { photo: before.photo + 1, doc: before.doc + 1 }, `${p}: одно фото (не принято) и один документ`);
+      assert.equal(d.send_as, 'document');
+      assert.match(d.note ?? '', new RegExp(`^Telegram не принял фото \\(.*${why.source}.*\\) — отправка документом$`), p);
+      assert.equal(count(s.home, 'SELECT count(*) AS n FROM deliveries WHERE parcel = ? AND file = ?', 'отказ', p.slice('отказ/'.length)), 1, `${p}: доставка одна`);
+      // Строка outbox — sent последней записью, после доставки (та — сразу, как документ дошёл): ждём её.
+      await pump(gw, () => q1<{ status: string }>(s.home, 'SELECT status FROM outbox WHERE id = ?', d.outbox_id!)?.status === 'sent' || null, { what: `${p}: строки outbox` });
+      assert.ok(readJournal(s.home).some((l) => l.ev === 'photo_rejected' && l.delivery === r.delivery && why.test(String(l.error))), `${p}: photo_rejected`);
+      assert.equal((await outOf(r.delivery!)).method, 'sendDocument', `${p}: out — документом`);
+      await pump(gw, () => receiptCleared(s.fake, ask.update) || null, { what: 'снятия 👀' });
+    }
+    assert.ok(!s.fake.sentTo(OWNER.id).some((m) => m.text?.startsWith('⚙ файл отказ/')), 'строки «не отправлен» нет: файл дошёл');
+    // Документ второго круга тоже не принят — доставка failed (а не снова фото), одна строка владельцу.
+    put('отказ/both.png', png(640, 480, 64, 9));
+    const before = calls();
+    s.fake.scenario({ method: 'sendPhoto', nth: before.photo + 1, reply: reply.error(400, 'Bad Request: PHOTO_INVALID_DIMENSIONS') });
+    s.fake.scenario({ method: 'sendDocument', nth: before.doc + 1, reply: reply.error(400, 'Bad Request: wrong file identifier/HTTP URL specified') });
+    const r = result(await ch.sendFile('отказ/both.png', null, turn));
+    const d = await pump(gw, () => (delivery(r.delivery!).status === 'failed' ? delivery(r.delivery!) : null), { what: 'failed' });
+    assert.match(d.note ?? '', /wrong file identifier/);
+    await pump(gw, () => s.fake.sentTo(OWNER.id).find((m) => m.text?.startsWith('⚙ файл отказ/both.png не отправлен: Telegram не принял: 400 Bad Request: wrong file identifier')), {
+      what: 'строки владельцу',
+    });
+    for (let i = 0; i < 20; i++) await gw.advance('1s');
+    await sleep(50);
+    assert.deepEqual(calls(), { photo: before.photo + 1, doc: before.doc + 1 }, 'по кругу не ходит');
+    assert.equal(s.fake.sentTo(OWNER.id).filter((m) => m.text?.startsWith('⚙ файл отказ/both.png')).length, 1);
+    s.fake.clearScenario();
+  });
+
+  it('A8.26: повторы — как у документа: 502, обрыв, 429 — фото той же копией, дошло один раз; перезапуск шлюза — способ из доставки: фото остаётся фото, as: "file" — документом', async () => {
+    const image = png(800, 600, 256, 3);
+    put('сбои/a.png', image);
+    let before = calls();
+    s.fake.scenario({ method: 'sendPhoto', nth: before.photo + 1, reply: errors.serverError(502) });
+    s.fake.scenario({ method: 'sendPhoto', nth: before.photo + 2, reply: reply.drop() });
+    s.fake.scenario({ method: 'sendPhoto', nth: before.photo + 3, reply: errors.tooManyRequests(2) });
+    const r = result(await ch.sendFile('сбои/a.png', null, turn));
+    const d = await sent(r.delivery!);
+    assert.deepEqual(calls(), { photo: before.photo + 4, doc: before.doc }, '502, обрыв, 429 — и четвёртая попытка, всё фото');
+    assert.equal(shown(d).method, 'sendPhoto');
+    assert.equal(s.fake.sentTo(OWNER.id).filter((m) => m.photo?.data.equals(image)).length, 1, 'дошло один раз');
+    assert.equal(d.send_as, 'photo');
+    s.fake.clearScenario();
+    // Перезапуск: фото ждёт повтора (503) — после старта уходит фото; as: "file" той же картинки — документом.
+    const image2 = png(800, 600, 256, 4);
+    put('сбои/b.png', image2);
+    before = calls();
+    s.fake.scenario({ method: 'sendPhoto', from: before.photo + 1, times: 10_000, reply: errors.serverError(503) });
+    s.fake.scenario({ method: 'sendDocument', from: before.doc + 1, times: 10_000, reply: errors.serverError(503) });
+    const rp = result(await ch.sendFile('сбои/b.png', null, turn));
+    const rf = result(await ch.sendFile('сбои/b.png', null, turn, { as: 'file' }));
+    await pump(gw, () => (calls().photo > before.photo && calls().doc > before.doc) || null, { what: 'первых попыток', step: '100ms' });
+    ch.close();
+    await gw.stop();
+    s.fake.clearScenario();
+    gw = await s.start();
+    ({ ch, turn } = await connectAdapter(s.home));
+    const [dp, df] = [await sent(rp.delivery!), await sent(rf.delivery!)];
+    assert.deepEqual([shown(dp).method, shown(df).method], ['sendPhoto', 'sendDocument']);
+    assert.ok(shown(dp).photo?.data.equals(image2) && shown(df).document?.data.equals(image2));
+  });
+
+  it('A8.27: «стоп» — ждущее фото dropped и больше не уходит', async () => {
+    put('стоп/a.png', png(320, 240, 128, 5));
+    const before = calls();
+    s.fake.scenario({ method: 'sendPhoto', from: before.photo + 1, times: 10_000, reply: errors.serverError(502) });
+    const r = result(await ch.sendFile('стоп/a.png', null, turn));
+    await pump(gw, () => calls().photo > before.photo || null, { what: 'первой попытки' });
+    s.fake.push(s.fake.builder.text(OWNER, 'стоп'));
+    await pump(gw, () => s.fake.sentTo(OWNER.id).find((m) => m.text === STOPPED_TEXT), { what: '«Остановлен»' });
+    const d = delivery(r.delivery!);
+    assert.deepEqual([d.status, d.note, d.send_as], ['dropped', 'стоп', 'photo']);
+    await sleep(50);
+    const after = calls();
+    s.fake.clearScenario();
+    for (let i = 0; i < 40; i++) await gw.advance('1s');
+    await sleep(50);
+    assert.deepEqual(calls(), after, 'после стопа ни фото, ни документа');
   });
 });

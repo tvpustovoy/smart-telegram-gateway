@@ -53,6 +53,20 @@ The chat interface and the design documents are in Russian; the entries below de
   reminder, media, parcels, usage limit, app-server crash, adapter restart, vanished thread, Codex down for longer
   than a minute and the lease taken again, no login).
   `test/e2e/dist/drill-codex.js` runs the same against the real `codex app-server` with one owner message.
+- Pictures as photos (#60; the owner asked for a picture "not as a file, but as a picture"). `send_file` sends a picture
+  — `jpg`, `jpeg`, `png` or `webp` within Telegram's photo limits (at most 10 MB, width plus height at most 10,000, the
+  long side at most 20 times the short one) — as a photo (`sendPhoto`), so it shows in the chat as a picture; anything
+  else still goes as a document. The gateway reads the format and the size from the file's header, with no new
+  dependencies; a GIF, or a file whose size cannot be read, goes as a document.
+- `send_file(…, as: "file" | "photo")`. `"file"` sends a picture as a document, the original without compression (for
+  when the owner asks for a file or the original). `"photo"` asks for a photo explicitly: if the picture does not fit,
+  it goes as a document and the tool says why. Without `as`, a picture goes as a photo and anything else as a document.
+- If Telegram rejects the photo (400 or 413: `PHOTO_INVALID_DIMENSIONS`, `IMAGE_PROCESS_FAILED`,
+  `PHOTO_SAVE_FILE_INVALID`, too large), the same delivery goes again as a document, with the same caption and reply,
+  instead of failing: one delivery, the reason in its note and in the journal (`photo_rejected`). If the document is
+  rejected too, the delivery fails as before, with one line to the owner. Caption, `↪ Name`, `⚙ обновлено`, stop,
+  pause, turn, retries, 429 and the upload time limit work as for documents. The journal's `out` line for a parcel
+  names the method (`sendPhoto` or `sendDocument`).
 
 ### Changed
 
@@ -60,6 +74,15 @@ The chat interface and the design documents are in Russian; the entries below de
   the parcels folder from `config.yaml` in one place), `instructionsFor('claude' | 'codex')`, `toolsFor('claude' |
   'codex')` and an optional `turn` in the tool call context. The Claude Code text of the channel rules is unchanged
   byte for byte, so `INSTRUCTIONS_VERSION` stays the same (a test pins its hash).
+- Database schema v14 (#60): `deliveries.send_as` (`document` or `photo`). The choice is made at `send_file` and
+  stored, so a retry after a failure or a restart goes the same way; deliveries from earlier versions are `document`.
+- Channel rules, tool description, `/help` and the agent folder template (#60): pictures come as photos; `as: "file"`
+  when the owner asks for a file or the original. Unlike the Codex split above, this changes the Claude Code text of
+  the channel rules, so `INSTRUCTIONS_VERSION` is new (the pinned hash is updated on purpose): a resumed conversation
+  gets the current rules once as a "channel rules" event. The Codex text changes the same way. An agent folder
+  deployed earlier needs the new line in its `CLAUDE.md` by hand (see the template README). A gateway from before
+  this change does not know `as` and answers `bad_request`; the channel then tells the agent to send the file again
+  without `as`.
 
 ## 0.3.6 - 2026-10-22
 

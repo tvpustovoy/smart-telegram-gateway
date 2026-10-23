@@ -19,6 +19,10 @@
 // - Цели доставки — расширяемая точка (DeliveryTarget): имя · проверка · доставить · где смотреть. Сейчас одна —
 //   telegram (sendDocument через очередь отправителя: стоп, ход, повтор, 429 — как у ответа агента). Веб-публикации нет:
 //   её место — имя цели в parcels.targets и поле deliveries.url (5.16, «Дальше: веб-публикация посылок»).
+// - Картинка — фото (#60): у цели, которая умеет фото (telegram), картинка jpg, png, webp в пределах фото Telegram
+//   (photoProblem: до 10 МБ, стороны вместе до 10 000, не вытянутее 1:20 — по заголовку файла, без зависимостей) уходит
+//   фото (sendPhoto), если агент не просил файлом (as: "file"); просил фото, а картинка не годится, — документом и
+//   пометка агенту (as_note). Способ — в строке доставки (deliveries.send_as, схема v14): повтор уходит тем же способом.
 // - Куда: личка владельца — всегда; другой чат — только если его правило в rules.yaml разрешает (parcels: true) ⟨предл.⟩.
 
 import crypto from 'node:crypto';
@@ -36,11 +40,16 @@ import {
   fsyncDir,
   hasHiddenSegment,
   hasUnsafeName,
+  isPhotoName,
   parcelPartsOf,
+  photoProblem,
+  PHOTO_HEAD_BYTES,
   parcelVersion,
   relativeInside,
   sql,
   transaction,
+  type DeliverySendAs,
+  type SendFileAs,
   type SendFileResult,
   type WriteIo,
 } from 'stg-core';
@@ -98,6 +107,8 @@ export interface DeliveryRequest {
  */
 export interface DeliveryTarget {
   readonly name: string;
+  /** Цель умеет фото (#60): картинку отдаёт фото, если агент не просил файлом. */
+  readonly photos?: boolean;
   /** Можно ли доставлять в этот чат; строка — причина отказа агенту. Без записи. */
   check(chatId: number): string | null;
   /** Поставить в очередь — внутри транзакции записи доставки. outboxId — строка очереди отправителя (у telegram). */
@@ -108,10 +119,12 @@ export interface DeliveryTarget {
 
 /**
  * Telegram: документ в чат (sendDocument) через очередь отправителя (sender.ts) — та же строка outbox, что у ответа
- * агента (origin agent): «стоп» её бросает, ход проверен до записи, повтор после сбоя, 429 — как у ответа.
+ * агента (origin agent): «стоп» её бросает, ход проверен до записи, повтор после сбоя, 429 — как у ответа. Картинка —
+ * фото (sendPhoto, #60).
  */
 export class TelegramTarget implements DeliveryTarget {
   readonly name = 'telegram';
+  readonly photos = true;
 
   constructor(private readonly ctx: Ctx) {}
 
@@ -163,6 +176,8 @@ interface Copy {
   sha256: string;
   /** raw/parcels/<sha256> — относительно каталога бота. */
   copyRef: string;
+  /** Начало файла (до PHOTO_HEAD_BYTES) — размеры картинки для фото (#60); null — не картинка по имени или не нужно. */
+  head: Buffer | null;
 }
 
 export interface SendFileInput {
@@ -174,6 +189,8 @@ export interface SendFileInput {
   idem: string | null;
   /** Ещё в той же транзакции: событие обработано (adapter.ts; 👌 — только при ui.clear_receipts: false, 0.3.6). */
   inTx?: () => void;
+  /** Как прислать (#60): photo — фото, file — документом; без него — картинка фото, остальное документом. */
+  as?: SendFileAs;
 }
 
 export type SendFileOutcome =
@@ -264,9 +281,10 @@ export class ParcelService {
    * Снимок: файл открывается один раз (O_NOFOLLOW — последнее звено не подменить симлинком; O_NONBLOCK — FIFO не держит
    * шлюз); проверки — по дескриптору; путь — тот же файл (dev, inode); читается из дескриптора с подсчётом SHA-256 сразу
    * во временный файл хранилища → fsync → переименование в raw/parcels/<sha256>. Та же версия уже есть — копия та же
-   * (время файла освежается: чистка сирот его не тронет).
+   * (время файла освежается: чистка сирот его не тронет). keepHead — держать начало файла (до PHOTO_HEAD_BYTES): по нему
+   * решается, уйдёт ли картинка фото (#60).
    */
-  private snapshot(r: Resolved): Copy {
+  private snapshot(r: Resolved, keepHead: boolean): Copy {
     this.hooks?.beforeOpen?.(r.real);
     let fd: number;
     try {
@@ -311,6 +329,8 @@ export class ParcelService {
       const io = this.hooks?.fileIo();
       const hash = crypto.createHash('sha256');
       const buf = Buffer.allocUnsafe(CHUNK_BYTES);
+      const head = keepHead ? Buffer.alloc(Math.min(st.size, PHOTO_HEAD_BYTES)) : null;
+      let headLen = 0;
       let total = 0;
       for (;;) {
         const n = fs.readSync(fd, buf, 0, buf.length, null);
@@ -318,6 +338,7 @@ export class ParcelService {
         total += n;
         if (total > PARCEL_MAX_BYTES) refuse('too_big', `${shown} вырос во время чтения больше 50 МБ — повтори, когда файл будет готов`);
         hash.update(buf.subarray(0, n));
+        if (head && headLen < head.length) headLen += buf.copy(head, headLen, 0, Math.min(n, head.length - headLen));
         let off = 0;
         while (off < n) {
           const w = io ? io.writeSync(out, buf, off, n - off) : fs.writeSync(out, buf, off, n - off);
@@ -341,7 +362,7 @@ export class ParcelService {
         fsyncDir(dir);
       }
       tmp = null;
-      return { bytes: total, sha256, copyRef: path.posix.join('raw', PARCEL_STORE_DIR, sha256) };
+      return { bytes: total, sha256, copyRef: path.posix.join('raw', PARCEL_STORE_DIR, sha256), head: head ? head.subarray(0, headLen) : null };
     } finally {
       if (out !== null) {
         try {
@@ -366,12 +387,13 @@ export class ParcelService {
    * снова — второй доставки нет. Агенту — что стало с первым вызовом, по статусу доставки, а не по строке очереди цели
    * (у будущей веб-цели строки outbox нет): ждёт (queued, в паузе — held_paused), ушёл (sent), брошен «стопом»
    * (dropped_stopped), не ушёл (failed, note — почему); repeated — это исход прежнего вызова, ушла версия version
-   * (находка проверки: агент мог поправить файл до повтора). null — такого ключа не было.
+   * (находка проверки: агент мог поправить файл до повтора); as — как уходит сейчас (фото не принято — уже file, #60).
+   * null — такого ключа не было.
    */
   repeated(idem: string | null): (SendFileResult & { delivery: number }) | null {
     if (!idem) return null;
     const row = sql(this.ctx.db,
-      `SELECT d.id, d.parcel, d.file, d.bytes, d.sha256, d.updated, d.target, d.status, d.note, o.status AS o_status
+      `SELECT d.id, d.parcel, d.file, d.bytes, d.sha256, d.updated, d.target, d.status, d.note, d.send_as, o.status AS o_status
        FROM deliveries d LEFT JOIN outbox o ON o.id = d.outbox_id
        WHERE d.idem = ? AND d.created_at >= ? ORDER BY d.id LIMIT 1`,
     ).get(idem, this.ctx.clock.now() - IDEM_WINDOW_MS) as
@@ -385,6 +407,7 @@ export class ParcelService {
           target: string;
           status: string;
           note: string | null;
+          send_as: DeliverySendAs;
           o_status: string | null;
         }
       | undefined;
@@ -401,13 +424,15 @@ export class ParcelService {
       updated: row.updated === 1,
       target: row.target,
       repeated: true,
+      as: row.send_as === 'photo' ? 'photo' : 'file',
       ...(row.note ? { note: row.note } : {}),
     };
   }
 
   /**
-   * Отдать файл: цель и чат → папка и путь → снимок → одной транзакцией строка очереди цели и строка доставки (и
-   * inTx — событие обработано). Отказ — ParcelRefusal словами агенту; «диск полон» и прочие ошибки записи — наверх.
+   * Отдать файл: цель и чат → папка и путь → снимок → способ (фото или документ, #60) → одной транзакцией строка очереди
+   * цели и строка доставки (и inTx — событие обработано). Отказ — ParcelRefusal словами агенту; «диск полон» и прочие
+   * ошибки записи — наверх.
    */
   send(input: SendFileInput): SendFileOutcome {
     try {
@@ -416,7 +441,12 @@ export class ParcelService {
       if (chatProblem) refuse('chat', chatProblem);
       const root = this.root(input.leaseCwd);
       const file = this.resolve(input.path, root);
-      const copy = this.snapshot(file);
+      // Картинка — фото (#60): решается здесь, по снимку, и пишется в доставку — повтор уйдёт тем же способом.
+      const photos = target.photos === true && input.as !== 'file';
+      const copy = this.snapshot(file, photos && isPhotoName(file.name));
+      const photoWhy = photos ? photoProblem(file.name, copy.bytes, copy.head) : null;
+      const sendAs: DeliverySendAs = photos && photoWhy === null ? 'photo' : 'document';
+      const asNote = input.as === 'photo' && sendAs !== 'photo' ? (photoWhy ?? 'эта цель фото не умеет') : null;
       const now = this.ctx.clock.now();
       const where = target.where();
       const r = transaction(this.ctx.db, () => {
@@ -437,8 +467,8 @@ export class ParcelService {
         const updated = last !== undefined && last.sha256 !== copy.sha256;
         const { outboxId } = target.enqueue(input.req);
         const d = sql(this.ctx.db,
-          `INSERT INTO deliveries(parcel, file, bytes, sha256, copy_ref, target, chat_id, event_seq, outbox_id, status, url, updated, idem, created_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?)`,
+          `INSERT INTO deliveries(parcel, file, bytes, sha256, copy_ref, target, chat_id, event_seq, outbox_id, status, url, updated, idem, send_as, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?)`,
         ).run(
           file.parcel,
           file.file,
@@ -452,6 +482,7 @@ export class ParcelService {
           where.url,
           updated ? 1 : 0,
           input.idem,
+          sendAs,
           now,
         );
         input.inTx?.();
@@ -472,6 +503,8 @@ export class ParcelService {
           updated: r.updated,
           target: target.name,
           where: where.url ?? where.text,
+          as: sendAs === 'photo' ? 'photo' : 'file',
+          ...(asNote ? { as_note: asNote } : {}),
         },
       };
     } catch (err) {

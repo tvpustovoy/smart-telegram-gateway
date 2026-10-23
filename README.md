@@ -31,8 +31,9 @@ smart-telegram-gateway is a small always-on service that owns the bot and stands
   transcript comes back to you as a quote. The agent can answer by voice.
 - **Conversation in episodes.** Messages are grouped into episodes (topic × role) that close after a pause; you can
   stop, pause, start a new topic or ask "where are we" at any time.
-- **The agent sees images and sends files.** It can look at photos and screenshots on request and send you documents
-  from a dedicated parcels folder.
+- **The agent sees images and sends files.** It can look at photos and screenshots on request and send you files from a
+  dedicated parcels folder (`send_file`): documents as documents, pictures (jpg, png, webp within Telegram's photo
+  limits) as photos; ask for a file and the picture comes as a document, uncompressed (`as: "file"`).
 
 The agent connects through an adapter. Today the adapter is `stg-channel`, an MCP server that Claude Code loads as a
 channel (Claude Code Channels) and that pushes events into a running session. The gateway ⇄ adapter protocol is

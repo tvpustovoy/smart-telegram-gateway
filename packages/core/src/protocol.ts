@@ -8,7 +8,7 @@
 // той же версии протокола.
 
 import { z } from 'zod';
-import { PARCEL_TARGET_RE } from './parcels.js';
+import { PARCEL_TARGET_RE, SEND_FILE_AS } from './parcels.js';
 import { EPISODE_CLOSE_REASONS, EVENT_KINDS, MODES, TRUST_LABELS } from './schema.js';
 
 /** Номер протокола: целое в `hello.version`. Несовпадение — `error version_mismatch`. */
@@ -182,6 +182,9 @@ export const WhereSchema = z.strictObject({ type: z.literal('where'), req_id: re
  * передаёт, как у reply (P-26); target — куда доставить (по умолчанию telegram; другие цели — позже, parcels.targets);
  * turn и idem — как у reply. `ack.result` — SendFileResult. Шлюз до 0.3.3 отвечает bad_request «неизвестный type» —
  * канал говорит агенту «шлюз старой версии».
+ * as (#60; в пределах v1, необязательное) — как прислать: photo — фото (картинка в пределах фото Telegram; иначе
+ * документом, с пометкой в ответе), file — документом, без сжатия; без поля — картинка фото, остальное документом. Шлюз
+ * до #60 поле не знает — bad_request «нераспознанный ключ», канал говорит агенту повторить без as.
  */
 export const SendFileSchema = z.strictObject({
   type: z.literal('send_file'),
@@ -193,6 +196,7 @@ export const SendFileSchema = z.strictObject({
   target: z.string().regex(PARCEL_TARGET_RE).optional(),
   turn: z.int().nonnegative(),
   idem: token.optional(),
+  as: z.enum(SEND_FILE_AS).optional(),
 });
 
 /**
@@ -284,8 +288,10 @@ export type MediaResult = z.infer<typeof MediaResultSchema>;
  * чат (повтор можно); updated — прежде уходила другая версия того же файла: владелец увидит «обновлено»; where — где
  * смотреть (у telegram — словами, у будущей цели web — адрес). repeated — это исход прежнего вызова с тем же ключом
  * повтора (idem): шлюз второй раз не отправлял, а сказал, что стало с первым; тогда status — по доставке: queued ·
- * held_paused (ждёт) · sent (ушла) · dropped_stopped («стоп») · failed (не ушла, note — почему). Поля без перечислений,
- * терпимо: новый шлюз может добавить поле, прежний канал не ломается.
+ * held_paused (ждёт) · sent (ушла) · dropped_stopped («стоп») · failed (не ушла, note — почему). as (#60) — как уйдёт
+ * (у повтора — как ушла или уходит): photo — фото, file — документом; as_note — агент просил фото, а картинка в фото не
+ * годится: почему (уйдёт документом). Поля без перечислений, терпимо: новый шлюз может добавить поле, прежний канал не
+ * ломается.
  */
 export const SendFileResultSchema = z.object({
   status: z.string(),
@@ -300,6 +306,8 @@ export const SendFileResultSchema = z.object({
   where: z.string().nullable().optional(),
   repeated: z.boolean().optional(),
   note: z.string().nullable().optional(),
+  as: z.string().optional(),
+  as_note: z.string().optional(),
 });
 export type SendFileResult = z.infer<typeof SendFileResultSchema>;
 

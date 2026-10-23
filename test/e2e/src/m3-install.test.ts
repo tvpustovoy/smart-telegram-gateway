@@ -145,7 +145,7 @@ describe('M3 · шаблон папки агента (5.12)', () => {
     assert.ok(fs.statSync(path.join(dest, 'notes')).isDirectory());
     // Посылки (0.3.3): папка есть, CLAUDE.md говорит, куда класть и как отправлять; секреты не слать.
     assert.ok(fs.statSync(path.join(dest, 'parcels')).isDirectory());
-    for (const w of ['parcels/<посылка>/<файл>', 'send_file(path, seq?, caption?)', 'обновлено', 'Секреты']) assert.ok(claude.includes(w), `CLAUDE.md без «${w}»`);
+    for (const w of ['parcels/<посылка>/<файл>', 'send_file(path, seq?, caption?)', 'обновлено', 'Секреты', 'as: "file"']) assert.ok(claude.includes(w), `CLAUDE.md без «${w}»`);
     // Правила роли (0.3.4): реакция владельца на ответ агента — его слово, толкуй по смыслу, обычно done; переспросить —
     // только необратимое по одной реакции (узкая строка); файл по просьбе —
     // send_file с подписью, это и есть ответ (на него ссылается правило reply/done).
