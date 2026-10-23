@@ -22,6 +22,9 @@
       "path": "../../packages/cli"
     },
     {
+      "path": "../../packages/codex"
+    },
+    {
       "path": "../fake-telegram"
     },
     {
@@ -29,6 +32,9 @@
     },
     {
       "path": "../fake-elevenlabs"
+    },
+    {
+      "path": "../fake-codex"
     }
   ]
 }
