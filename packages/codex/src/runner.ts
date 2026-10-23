@@ -99,6 +99,9 @@ const OWNER_PROBLEMS: Record<string, string> = {
 
 const MAX_REMEMBERED_TURNS = 100;
 
+/** Ответ thread/resume, когда треда нет (app-server/src/request_processors/thread_processor.rs@163). */
+const THREAD_GONE_RE = /no rollout found|thread not found/i;
+
 /** CodexErrorInfo → имя: «usageLimitExceeded» или первый ключ объекта. */
 export function errorKind(info: unknown): string | null {
   if (typeof info === 'string') return info;
@@ -305,8 +308,10 @@ export class Runner {
         this.saveState();
         return;
       } catch (err) {
-        if (this.codex !== srv) throw err;
-        const w = `тред ${shortId(s.threadId)} не продолжился (${(err as Error).message}) — завожу новый`;
+        // Новый тред — только если прежнего нет. Иначе (тред открыт в другом Codex — «already has an active writer»,
+        // сбой, срок) — перезапуск с паузой и снова resume: разговор не теряется молча.
+        if (this.codex !== srv || !THREAD_GONE_RE.test((err as Error).message)) throw err;
+        const w = `тред ${shortId(s.threadId)} не найден (${(err as Error).message}) — завожу новый`;
         this.opts.log(w);
         this.opts.feed.line('warn', w);
       }
@@ -462,16 +467,21 @@ export class Runner {
     this.schedulePump();
   }
 
+  /** «Стоп»: прервать идущие ходы; их поздние вызовы — отказ; напоминаний о прежнем нет (дальше решает повтор шлюза). */
   private interruptActive(): void {
-    const t = this.active;
+    this.remindSeqs = [];
     const srv = this.codex;
-    if (!t || !srv || !this.threadId) return;
-    this.interrupted.add(t.id);
-    while (this.interrupted.size > MAX_REMEMBERED_TURNS) this.interrupted.delete(this.interrupted.values().next().value!);
-    srv.request('turn/interrupt', { threadId: this.threadId, turnId: t.id }).then(
-      () => this.opts.feed.line('sys', `ход ${shortId(t.id)} прерван`),
-      (err: unknown) => this.opts.log(`turn/interrupt: ${(err as Error).message}`),
-    );
+    const threadId = this.threadId;
+    if (!srv || !threadId) return;
+    for (const t of this.openTurns.values()) {
+      if (this.interrupted.has(t.id)) continue;
+      this.interrupted.add(t.id);
+      while (this.interrupted.size > MAX_REMEMBERED_TURNS) this.interrupted.delete(this.interrupted.values().next().value!);
+      srv.request('turn/interrupt', { threadId, turnId: t.id }).then(
+        () => this.opts.feed.line('sys', `ход ${shortId(t.id)} прерван`),
+        (err: unknown) => this.opts.log(`turn/interrupt: ${(err as Error).message}`),
+      );
+    }
   }
 
   // ——— очередь → ход ———

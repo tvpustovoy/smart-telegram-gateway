@@ -213,4 +213,46 @@ describe('M13 · адаптер Codex (stg-codex) против поддельн�
     await waitReply(`ответ на № ${seq}`);
     assert.deepEqual(agentFiles(), ['AGENTS.md'], 'в папку агента адаптер не писал');
   });
+
+  it('тред пропал (resume: «no rollout found») → новый тред с инструментами; state.json — его id', async () => {
+    await adapter.stop();
+    fs.rmSync(path.join(fakeDir, 'threads.json'));
+    adapter = startAdapter();
+    await adapter.waitFeed((l) => l.includes('не найден (no rollout found'), 10_000, 'строки «тред не найден»');
+    await adapter.waitFeed((l) => /проверка канала № \d+ — закрыта адаптером/.test(l), 10_000, 'закрытия пробы');
+    await waitUntil(() => requestsOf(fakeDir, 'thread/start').length === 2, 5000, 'нового thread/start');
+    const id = (requestsOf(fakeDir, 'thread/name/set').at(-1)!.params as { threadId: string }).threadId;
+    await waitUntil(() => (JSON.parse(fs.readFileSync(path.join(s.home.dir, 'codex', 'state.json'), 'utf8')) as { threadId: string }).threadId === id, 5000, 'state.json');
+    const seq = await say('ты тут?');
+    await waitReply(`ответ на № ${seq}`);
+  });
+});
+
+describe('M13 · адаптер Codex: нет входа в ChatGPT', () => {
+  let s: Setup;
+  let gw: GatewayProcess;
+  let adapter: CodexAdapter;
+  after(async () => {
+    if (adapter?.alive) await adapter.kill9();
+    if (gw?.alive) await gw.stop();
+    await s.close();
+  });
+
+  it('account/read без входа — аренды нет, тред не заводится; в ленте и state.json — причина', async () => {
+    s = await setup();
+    gw = await s.start();
+    const agentDir = fs.realpathSync(makeTempDir('stg-agent-'));
+    const fakeDir = makeTempDir('stg-fcx-');
+    adapter = CodexAdapter.start({ home: s.home.dir, agentDir, codex: FAKE_CODEX_ENTRY, env: { FAKE_CODEX_DIR: fakeDir, FAKE_CODEX_NO_ACCOUNT: '1' } });
+    await adapter.waitFeed((l) => l.includes('нет входа в ChatGPT у Codex'), 10_000, 'строки о входе');
+    await waitUntil(() => {
+      try {
+        return (JSON.parse(fs.readFileSync(path.join(s.home.dir, 'codex', 'state.json'), 'utf8')) as { problem: string | null }).problem === 'no_login';
+      } catch {
+        return false;
+      }
+    }, 5000, 'state.json с причиной');
+    assert.equal(requestsOf(fakeDir, 'thread/start').length, 0);
+    assert.ok(!readJournal(s.home).some((l) => l.ev === 'lease_granted'), 'аренды нет');
+  });
 });
