@@ -9,7 +9,7 @@ an older version after a migration is only possible from a database backup taken
 
 The chat interface and the design documents are in Russian; the entries below describe behavior in English.
 
-## Unreleased
+## 0.4.0 - 2026-10-22
 
 ### Added
 
