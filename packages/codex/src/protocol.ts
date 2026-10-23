@@ -60,6 +60,8 @@ export interface ThreadResponse {
   cwd?: string;
   approvalPolicy?: string;
   sandbox?: { type: string; writableRoots?: string[]; networkAccess?: boolean };
+  /** Файлы инструкций, которые Codex подхватил для треда (AGENTS.md папки агента, общий AGENTS.md пользователя). */
+  instructionSources?: string[];
 }
 
 export interface UserInputText {

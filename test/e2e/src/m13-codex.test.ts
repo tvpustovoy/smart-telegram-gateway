@@ -64,7 +64,7 @@ describe('M13 · адаптер Codex (stg-codex) против поддельн�
     const ts = requestsOf(fakeDir, 'thread/start');
     assert.equal(ts.length, 1);
     const p = ts[0]!.params!;
-    const parcels = path.join(s.home.dir, 'parcels');
+    const parcels = fs.realpathSync(path.join(s.home.dir, 'parcels'));
     assert.equal(p.cwd, agentDir);
     assert.equal(p.sandbox, 'workspace-write');
     assert.equal(p.approvalPolicy, 'never');
@@ -89,6 +89,7 @@ describe('M13 · адаптер Codex (stg-codex) против поддельн�
     assert.equal(state.agentDir, agentDir);
     assert.ok(fs.statSync(parcels).isDirectory(), 'папка посылок заведена');
     assert.deepEqual(agentFiles(), ['AGENTS.md'], 'в папку агента адаптер не пишет');
+    assert.ok(adapter.lines().some((l) => l.includes(`инструкции Codex: ${path.join(agentDir, 'AGENTS.md')}`)), 'роль агента (AGENTS.md) — в ленте');
   });
 
   it('слово владельца → turn/start с заголовком канала → delivered только после ответа Codex → reply доходит до Telegram; событие обработано', async () => {

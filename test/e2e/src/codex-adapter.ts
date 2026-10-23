@@ -18,10 +18,12 @@ export interface CodexAdapterOptions {
   codex: string;
   /** Дополнительные переменные (FAKE_CODEX_DIR и т. п.). */
   env?: Record<string, string>;
-  /** Под тестом (STG_TEST=1, ужатые сроки); учения с настоящим Codex — тоже под тестом шлюза. */
-  test?: boolean;
+  /** Ужатые сроки (STG_TEST_CHANNEL_TIME_SCALE, STG_TEST_CODEX_TIME_SCALE); учения с настоящим Codex — по настоящим. */
+  fast?: boolean;
   /** Печатать ленту в этот поток по ходу (учения). */
   echo?: NodeJS.WritableStream;
+  /** Окружение этого процесса целиком (без STG_*): учения с настоящим Codex — как у пользователя. */
+  inheritEnv?: boolean;
 }
 
 const live = new Set<ChildProcess>();
@@ -53,13 +55,16 @@ export class CodexAdapter {
   }
 
   static start(opts: CodexAdapterOptions): CodexAdapter {
+    const inherited = opts.inheritEnv ? Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith('STG_'))) : {};
     const env: NodeJS.ProcessEnv = {
+      ...inherited,
       PATH: process.env.PATH ?? '/usr/bin:/bin',
       HOME: process.env.HOME ?? os.homedir(),
       TMPDIR: process.env.TMPDIR ?? os.tmpdir(),
       LANG: 'ru_RU.UTF-8',
       STG_HOME: opts.home,
-      ...(opts.test !== false ? { STG_TEST: '1', STG_TEST_CHANNEL_TIME_SCALE: '0.1', STG_TEST_CODEX_TIME_SCALE: '0.01' } : {}),
+      STG_TEST: '1',
+      ...(opts.fast !== false ? { STG_TEST_CHANNEL_TIME_SCALE: '0.1', STG_TEST_CODEX_TIME_SCALE: '0.01' } : {}),
       ...opts.env,
     };
     const child = spawn(process.execPath, ['--disable-warning=ExperimentalWarning', CODEX_ADAPTER_ENTRY, '--agent-dir', opts.agentDir, '--codex', opts.codex, '--no-color'], {

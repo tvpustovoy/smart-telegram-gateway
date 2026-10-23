@@ -198,6 +198,12 @@ async function runTurn(turn: FakeTurn): Promise<void> {
   notify('turn/completed', { threadId: turn.threadId, turn: { id: turn.id, status, error, durationMs } });
 }
 
+/** Как Codex: AGENTS.md папки агента — источник инструкций треда. */
+function agentsMd(cwd: string): string[] {
+  const f = path.join(cwd, 'AGENTS.md');
+  return fs.existsSync(f) ? [f] : [];
+}
+
 type Handler = (params: Record<string, unknown>) => unknown;
 
 const handlers: Record<string, Handler> = {
@@ -221,7 +227,7 @@ const handlers: Record<string, Handler> = {
     saveThreads(threads);
     threadId = id;
     notify('thread/started', { thread: { id } });
-    return { thread: { id }, model: 'fake-model', cwd: p.cwd, approvalPolicy: p.approvalPolicy, sandbox: { type: 'workspaceWrite', writableRoots: roots, networkAccess: false } };
+    return { thread: { id }, model: 'fake-model', cwd: p.cwd, approvalPolicy: p.approvalPolicy, sandbox: { type: 'workspaceWrite', writableRoots: roots, networkAccess: false }, instructionSources: agentsMd(String(p.cwd)) };
   },
   'thread/resume': (p) => {
     const threads = loadThreads();
@@ -232,7 +238,7 @@ const handlers: Record<string, Handler> = {
     threads[id] = { ...t, developerInstructions: String(p.developerInstructions ?? t.developerInstructions), writableRoots: roots };
     saveThreads(threads);
     threadId = id;
-    return { thread: { id }, model: 'fake-model', cwd: p.cwd, approvalPolicy: p.approvalPolicy, sandbox: { type: 'workspaceWrite', writableRoots: roots, networkAccess: false } };
+    return { thread: { id }, model: 'fake-model', cwd: p.cwd, approvalPolicy: p.approvalPolicy, sandbox: { type: 'workspaceWrite', writableRoots: roots, networkAccess: false }, instructionSources: agentsMd(String(p.cwd)) };
   },
   'thread/name/set': () => ({}),
   'turn/start': (p) => {

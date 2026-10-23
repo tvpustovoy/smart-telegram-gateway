@@ -149,9 +149,12 @@ export class Runner {
   private readonly instanceId: string;
   private lastUsage: TokenUsageNotification['tokenUsage'] | null = null;
   private codexVersion: string | null = null;
+  /** Папка посылок — настоящий путь (песочница Codex сверяет пути без ссылок: /var → /private/var). */
+  private parcelsDir: string;
 
   constructor(private readonly opts: RunnerOptions) {
     this.restartDelay = opts.timing.restartMinMs;
+    this.parcelsDir = opts.parcelsDir;
     this.instanceId = opts.instanceId ?? crypto.randomBytes(18).toString('base64url');
     const loaded = loadState(opts.stateFile);
     this.state = loaded.state;
@@ -169,8 +172,9 @@ export class Runner {
 
   async start(): Promise<void> {
     fs.mkdirSync(this.opts.parcelsDir, { recursive: true, mode: 0o700 });
+    this.parcelsDir = fs.realpathSync(this.opts.parcelsDir);
     this.opts.feed.line('sys', `папка агента: ${this.opts.agentDir}`);
-    this.opts.feed.line('sys', `папка посылок: ${this.opts.parcelsDir}`);
+    this.opts.feed.line('sys', `папка посылок: ${this.parcelsDir}`);
     this.opts.feed.line('sys', `Codex: ${this.opts.codex.display}`);
     await this.bootCodex();
   }
@@ -195,7 +199,7 @@ export class Runner {
       `${instructionsFor('codex')}\n\n` +
       `Где что:\n` +
       `- твоя папка (рабочий каталог команд): ${this.opts.agentDir}.${role}\n` +
-      `- папка посылок: ${this.opts.parcelsDir} — файлы для владельца клади в ${path.join(this.opts.parcelsDir, '<посылка>', '<файл>')}, в send_file(path) пиши «<посылка>/<файл>».`
+      `- папка посылок: ${this.parcelsDir} — файлы для владельца клади в ${path.join(this.parcelsDir, '<посылка>', '<файл>')}, в send_file(path) пиши «<посылка>/<файл>».`
     );
   }
 
@@ -207,7 +211,7 @@ export class Runner {
       developerInstructions: this.developerInstructions(),
       // Писать — в папку агента (cwd) и в папку посылок; сеть у команд закрыта, что бы ни стояло в config.toml.
       config: {
-        'sandbox_workspace_write.writable_roots': [this.opts.parcelsDir],
+        'sandbox_workspace_write.writable_roots': [this.parcelsDir],
         'sandbox_workspace_write.network_access': false,
       },
     };
@@ -296,6 +300,7 @@ export class Runner {
         const changed = s.instructionsVersion !== null && s.instructionsVersion !== version;
         this.opts.feed.line('sys', `тред ${shortId(this.threadId)} продолжен${changed ? ' · правила канала обновлены' : ''}${r.model ? ` · модель ${r.model}` : ''}`);
         this.opts.log(`thread/resume ${this.threadId}: песочница ${JSON.stringify(r.sandbox ?? null)}`);
+        this.showSources(r);
         this.state = { ...s, instructionsVersion: version, codexVersion: this.codexVersion };
         this.saveState();
         return;
@@ -317,6 +322,14 @@ export class Runner {
       this.opts.log(`thread/name/set: ${(err as Error).message}`);
     }
     this.opts.feed.line('sys', `новый тред ${shortId(this.threadId)}${r.model ? ` · модель ${r.model}` : ''}`);
+    this.showSources(r);
+  }
+
+  /** Какие AGENTS.md Codex подхватил: роль агента — из его папки; общий — из настроек пользователя. */
+  private showSources(r: ThreadResponse): void {
+    const sources = r.instructionSources ?? [];
+    this.opts.log(`инструкции Codex: ${sources.length ? sources.join(', ') : 'нет'}`);
+    this.opts.feed.line('sys', sources.length ? `инструкции Codex: ${sources.join(' · ')}` : 'инструкций AGENTS.md Codex не нашёл');
   }
 
   private codexUp(): void {
