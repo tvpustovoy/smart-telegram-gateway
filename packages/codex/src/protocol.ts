@@ -138,6 +138,11 @@ export type ThreadItem =
   | { type: 'dynamicToolCall'; id: string; tool: string; status?: string; success?: boolean | null }
   | { type: 'webSearch'; id: string; query?: string }
   | { type: 'contextCompaction'; id: string }
+  /**
+   * Картинка (ext/items/src/image_generation.rs, ImageGenerationItem): item/started — status «in_progress», item/completed
+   * — «completed» (result — base64, savedPath — куда Codex её сохранил) или «failed».
+   */
+  | { type: 'imageGeneration'; id: string; status: string; revisedPrompt?: string | null; result?: string; savedPath?: string | null }
   | { type: string; id: string };
 
 export interface ItemNotification {

@@ -53,7 +53,8 @@
 // переходник, который видит начало и конец хода, — адаптер Codex): «печатает…» в чатах событий хода держится до конца
 // хода, и после промежуточного ответа; в закреплённой строке — 🟡 «думает». Конец — working {on: false}, «стоп», снятие
 // аренды или WORKING_HOLD_MS без нового working. Только проверенной аренде; № — сообщения, уже отданные агенту (этой
-// аренде или прежней, как у media); в «стопе» working не действует.
+// аренде или прежней, как у media); в «стопе» working не действует. working.action — что показать в заголовке чата:
+// typing (без поля — то же) · upload_photo (агент рисует картинку) · upload_document.
 //
 // Реакции на сообщении владельца (reactions.ts): delivered — 👀 «агент увидел» (и при повторной отдаче правки), reply на
 // событие или done — 👌 «агент ответил». Агент не на связи — реакции нет. С 0.3.6 (issue #52; ui.clear_receipts, по
@@ -215,7 +216,7 @@ interface Lease {
   sessions: Set<string>;
   /** Версия instructions канала из hello (0.3.5, issue #47); null — канал до 0.3.5: событий правил нет. */
   instructions: string | null;
-  /** № событий хода из последнего working (#55), через запятую; null — хода нет: в журнал — только смены. */
+  /** № событий хода из последнего working (#55), через запятую, и действие; null — хода нет: в журнал — только смены. */
   working: string | null;
 }
 
@@ -1795,11 +1796,20 @@ export class AdapterService {
       seqs.sort((a, b) => a - b);
     }
     // Набор хода сменился: событие, которое ход больше не держит, — его отложенное снятие 👀 сейчас (typing → releaseReceipts).
-    const n = this.typing.working(events);
-    const sig = msg.on && !stopped ? seqs.join(',') : null;
+    // Действие в заголовке — из кадра (без поля — «печатает…», как у переходника до action).
+    const action = msg.action ?? 'typing';
+    const n = this.typing.working(events, action);
+    const sig = msg.on && !stopped ? `${seqs.join(',')}|${action}` : null;
     if (sig !== lease.working) {
       lease.working = sig;
-      this.ctx.journal.write('working', { lease: lease.id, on: msg.on, seqs, chats: n, ...(msg.on && stopped ? { stopped: true } : {}) });
+      this.ctx.journal.write('working', {
+        lease: lease.id,
+        on: msg.on,
+        seqs,
+        chats: n,
+        ...(msg.on && !stopped && action !== 'typing' ? { action } : {}),
+        ...(msg.on && stopped ? { stopped: true } : {}),
+      });
     }
     conn.send({ type: 'ack', req_id: msg.req_id, result: { chats: n, seqs } });
   }

@@ -14,12 +14,18 @@
 // working off, другой набор (отпущенное событие), «стоп», обрыв переходника, срок хода — журнал receipts_released; done в
 // ходе — 👌 сразу, конец хода его не снимает; без working — как раньше (ответ снимает 👀, как ушёл); перезапуск шлюза
 // посреди хода — 👀 снят при старте (журнал start.receipts_released).
+// Действие в заголовке (working.action): upload_photo — «отправляет фото…» вместо «печатает…», сразу; без поля
+// (переходник до action) — «печатает…»; ход идёт, а посылка агента грузится в чат — «отправляет файл…» (upload_document) или
+// «отправляет фото…», загрузилась — снова действие хода; без хода — как раньше.
 
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import path from 'node:path';
 import { after, before, describe, it } from 'node:test';
 import { STOPPED_TEXT, type GatewayMessage, type Update } from 'stg-core';
 import type { FakeChannel } from 'stg-fake-channel';
-import { connectAdapter, pump, q1, readJournal, sleep, waitUntil, type GatewayProcess } from './harness.js';
+import { reply as fakeReply } from 'stg-fake-telegram';
+import { connectAdapter, makeTempDir, pump, q1, readJournal, sleep, waitUntil, type GatewayProcess } from './harness.js';
 import { OWNER, reactionOf, receiptCleared, setup, statusLineOf, type Setup } from './m1-common.js';
 import { press, waitSent } from './m2-common.js';
 
@@ -44,16 +50,19 @@ describe('M13 · ход агента идёт (working): «печатает…»
   };
   const waitCleared = (u: Update, what: string): Promise<true> => pump(gw, () => receiptCleared(s.fake, u) || null, { what });
   const released = (seq: number): boolean => readJournal(s.home).some((l) => l.ev === 'receipts_released' && (l.seqs as number[] | undefined)?.includes(seq));
-  const typing = (): number => s.fake.chatActions.filter((a) => a.chat_id === OWNER.id && a.action === 'typing').length;
-  /** Сдвинуть часы шлюза шагами (с паузой настоящего времени: pong и «печатает…» успевают дойти); сколько typing за это время. */
-  const typedDuring = async (steps: number, step: string): Promise<number> => {
-    const n = typing();
+  const acted = (action: string): number => s.fake.chatActions.filter((a) => a.chat_id === OWNER.id && a.action === action).length;
+  /**
+   * Сдвинуть часы шлюза шагами (с паузой настоящего времени: pong и «печатает…» успевают дойти); сколько sendChatAction
+   * с этим действием (по умолчанию typing) за это время.
+   */
+  const typedDuring = async (steps: number, step: string, action = 'typing'): Promise<number> => {
+    const n = acted(action);
     for (let i = 0; i < steps; i++) {
       await gw.advance(step);
       await sleep(20);
     }
     await sleep(250);
-    return typing() - n;
+    return acted(action) - n;
   };
   const waitStatus = (pred: (text: string) => boolean, what: string): Promise<string> =>
     pump(gw, () => {
@@ -238,6 +247,33 @@ describe('M13 · ход агента идёт (working): «печатает…»
     }
   });
 
+  it('working.action: upload_photo — «отправляет фото…» вместо «печатает…», сразу; без action (переходник до action) — снова «печатает…», сразу', async () => {
+    const { ch, turn } = await connectAdapter(s.home);
+    try {
+      const { seq: p } = await seen(ch, 'нарисуй мне кота');
+      await ch.reply(p, 'Нарисую', turn);
+      await waitSent(s, gw, (m) => m.text === 'Нарисую', 'промежуточного ответа');
+      const photo0 = acted('upload_photo');
+      assert.deepEqual(ackOf(await ch.working(true, [p], 'upload_photo')), { chats: 1, seqs: [p] });
+      await waitUntil(() => acted('upload_photo') > photo0 || null, 5000, 'upload_photo сразу, без шага часов');
+      const typing0 = acted('typing');
+      assert.ok((await typedDuring(5, '4s', 'upload_photo')) >= 4, 'пока рисует — «отправляет фото…» каждые 4 с');
+      assert.equal(acted('typing') - typing0, 0, 'и не «печатает…»');
+      assert.ok(workingLines().some((l) => l.on === true && l.action === 'upload_photo' && JSON.stringify(l.seqs) === JSON.stringify([p])), 'working.action в журнале');
+      const typing1 = acted('typing');
+      ackOf(await ch.working(true, [p]));
+      await waitUntil(() => acted('typing') > typing1 || null, 5000, 'typing сразу, без шага часов');
+      const photo1 = acted('upload_photo');
+      assert.ok((await typedDuring(5, '4s')) >= 4, 'без action — «печатает…»');
+      assert.equal(acted('upload_photo') - photo1, 0);
+      const last = workingLines().at(-1)!;
+      assert.ok(last.on === true && last.action === undefined, JSON.stringify(last));
+      ackOf(await ch.working(false));
+    } finally {
+      await closeLease(ch);
+    }
+  });
+
   it('перезапуск шлюза посреди хода: 👀, который держал ход, снят при старте (ход был в памяти прежнего процесса)', async () => {
     const { ch, turn } = await connectAdapter(s.home);
     const { u, seq: r } = await seen(ch, 'долгая задача');
@@ -250,5 +286,60 @@ describe('M13 · ход агента идёт (working): «печатает…»
     gw = await s.start();
     await waitCleared(u, '👀 снят при старте');
     assert.ok(readJournal(s.home).some((l) => l.ev === 'start' && Number(l.receipts_released) >= 1), 'start.receipts_released');
+  });
+});
+
+describe('M13 · ход агента идёт: посылка грузится — «отправляет файл…» (#55)', () => {
+  let s: Setup;
+  let gw: GatewayProcess;
+  let parcels: string;
+  const acted = (action: string): number => s.fake.chatActions.filter((a) => a.chat_id === OWNER.id && a.action === action).length;
+  const actedDuring = async (steps: number, action: string): Promise<number> => {
+    const n = acted(action);
+    for (let i = 0; i < steps; i++) {
+      await gw.advance('4s');
+      await sleep(20);
+    }
+    await sleep(100);
+    return acted(action) - n;
+  };
+
+  before(async () => {
+    parcels = path.join(makeTempDir('parcels-'), 'parcels');
+    fs.mkdirSync(parcels);
+    s = await setup({ home: { extraConfig: `parcels: { dir: "${parcels}" }\n` } });
+    gw = await s.start();
+  });
+  after(async () => {
+    if (gw?.alive) await gw.stop();
+    await s.close();
+  });
+
+  it('ход идёт, а документ агента грузится в чат — «отправляет файл…» (upload_document); загрузился — снова «печатает…»', async () => {
+    const { ch, turn } = await connectAdapter(s.home);
+    try {
+      fs.mkdirSync(path.join(parcels, 'отчёт'), { recursive: true });
+      fs.writeFileSync(path.join(parcels, 'отчёт', 'итоги.txt'), 'итоги недели\n');
+      const u = s.fake.push(s.fake.builder.text(OWNER, 'пришли итоги файлом'))[0]!;
+      const seq = await waitUntil(() => q1<{ seq: number }>(s.home, 'SELECT seq FROM events WHERE update_id = ?', u.update_id)?.seq, 5000, 'приёма');
+      await ch.waitEvent(seq);
+      await ch.delivered(seq);
+      assert.equal((await ch.working(true, [seq])).type, 'ack');
+      // Загрузка медленная (1,5 с настоящего времени): шаги часов шлюза за это время — «отправляет файл…».
+      s.fake.scenario({ method: 'sendDocument', times: 1, reply: fakeReply.delay(1500) });
+      const r = await ch.sendFile('отчёт/итоги.txt', seq, turn);
+      assert.equal(r.type, 'ack', JSON.stringify(r));
+      await pump(gw, () => s.fake.calls.find((c) => c.method === 'sendDocument' && c.status === null), { what: 'загрузки документа' });
+      const typing0 = acted('typing');
+      assert.ok((await actedDuring(3, 'upload_document')) >= 2, 'пока грузится — «отправляет файл…»');
+      assert.equal(acted('typing') - typing0, 0);
+      await pump(gw, () => s.fake.sentTo(OWNER.id).find((m) => m.method === 'sendDocument' && m.document?.filename === 'итоги.txt'), { what: 'документа у владельца' });
+      const doc0 = acted('upload_document');
+      assert.ok((await actedDuring(3, 'typing')) >= 2, 'загрузился — снова «печатает…» (ход идёт)');
+      assert.equal(acted('upload_document') - doc0, 0);
+      assert.equal((await ch.working(false)).type, 'ack');
+    } finally {
+      ch.close();
+    }
   });
 });

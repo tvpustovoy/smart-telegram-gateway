@@ -265,6 +265,8 @@ class Gateway {
     sender.statusLine.bindLive({ online: () => adapter.hasLease, working: () => adapter.typing.isWorking, agent: (now) => agentState.view(now) });
     // Событие идущего хода агента (working, #55): ответ на него 👀 не снимает — снимет конец хода (#52, adapter.ts).
     sender.bindReceiptHold((seq) => adapter.typing.holds(seq));
+    // Пока ход идёт, а посылка агента грузится в его чат, — «отправляет фото…» / «отправляет файл…» вместо «печатает…».
+    adapter.typing.bindUploads((chatId, threadId) => sender.uploadAction(chatId, threadId));
     // Расшифровка или отказ записаны: ответ владельцу (расшифровка или причина) — отправителю, событие (и ждавшие за
     // ним) — переходнику.
     // Распознанный материал без слов владельца в окне снова удерживается (0.3.6, material.ts) — таймер окна сверяется.

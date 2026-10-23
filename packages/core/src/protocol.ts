@@ -207,12 +207,19 @@ export const SendFileSchema = z.strictObject({
  * не действует. Пока № в наборе, ответ на него 👀 не снимает (#52): снятие — когда ход отпустит событие. `ack.result` —
  * WorkingResult. Только проверенной аренде. Канал Claude Code его не шлёт (конца хода он не видит) — у него всё как
  * раньше. Шлюз без working отвечает bad_request «неизвестный type» — переходник больше не шлёт.
+ * action (необязательное) — что показать в заголовке чата, пока ход идёт (sendChatAction): typing «печатает…» (без поля
+ * — то же), upload_photo «отправляет фото…» (агент рисует картинку), upload_document «отправляет файл…». Кадр заменяет и
+ * его. Шлюз до action поле не знает — bad_request «нераспознанный ключ»: переходник шлёт working без него.
  */
+export const WORKING_ACTIONS = ['typing', 'upload_photo', 'upload_document'] as const;
+export type WorkingAction = (typeof WORKING_ACTIONS)[number];
+
 export const WorkingSchema = z.strictObject({
   type: z.literal('working'),
   req_id: reqId,
   on: z.boolean(),
   seqs: z.array(seq).max(1000).optional(),
+  action: z.enum(WORKING_ACTIONS).optional(),
 });
 
 /** Без нового working столько — шлюз снимает «печатает…» хода сам (переходник замолчал, ход завис) ⟨предл.⟩. */

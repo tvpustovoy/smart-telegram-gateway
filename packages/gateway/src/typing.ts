@@ -9,10 +9,14 @@
 // (#52 × #55): снятие ждёт конца хода. Ход больше не держит события (набор сменился, off, «стоп», аренда, срок) —
 // onWorkingChange с их № (released): шлюз снимает отложенное (adapter.ts); тот же вызов — и когда ход начался или кончился
 // (кружок закреплённой строки).
+// Что показать в заголовке (#55): событие без хода — typing; ход — action из working (typing · upload_photo, пока агент
+// рисует картинку · upload_document), сменился — сразу, не дожидаясь шага; пока отправитель грузит посылку агента в этот
+// чат (bindUploads) — upload_photo или upload_document по способу отправки. Telegram держит действие до 5 с или до
+// сообщения бота — повтор каждые 4 с.
 // Таймеры — часы шлюза (поддельные под тестом). Сбой запроса — не повод ни для чего: «печатает…» — подсказка, а не
 // доставка; в журнал — первый сбой подряд.
 
-import { MESSAGE_EVENT_KINDS, WORKING_HOLD_MS, type Timer } from 'stg-core';
+import { MESSAGE_EVENT_KINDS, WORKING_HOLD_MS, type Timer, type WorkingAction } from 'stg-core';
 import type { Ctx } from './context.js';
 
 export const TYPING_EVERY_MS = 4_000;
@@ -27,8 +31,13 @@ interface ChatTyping {
   workUntil: number | null;
   /** № событий хода в этом чате (working); пусто — хода нет. Ответ на них 👀 не снимает, пока ход идёт. */
   workSeqs: Set<number>;
+  /** Действие хода (working.action): что показывать, пока ход идёт. */
+  action: WorkingAction;
   timer: Timer | null;
 }
+
+/** Посылка агента грузится в чат (и тему) — действие загрузки; нет — null (sender.ts). */
+export type UploadView = (chatId: number, threadId: number | null) => 'upload_photo' | 'upload_document' | null;
 
 /** Событие хода: № и его чат (и тема). */
 export interface WorkingEvent {
@@ -50,6 +59,7 @@ function keyOf(chatId: number, threadId: number | null): string {
 export class Typing {
   private readonly chats = new Map<string, ChatTyping>();
   private failing = false;
+  private uploads: UploadView | null = null;
 
   /**
    * onWorkingChange(released) — ход больше не держит события released (их отложенные снятия 👀 — пора), или ход начался
@@ -59,6 +69,11 @@ export class Typing {
     private readonly ctx: Ctx,
     private readonly onWorkingChange: (released: number[]) => void = () => undefined,
   ) {}
+
+  /** Отправитель скажет, какая посылка агента сейчас грузится и куда (upload_photo · upload_document вместо хода). */
+  bindUploads(view: UploadView): void {
+    this.uploads = view;
+  }
 
   /** Событие отдано агенту: печатать в его чат. Не сообщение владельца (итог эпизода, probe) — не печатать. */
   start(seq: number, kind: string, chatId: number | null, threadId: number | null): void {
@@ -72,30 +87,39 @@ export class Typing {
   /**
    * Ход агента идёт с этими событиями (working {on: true}); пусто — хода нет (working {on: false}). Набор заменяет
    * прежний: чат и №, которых в нём нет, больше не держатся ходом. Каждый working продлевает срок на WORKING_HOLD_MS.
-   * Возвращает, в скольких чатах ход держит «печатает…».
+   * action — что показывать в чатах хода; сменилось — сразу. Возвращает, в скольких чатах ход держит «печатает…».
    */
-  working(events: readonly WorkingEvent[]): number {
+  working(events: readonly WorkingEvent[], action: WorkingAction = 'typing'): number {
     const before = this.mark();
     const until = this.ctx.clock.now() + WORKING_HOLD_MS;
     const keep = new Map<string, ChatTyping>();
+    const changedAction = new Set<ChatTyping>();
     if (this.ctx.api) {
       for (const e of events) {
         const key = keyOf(e.chatId, e.threadId);
         let c = keep.get(key);
         if (!c) {
           c = this.chat(e.chatId, e.threadId);
+          // Что чат показывал до кадра: ход — его действие, только событие — «печатает…».
+          if ((c.workUntil !== null ? c.action : 'typing') !== action) changedAction.add(c);
           c.workSeqs = new Set();
           c.workUntil = until;
+          c.action = action;
           keep.set(key, c);
         }
         c.workSeqs.add(e.seq);
       }
-      for (const c of keep.values()) this.arm(c);
+      for (const c of keep.values()) {
+        // Уже «печатал» другое действие — новое сразу, не через шаг: «отправляет фото…» не ждёт до 4 с.
+        if (c.timer && changedAction.has(c)) this.beat(c);
+        else this.arm(c);
+      }
     }
     for (const [key, c] of this.chats) {
       if (keep.has(key) || c.workUntil === null) continue;
       c.workUntil = null;
       c.workSeqs = new Set();
+      c.action = 'typing';
       if (!c.seqs.size) this.end(key, c);
     }
     this.changed(before);
@@ -148,7 +172,7 @@ export class Typing {
     const key = keyOf(chatId, threadId);
     let c = this.chats.get(key);
     if (!c) {
-      c = { chatId, threadId, seqs: new Map(), workUntil: null, workSeqs: new Set(), timer: null };
+      c = { chatId, threadId, seqs: new Map(), workUntil: null, workSeqs: new Set(), action: 'typing', timer: null };
       this.chats.set(key, c);
     }
     return c;
@@ -182,6 +206,7 @@ export class Typing {
       // Переходник не повторил working за срок: ход завис или переходник замолчал — «печатает…» больше не держится.
       c.workUntil = null;
       c.workSeqs = new Set();
+      c.action = 'typing';
       this.ctx.journal.write('working_expired', { chat_id: c.chatId, hold_ms: WORKING_HOLD_MS });
     }
     if (!c.seqs.size && c.workUntil === null) {
@@ -192,7 +217,9 @@ export class Typing {
     this.changed(before);
     const api = this.ctx.api;
     if (!api) return;
-    const params: Record<string, unknown> = { chat_id: c.chatId, action: 'typing' };
+    // Ход идёт — его действие; посылка агента грузится в этот чат — загрузка (что именно — знает отправитель).
+    const action = c.workUntil !== null ? (this.uploads?.(c.chatId, c.threadId) ?? c.action) : 'typing';
+    const params: Record<string, unknown> = { chat_id: c.chatId, action };
     if (c.threadId !== null) params.message_thread_id = c.threadId;
     void api.call('sendChatAction', params, { timeoutMs: 10_000 }).then(
       () => {

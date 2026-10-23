@@ -166,7 +166,8 @@ other way round.
   🟡 — also after an interim answer ("Let me look at what we have, and I'll give an example"), which used to clear it and
   leave 🟢 while the agent kept working. 👀 stays on your message for the whole turn too: an interim answer no longer
   removes it, the end of the turn does. Both go away when the turn ends or on `стоп`; if Codex shows no sign of life for
-  15 minutes, the gateway drops them by itself.
+  15 minutes, the gateway drops them by itself. While Codex draws a picture, the header says "sending a photo…" instead
+  of "typing…"; while a file of the agent's uploads, "sending a file…".
 - A message that arrives while the agent is working goes into the running turn; `стоп` interrupts the turn at once;
   the adapter closes the channel check itself, without a model turn; a turn that ends without an answer gets one
   reminder; a crashed `app-server` is restarted and the thread resumed; a lost login or a usage limit is reported to

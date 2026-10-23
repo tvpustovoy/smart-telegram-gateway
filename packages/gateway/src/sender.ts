@@ -361,8 +361,11 @@ export class Sender {
   readonly statusLine: StatusLine;
   /** Приём — для номера служебного «бот закрепил». */
   private reception: ReceptionView | null = null;
-  /** Документ посылки в пути (0.3.3): строка outbox и свой сигнал отмены — «стоп» прерывает загрузку. */
-  private upload: { outboxId: number; ctl: AbortController } | null = null;
+  /**
+   * Документ посылки в пути (0.3.3): строка outbox и свой сигнал отмены — «стоп» прерывает загрузку; чат, тема и способ —
+   * для «отправляет фото…» / «отправляет файл…» в заголовке, пока идёт ход агента (#55, uploadAction).
+   */
+  private upload: { outboxId: number; ctl: AbortController; chatId: number; threadId: number | null; method: 'sendDocument' | 'sendPhoto' } | null = null;
   /** Событие в идущем ходе агента (working, #55; typing.holds): ответ на него реакцию не снимает — снимет конец хода. */
   private receiptHold: ((seq: number) => boolean) | null = null;
 
@@ -378,6 +381,16 @@ export class Sender {
 
   bindReception(r: ReceptionView): void {
     this.reception = r;
+  }
+
+  /**
+   * Посылка агента грузится в этот чат (и тему) сейчас: upload_photo (фото) или upload_document; нет — null. Для
+   * заголовка чата, пока идёт ход агента (typing.ts, #55).
+   */
+  uploadAction(chatId: number, threadId: number | null): 'upload_photo' | 'upload_document' | null {
+    const u = this.upload;
+    if (!u || u.ctl.signal.aborted || u.chatId !== chatId || u.threadId !== threadId) return null;
+    return u.method === 'sendPhoto' ? 'upload_photo' : 'upload_document';
   }
 
   /** Какие события держит идущий ход агента (#55 × #52): ответ на них 👀 не снимает. */
@@ -989,7 +1002,7 @@ export class Sender {
       const own = doc ? new AbortController() : null;
       try {
         if (own) {
-          this.upload = { outboxId: r0.id, ctl: own };
+          this.upload = { outboxId: r0.id, ctl: own, chatId: r0.chat_id, threadId: r0.thread_id ?? null, method: method === 'sendPhoto' ? 'sendPhoto' : 'sendDocument' };
           // «Стоп» мог прийти, пока готовился файл (openAsBlob): kick тогда загрузку ещё не видел.
           if (!this.stillPending(r0.id)) return { ok: false, cancelled: true };
         }

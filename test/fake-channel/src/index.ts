@@ -260,9 +260,9 @@ export class FakeChannel {
     return this.request('send_file', fields);
   }
 
-  /** Ход агента идёт (#55): working {on, seqs?} — ack {chats, seqs} или error. */
-  working(on: boolean, seqs?: number[]): Promise<GatewayMessage> {
-    return this.request('working', seqs !== undefined ? { on, seqs } : { on });
+  /** Ход агента идёт (#55): working {on, seqs?, action?} — ack {chats, seqs} или error. */
+  working(on: boolean, seqs?: number[], action?: string): Promise<GatewayMessage> {
+    return this.request('working', { on, ...(seqs !== undefined ? { seqs } : {}), ...(action !== undefined ? { action } : {}) });
   }
 
   /** Аккуратно закрыть. */

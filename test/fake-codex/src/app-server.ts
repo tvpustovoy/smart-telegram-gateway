@@ -21,6 +21,9 @@
 //   «медленно»          ответ на turn/start — через 0,8 с (проверка: delivered — только после ответа)
 //   «промежуточно»      сразу reply «смотрю, № N», затем ход идёт молча, пока в каталоге подделки нет файла go-<N>
 //                       (или до turn/interrupt, не дольше 60 с), — и reply «ответ на № N»
+//   «нарисуй»           сразу reply «Нарисую, № N»; затем картинка, как у Codex 0.163: item/started imageGeneration
+//                       (status in_progress), пока нет файла img-<N> — item/completed (completed, savedPath); затем ждёт
+//                       go-<N> — и reply «ответ на № N» (оба ожидания — до turn/interrupt, не дольше 60 с)
 // Повтор шлюза («повтор: проверь, не сделано ли уже») — всегда reply сразу, без «жди» и «молчи».
 
 import fs from 'node:fs';
@@ -139,6 +142,13 @@ function threadRoots(): string[] {
   return threadId ? (loadThreads()[threadId]?.writableRoots ?? []) : [];
 }
 
+/** Ход ждёт файла name в каталоге подделки (или turn/interrupt, не дольше 60 с). */
+async function waitGate(turn: FakeTurn, name: string): Promise<void> {
+  const gate = path.join(DIR, name);
+  const until = Date.now() + 60_000;
+  while (!turn.interrupted && !fs.existsSync(gate) && Date.now() < until) await sleep(20);
+}
+
 async function handleInput(turn: FakeTurn, text: string): Promise<'crash' | 'fail' | null> {
   const remind = /^\[адаптер · напоминание\][^\n]*/m.exec(text);
   if (remind) {
@@ -168,9 +178,22 @@ async function handleInput(turn: FakeTurn, text: string): Promise<'crash' | 'fai
     }
     if (!repeat && body.includes('промежуточно')) {
       await toolCall(turn, 'reply', { seq: ev.seq, text: `смотрю, № ${ev.seq}` });
-      const gate = path.join(DIR, `go-${ev.seq}`);
-      const until = Date.now() + 60_000;
-      while (!turn.interrupted && !fs.existsSync(gate) && Date.now() < until) await sleep(20);
+      await waitGate(turn, `go-${ev.seq}`);
+      if (turn.interrupted) return null;
+    }
+    if (!repeat && body.includes('нарисуй')) {
+      await toolCall(turn, 'reply', { seq: ev.seq, text: `Нарисую, № ${ev.seq}` });
+      const id = newId('ig');
+      notify('item/started', { threadId: turn.threadId, turnId: turn.id, startedAtMs: Date.now(), item: { type: 'imageGeneration', id, status: 'in_progress', revisedPrompt: null, result: '' } });
+      await waitGate(turn, `img-${ev.seq}`);
+      if (turn.interrupted) return null;
+      notify('item/completed', {
+        threadId: turn.threadId,
+        turnId: turn.id,
+        completedAtMs: Date.now(),
+        item: { type: 'imageGeneration', id, status: 'completed', revisedPrompt: 'кот', result: 'iVBORw0KGgo=', savedPath: path.join(DIR, `${id}.png`) },
+      });
+      await waitGate(turn, `go-${ev.seq}`);
       if (turn.interrupted) return null;
     }
     if (!repeat && body.includes('долго')) await sleep(1500);

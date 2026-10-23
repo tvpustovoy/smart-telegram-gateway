@@ -4,7 +4,8 @@
 // Подъём: initialize с experimentalApi, тред с правилами Codex (developer instructions), песочница workspace-write без
 // сети, папка посылок — writable root вне папки агента, 8 инструментов; проба закрыта адаптером без хода модели ·
 // слово владельца → ход → delivered → reply в Telegram · два сообщения во время хода — один ход · промежуточный ответ,
-// а ход идёт → «печатает…», 🟡 и 👀 до turn/completed (working; 👀 — #52), «стоп» снимает сразу · стоп → turn/interrupt,
+// а ход идёт → «печатает…», 🟡 и 👀 до turn/completed (working; 👀 — #52), «стоп» снимает сразу · Codex рисует картинку
+// (imageGeneration) → «отправляет фото…» (working.action upload_photo), готова — снова «печатает…» · стоп → turn/interrupt,
 // поздний вызов отклонён, [продолжить] → строки режима первыми · ход без ответа → одно напоминание · картинка — data URL ·
 // send_file из папки посылок · лимит → строка владельцу и повтор · падение app-server → resume того же треда, повтор с
 // пометкой · перезапуск адаптера → тот же тред, проба без хода · Codex лежит дольше минуты → аренда снята; поднялся →
@@ -45,17 +46,20 @@ describe('M13 · адаптер Codex (stg-codex) против поддельн�
   const turnStarts = (): string[] => requestsOf(fakeDir, 'turn/start').map(inputOf);
   const waitReply = (text: string, what = `ответа «${text}»`) => waitSent(s, gw, (m) => m.text === text, what);
   const statusOf = (seq: number): string | undefined => q1<{ status: string }>(s.home, 'SELECT status FROM events WHERE seq = ?', seq)?.status;
-  const typing = (): number => s.fake.chatActions.filter((a) => a.chat_id === OWNER.id && a.action === 'typing').length;
-  /** Сдвинуть часы шлюза шагами по 4 с; сколько «печатает…» ушло за это время. */
-  const typedDuring = async (steps: number): Promise<number> => {
-    const n = typing();
+  const acted = (action: string): number => s.fake.chatActions.filter((a) => a.chat_id === OWNER.id && a.action === action).length;
+  const typing = (): number => acted('typing');
+  /** Сдвинуть часы шлюза шагами по 4 с; сколько sendChatAction с этим действием ушло за это время. */
+  const actedDuring = async (steps: number, action: string): Promise<number> => {
+    const n = acted(action);
     for (let i = 0; i < steps; i++) {
       await gw.advance('4s');
       await sleep(20);
     }
     await sleep(250);
-    return typing() - n;
+    return acted(action) - n;
   };
+  /** То же для «печатает…». */
+  const typedDuring = (steps: number): Promise<number> => actedDuring(steps, 'typing');
   const waitStatus = (pred: (text: string) => boolean, what: string): Promise<string> =>
     pump(gw, () => {
       const st = statusLineOf(s.fake);
@@ -166,6 +170,36 @@ describe('M13 · адаптер Codex (stg-codex) против поддельн�
     await pump(gw, () => receiptCleared(s.fake, u) || null, { what: '👀 снят по turn/completed' });
     assert.equal(await typedDuring(5), 0, 'ход кончился — тишина');
     await waitStatus((t) => /\n🟢($| · )/u.test(t), '🟢 — ход кончился');
+  });
+
+  it('Codex рисует картинку (#55): «Нарисую…» ушёл, 👀 держится; пока идёт imageGeneration — «отправляет фото…» (upload_photo), картинка готова — снова «печатает…»; ход кончился — 👀 снят', async () => {
+    const { u, seq } = await sayU('нарисуй кота');
+    await waitReply(`Нарисую, № ${seq}`);
+    await waitUntil(
+      () => readJournal(s.home).find((l) => l.ev === 'working' && l.on === true && l.action === 'upload_photo' && (l.seqs as number[]).includes(seq)),
+      5000,
+      'working с action upload_photo',
+    );
+    await adapter.waitFeed((l) => l.includes('рисует картинку…'), 5000, 'строки ленты о картинке');
+    const typedBefore = typing();
+    const photo = await actedDuring(10, 'upload_photo');
+    assert.ok(photo >= 8, `upload_photo за 40 с: ${photo}`);
+    assert.equal(typing() - typedBefore, 0, 'пока рисует — не «печатает…»');
+    assert.equal(reactionOf(s.fake, u), '👀', '«Нарисую…» — промежуточный: 👀 держится');
+    fs.writeFileSync(path.join(fakeDir, `img-${seq}`), '1');
+    await adapter.waitFeed((l) => l.includes('картинка готова'), 5000, 'строки ленты «картинка готова»');
+    await waitUntil(() => {
+      const last = readJournal(s.home).filter((l) => l.ev === 'working' && (l.seqs as number[] | undefined)?.includes(seq)).at(-1);
+      return last && last.on === true && last.action === undefined ? last : null;
+    }, 5000, 'working без action (снова «печатает…»)');
+    const photoBefore = acted('upload_photo');
+    assert.ok((await typedDuring(5)) >= 4, 'картинка готова — снова «печатает…»');
+    assert.equal(acted('upload_photo') - photoBefore, 0);
+    assert.equal(reactionOf(s.fake, u), '👀');
+    fs.writeFileSync(path.join(fakeDir, `go-${seq}`), '1');
+    await waitReply(`ответ на № ${seq}`);
+    await pump(gw, () => receiptCleared(s.fake, u) || null, { what: '👀 снят по turn/completed' });
+    assert.equal(await actedDuring(3, 'upload_photo'), 0);
   });
 
   it('стоп во время хода → turn/interrupt; поздний вызов из прерванного хода отклонён адаптером; [продолжить] → «стоп» и «стоп снят» первыми в следующем вводе', async () => {

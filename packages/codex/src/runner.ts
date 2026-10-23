@@ -26,6 +26,9 @@
 //   Набор сменился (ход начат, ввод добавлен) или новая аренда — сразу; дальше — на признаки жизни Codex (уведомления
 //   треда, вызовы инструментов), не чаще workingRepeatMs (30 с): Codex замолчал — шлюз снимет «печатает…» сам через
 //   WORKING_HOLD_MS (15 мин). Ход кончился или прерван «стопом» — working {on: false}. Шлюз без working — больше не шлём.
+//   Пока Codex рисует картинку (элемент imageGeneration: item/started … item/completed) — working с action
+//   upload_photo: в заголовке чата «отправляет фото…» вместо «печатает…»; картинка готова (или не вышла) — снова typing
+//   (без поля). Шлюз без action (bad_request «нераспознанный ключ») — working без него, как раньше.
 // - Ход упал: слетел вход, лимит тарифа, предел запросов — строка владельцу (одна на беду) и повтор через 5 минут;
 //   прочее — повтор через 1, 5, 15 минут. app-server упал — перезапуск с паузой 1…30 с и thread/resume; события
 //   незаконченного хода — снова, с пометкой «повтор после сбоя Codex». Не поднялся за минуту — аренда снимается.
@@ -35,7 +38,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { GatewayClient, OUTCOME, callTool, formatEvent, formatMode, instructionsFor, instructionsVersionOf, type GatewayEnv } from 'stg-channel';
-import { PRODUCT_VERSION, seqList, type EventMessage, type Mode } from 'stg-core';
+import { PRODUCT_VERSION, seqList, type EventMessage, type Mode, type WorkingAction } from 'stg-core';
 import { AppServer, RpcError } from './app-server.js';
 import { versionFromUserAgent, type CodexCommand } from './codex-bin.js';
 import { oneLine, type Feed } from './feed.js';
@@ -184,6 +187,10 @@ export class Runner {
   private workingSent: { sig: string; at: number } | null = null;
   /** Шлюз не знает working (старая версия): до новой аренды не шлём. */
   private workingUnsupported = false;
+  /** Шлюз знает working, но не action (#55): до новой аренды шлём без него. */
+  private workingActionUnsupported = false;
+  /** Картинки, которые Codex рисует сейчас: id элемента imageGeneration → ход. Есть — action upload_photo. */
+  private readonly drawing = new Map<string, string>();
   private codexVersion: string | null = null;
   /** Папка посылок — настоящий путь (песочница Codex сверяет пути без ссылок: /var → /private/var). */
   private parcelsDir: string;
@@ -391,6 +398,7 @@ export class Runner {
     for (const t of this.openTurns.values()) this.requeue(t, 'crash');
     this.openTurns.clear();
     this.active = null;
+    this.drawing.clear();
     this.syncWorking();
     this.downSince ??= Date.now();
     const wait = this.restartDelay;
@@ -512,6 +520,7 @@ export class Runner {
       // Снятая аренда унесла «печатает…» хода: новой — сразу заново; старый шлюз мог обновиться.
       this.workingSent = null;
       this.workingUnsupported = false;
+      this.workingActionUnsupported = false;
       const waiting = this.queue.filter((q) => q.lease !== lease).map((q) => q.ev.seq);
       if (waiting.length) this.opts.log(`новая аренда: ${seqList(waiting)} в очереди — Codex получит, когда шлюз отдаст их этой аренде`);
     }
@@ -679,9 +688,14 @@ export class Runner {
     return [...new Set(live.flatMap((t) => [...t.seqs]))].sort((a, b) => a - b);
   }
 
+  /** Что показать в заголовке чата, пока ход идёт: Codex рисует картинку — «отправляет фото…», иначе «печатает…». */
+  private workingAction(): WorkingAction {
+    return this.drawing.size > 0 && !this.workingActionUnsupported ? 'upload_photo' : 'typing';
+  }
+
   /**
-   * «Агент работает» шлюзу (#55): ход идёт — working {on: true, seqs}, набор сменился — сразу, тот же — не чаще
-   * workingRepeatMs (вызывается на признаки жизни Codex); хода нет — working {on: false}, один раз.
+   * «Агент работает» шлюзу (#55): ход идёт — working {on: true, seqs, action?}, набор или действие сменились — сразу,
+   * то же — не чаще workingRepeatMs (вызывается на признаки жизни Codex); хода нет — working {on: false}, один раз.
    */
   private syncWorking(): void {
     const client = this.client;
@@ -690,25 +704,36 @@ export class Runner {
     if (seqs === null) {
       if (this.workingSent === null) return;
       this.workingSent = null;
-      this.sendWorking(client, false, []);
+      this.sendWorking(client, false, [], 'typing');
       return;
     }
-    const sig = seqs.join(',');
+    const action = this.workingAction();
+    const sig = `${seqs.join(',')}|${action}`;
     const now = Date.now();
     const prev = this.workingSent;
     if (prev && prev.sig === sig && now - prev.at < this.opts.timing.workingRepeatMs) return;
     this.workingSent = { sig, at: now };
-    this.sendWorking(client, true, seqs);
+    this.sendWorking(client, true, seqs, action);
   }
 
-  private sendWorking(client: GatewayClient, on: boolean, seqs: number[]): void {
-    client.request('working', on ? { on, seqs } : { on }).then(
+  private sendWorking(client: GatewayClient, on: boolean, seqs: number[], action: WorkingAction): void {
+    // «Печатает…» — без поля: так кадр понимает и шлюз, который action ещё не знает.
+    const fields = on ? { on, seqs, ...(action !== 'typing' ? { action } : {}) } : { on };
+    client.request('working', fields).then(
       (r) => {
         if (r.type !== 'error') return;
         if (r.code === 'bad_request' && /неизвестный type/.test(r.text)) {
           if (!this.workingUnsupported) this.opts.log('шлюз не знает working (старая версия): «печатает…» гаснет после промежуточного ответа, как раньше');
           this.workingUnsupported = true;
           this.workingSent = null;
+          return;
+        }
+        if (r.code === 'bad_request' && 'action' in fields && /нераспознанн/i.test(r.text) && /"action"/.test(r.text)) {
+          // Шлюз знает working, но не action: дальше — без него (вместо «отправляет фото…» — «печатает…»), сейчас — снова.
+          if (!this.workingActionUnsupported) this.opts.log('шлюз не знает working.action (старая версия): пока Codex рисует — «печатает…»');
+          this.workingActionUnsupported = true;
+          this.workingSent = null;
+          this.syncWorking();
           return;
         }
         // Аренда ещё не проверена (проба в пути): после проверки — снова (closeProbe), не дожидаясь признаков жизни Codex.
@@ -742,10 +767,10 @@ export class Runner {
         this.onTurnCompleted(p as unknown as TurnCompletedNotification);
         return;
       case 'item/started':
-        this.onItem((p as unknown as ItemNotification).item, false);
+        this.onItem((p as unknown as ItemNotification).item, false, typeof p.turnId === 'string' ? p.turnId : null);
         return;
       case 'item/completed':
-        this.onItem((p as unknown as ItemNotification).item, true);
+        this.onItem((p as unknown as ItemNotification).item, true, typeof p.turnId === 'string' ? p.turnId : null);
         return;
       case 'thread/tokenUsage/updated':
         this.lastUsage = (p as unknown as TokenUsageNotification).tokenUsage ?? null;
@@ -763,7 +788,26 @@ export class Runner {
     }
   }
 
-  private onItem(item: ThreadItem | undefined, completed: boolean): void {
+  /**
+   * Codex рисует картинку (imageGeneration; app-server-protocol v2/item.rs, ext/image-generation: item/started со
+   * status in_progress, item/completed — completed или failed): пока рисует — working с action upload_photo, «отправляет
+   * фото…» в заголовке чата; в ленте — строка о начале и итоге.
+   */
+  private onImageGeneration(it: Record<string, unknown>, completed: boolean, turnId: string | null): void {
+    const id = typeof it.id === 'string' ? it.id : '';
+    if (!completed) {
+      this.drawing.set(id, turnId ?? this.active?.id ?? '');
+      this.opts.feed.line('tool', 'рисует картинку…');
+    } else {
+      this.drawing.delete(id);
+      const status = String(it.status ?? '');
+      const saved = typeof it.savedPath === 'string' ? `: ${it.savedPath}` : '';
+      this.opts.feed.line(status === 'completed' ? 'tool' : 'warn', status === 'completed' ? `картинка готова${saved}` : `картинка не вышла (${status || '?'})`);
+    }
+    this.syncWorking();
+  }
+
+  private onItem(item: ThreadItem | undefined, completed: boolean, turnId: string | null = null): void {
     if (!item) return;
     const it = item as ThreadItem & Record<string, unknown>;
     switch (item.type) {
@@ -806,6 +850,9 @@ export class Runner {
       case 'contextCompaction':
         if (completed) this.opts.feed.line('sys', 'Codex сжал разговор');
         return;
+      case 'imageGeneration':
+        this.onImageGeneration(it, completed, turnId);
+        return;
       default:
         return;
     }
@@ -830,6 +877,8 @@ export class Runner {
     this.completedEarly.delete(turn.id);
     this.openTurns.delete(turn.id);
     if (this.active?.id === turn.id) this.active = null;
+    // Картинка хода, конца которой Codex не прислал (ход прерван), — больше не рисуется.
+    for (const [id, tid] of this.drawing) if (tid === turn.id || tid === '') this.drawing.delete(id);
     this.syncWorking();
     const dur = typeof turn.durationMs === 'number' ? turn.durationMs : Date.now() - t.startedAt;
     if (turn.status === 'completed') {

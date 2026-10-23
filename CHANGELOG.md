@@ -63,6 +63,15 @@ The chat interface and the design documents are in Russian; the entries below de
   memory, so at start the gateway removes 👀 from processed events whose answer went out — without a turn such a 👀
   does not exist (only 👀, within 7 days; 👌 of earlier versions is not touched); journal `start.receipts_released`.
   The same runs after the disk recovers. The Claude Code channel does not send `working`, so nothing changes there.
+- What the chat header shows while the turn works (#55). Found on the same live check: the agent drew a picture for two
+  minutes under "typing…". `working` takes an optional `action`: `typing` (the default, also without the field),
+  `upload_photo` ("sending a photo…") or `upload_document` ("sending a file…"); the gateway sends `sendChatAction` with it
+  to the chats of the turn, at once when it changes. The Codex adapter sets `upload_photo` while Codex generates an image
+  (the turn item `imageGeneration`, from `item/started` to `item/completed`, or the end of the turn) and goes back to
+  `typing` after it; the feed says "рисует картинку…" and "картинка готова". While a turn runs and the gateway uploads
+  one of the agent's parcels to that chat, the header shows `upload_document` or `upload_photo` (by how it is sent)
+  instead, then the turn's action again. An event without a turn always shows `typing`. A gateway that does not know
+  `action` answers `bad_request` ("нераспознанный ключ"), and the adapter sends `working` without it.
 - The adapter's own lines in a Codex input start with `[адаптер · …]`. Text in an event that looks like one is
   written with a full-width bracket («［адаптер»), as the channel already does for `[№` and `[шлюз`, so forwarded
   text cannot pass as an adapter line; the channel rules for Codex say so.
@@ -80,7 +89,8 @@ The chat interface and the design documents are in Russian; the entries below de
   "stop"), and `working` against the gateway with a fake adapter (past an interim reply and 2 minutes, 🟡, off, the
   15-minute limit and its extension, "stop", an adapter that drops off, foreign numbers, an unverified lease; 👀 held
   through the turn and removed by its end, a new set, "stop", a dropped adapter, the limit and a gateway restart;
-  `done` inside a turn; an answer without a turn as before).
+  `done` inside a turn; an answer without a turn as before; `working.action`, and "sending a file…" while a parcel
+  uploads during a turn), and "sending a photo…" while the fake Codex generates an image.
   `test/e2e/dist/drill-codex.js` runs the same against the real `codex app-server` with one owner message.
 - Pictures as photos (#60; the owner asked for a picture "not as a file, but as a picture"). `send_file` sends a picture
   — `jpg`, `jpeg`, `png` or `webp` within Telegram's photo limits (at most 10 MB, width plus height at most 10,000, the

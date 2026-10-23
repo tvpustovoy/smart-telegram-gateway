@@ -11,6 +11,7 @@ import {
   PROTOCOL_VERSION,
   RuleChangeSchema,
   SendFileResultSchema,
+  WORKING_ACTIONS,
   WORKING_HOLD_MS,
   WorkingResultSchema,
   encodeFrame,
@@ -440,6 +441,14 @@ describe('протокол: ход агента идёт (#55) — working', () 
     bad(JSON.stringify({ type: 'working', req_id: 'w7', on: true, seqs: [1.5] }));
     bad(JSON.stringify({ type: 'working', req_id: 'w8', on: true, seqs: Array.from({ length: 1001 }, (_, i) => i + 1) }));
     assert.equal(bad(JSON.stringify({ type: 'working', req_id: 'w9', on: true, chat: 111 })).req_id, 'w9');
+  });
+
+  it('working.action — typing, upload_photo, upload_document, необязательное; другое — bad_request', () => {
+    for (const action of WORKING_ACTIONS) {
+      assert.deepEqual(ok(JSON.stringify({ type: 'working', req_id: 'a1', on: true, seqs: [5], action })), { type: 'working', req_id: 'a1', on: true, seqs: [5], action });
+    }
+    bad(JSON.stringify({ type: 'working', req_id: 'a2', on: true, seqs: [5], action: 'record_voice' }));
+    bad(JSON.stringify({ type: 'working', req_id: 'a3', on: true, seqs: [5], action: '' }));
   });
 
   it('ответ на working терпим (новое поле не ломает прежний переходник); предел без повтора — 15 минут', () => {
