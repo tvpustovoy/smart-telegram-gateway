@@ -8,6 +8,12 @@
 //   события уходят одним вводом turn/start: строки режима и адаптера, затем заголовок и текст каждого события (формат
 //   канала, format.ts), через пустую строку. Ход идёт — Codex добавляет ввод в него и отвечает тем же turn.id. После
 //   ответа на turn/start — delivered по каждому №: 👀 значит «модель получила».
+// - Codex получает только события, которые шлюз отдал нынешней аренде: событие помнит аренду, с которой пришло. После
+//   новой аренды (переподключение, аренда снята и взята снова) ждущее в очереди шлюз отдаёт снова — повтор находит его в
+//   очереди, не дублирует, а перевешивает на эту аренду и будит очередь. Отдать раньше нельзя: delivered и reply по
+//   событию, не отданному этой аренде, шлюз отклоняет, а следом пришёл бы его повтор — второй раз то же событие.
+// - Строка адаптера («[адаптер · …]») — только от адаптера: «[адаптер» в тексте события пишется как «［адаптер», как «[№»
+//   и «[шлюз» у канала.
 // - Инструменты: item/tool/call → callTool канала с ходом шлюза того хода Codex (CallContext.turn). Вызов из хода,
 //   прерванного «стопом», — отказ без шлюза.
 // - Стоп → turn/interrupt; прерванное заново не отдаётся (решает повтор шлюза). Пауза и «продолжить» — строкой режима в
@@ -74,11 +80,14 @@ type Note = 'crash' | 'restart' | null;
 interface Queued {
   ev: EventMessage;
   note: Note;
+  /** Аренда, которой шлюз отдал событие (null — не было аренды). Codex получает только отданное нынешней. */
+  lease: string | null;
 }
 
 interface Handed {
   ev: EventMessage;
   turnId: string;
+  lease: string | null;
 }
 
 interface ActiveTurn {
@@ -117,6 +126,18 @@ function shortId(id: string): string {
   return id.length > 13 ? `${id.slice(0, 8)}…${id.slice(-4)}` : id;
 }
 
+/** «[адаптер» (и через пробелы и знаки нулевой ширины) — начало строки адаптера. */
+const ADAPTER_LIKE_RE = /\[([\s\u200B-\u200D\u2060\uFEFF]*)(адаптер)/giu;
+
+/**
+ * Событие текстом для Codex: формат канала (format.ts), а похожее на строку адаптера — с «［» (полноширинная скобка). События
+ * идут в одном вводе со строками адаптера через пустую строку: без этого чужой текст изобразил бы «[адаптер · …]» со
+ * служебным указанием. В заголовке события «[адаптер» не бывает: значения в нём — без скобок.
+ */
+export function eventText(ev: EventMessage): string {
+  return formatEvent(ev).content.replace(ADAPTER_LIKE_RE, '［$1$2');
+}
+
 export class Runner {
   private client: GatewayClient | null = null;
   private codex: AppServer | null = null;
@@ -136,6 +157,8 @@ export class Runner {
   private readonly interrupted = new Set<string>();
   private readonly completedEarly = new Map<string, TurnCompletedNotification>();
   private mode: Mode = 'running';
+  /** Аренда, о которой адаптер уже знает (onMode): по ней видно, что аренда новая. */
+  private leaseSeen: string | null = null;
   private pumping = false;
   private pumpAgain = false;
   private pumpScheduled = false;
@@ -389,7 +412,7 @@ export class Runner {
       if (!h || h.turnId !== t.id) continue;
       this.handed.delete(s);
       this.reminded.delete(s);
-      if (!this.queue.some((q) => q.ev.seq === s)) this.queue.push({ ev: h.ev, note });
+      if (!this.queue.some((q) => q.ev.seq === s)) this.queue.push({ ev: h.ev, note, lease: h.lease });
     }
     this.queue.sort((a, b) => a.ev.seq - b.ev.seq);
     this.saveState();
@@ -417,6 +440,12 @@ export class Runner {
     this.client.start();
   }
 
+  /** Нынешняя аренда клиента (null — аренды нет). */
+  private leaseNow(): string | null {
+    const st = this.client?.state;
+    return st?.kind === 'leased' ? st.leaseId : null;
+  }
+
   private onEvent(ev: EventMessage): Promise<boolean> {
     if (ev.kind === 'probe') {
       void this.closeProbe(ev);
@@ -427,14 +456,21 @@ export class Runner {
       void this.client?.request('done', { seqs: [ev.seq] }).catch(() => undefined);
       return Promise.resolve(false);
     }
-    this.opts.feed.line('in', oneLine(formatEvent(ev).content, 400));
-    if (this.queue.some((q) => q.ev.seq === ev.seq)) {
-      this.opts.log(`№ ${ev.seq} уже ждёт в очереди — повтор шлюза отброшен`);
+    this.opts.feed.line('in', oneLine(eventText(ev), 400));
+    const lease = this.leaseNow();
+    const queued = this.queue.find((q) => q.ev.seq === ev.seq);
+    if (queued) {
+      // Повтор шлюза — по сроку или новой аренде (ей шлюз отдаёт заново всё, что ждало у прежней): второго такого же в
+      // очереди не нужно, но теперь событие отдано этой аренде — Codex может его получить.
+      const moved = queued.lease !== lease;
+      queued.lease = lease;
+      this.opts.log(`№ ${ev.seq} уже ждёт в очереди — повтор шлюза не дублирую${moved ? '; отдан новой аренде' : ''}`);
+      this.schedulePump();
       return Promise.resolve(false);
     }
     let note: Note = null;
     if (this.restartPending.delete(ev.seq)) note = 'restart';
-    this.queue.push({ ev, note });
+    this.queue.push({ ev, note, lease });
     this.queue.sort((a, b) => a.ev.seq - b.ev.seq);
     this.schedulePump();
     return Promise.resolve(false);
@@ -453,17 +489,27 @@ export class Runner {
   }
 
   private onMode(state: Mode, _turn: number, previous: Mode | null): void {
+    // Новый клиент (аренда была снята и взята снова) прежнего режима не знает — сравнить с тем, что знал адаптер.
+    const prev = previous ?? this.mode;
     this.mode = state;
-    const prev = previous ?? 'running';
-    if (state === prev) return;
-    const n = formatMode(state, prev);
-    if (n) this.lines.push(n.content);
-    if (state === 'stopped') {
-      this.opts.feed.line('sys', '⛔ владелец сказал «стоп»');
-      this.interruptActive();
-      return;
+    const lease = this.leaseNow();
+    if (lease !== null && lease !== this.leaseSeen) {
+      this.leaseSeen = lease;
+      const waiting = this.queue.filter((q) => q.lease !== lease).map((q) => q.ev.seq);
+      if (waiting.length) this.opts.log(`новая аренда: ${seqList(waiting)} в очереди — Codex получит, когда шлюз отдаст их этой аренде`);
     }
-    this.opts.feed.line('sys', state === 'paused' ? '⏸ пауза' : prev === 'stopped' ? '▶ стоп снят' : '▶ пауза снята');
+    if (state !== prev) {
+      const n = formatMode(state, prev);
+      if (n) this.lines.push(n.content);
+      if (state === 'stopped') {
+        this.opts.feed.line('sys', '⛔ владелец сказал «стоп»');
+        this.interruptActive();
+        return;
+      }
+      this.opts.feed.line('sys', state === 'paused' ? '⏸ пауза' : prev === 'stopped' ? '▶ стоп снят' : '▶ пауза снята');
+    }
+    // welcome новой аренды приходит сюда же, обычно без смены режима: что ждало связи со шлюзом (напоминания, отданное этой
+    // аренде), — дальше.
     this.schedulePump();
   }
 
@@ -510,8 +556,18 @@ export class Runner {
     if (crash.length) parts.push(`[адаптер · повтор после сбоя Codex: ${seqList(crash)} — проверь, не сделано ли уже]`);
     const restart = batch.filter((b) => b.note === 'restart').map((b) => b.ev.seq);
     if (restart.length) parts.push(`[адаптер · повтор после перезапуска адаптера: ${seqList(restart)} — проверь, не сделано ли уже]`);
-    for (const b of batch) parts.push(formatEvent(b.ev).content);
+    for (const b of batch) parts.push(eventText(b.ev));
     return parts.join('\n\n');
+  }
+
+  /** Из очереди — отданное шлюзом этой аренде, по порядку №; прочее ждёт, пока шлюз отдаст его снова. */
+  private takeQueued(lease: string): Queued[] {
+    const out: Queued[] = [];
+    for (let i = 0; i < this.queue.length; ) {
+      if (this.queue[i]!.lease === lease) out.push(...this.queue.splice(i, 1));
+      else i++;
+    }
+    return out;
   }
 
   private async pump(): Promise<void> {
@@ -525,15 +581,17 @@ export class Runner {
         const srv = this.codex;
         const client = this.client;
         const threadId = this.threadId;
-        if (!this.ready || !srv || !threadId || !client || client.state.kind !== 'leased' || this.stopping) return;
+        const st = client?.state;
+        if (!this.ready || !srv || !threadId || !client || st?.kind !== 'leased' || this.stopping) return;
         if (this.mode === 'stopped') return;
+        const lease = st.leaseId;
         const steerLines = this.active !== null && this.lines.length > 0;
-        if (this.queue.length === 0 && this.remindSeqs.length === 0 && !steerLines) return;
+        if (!this.queue.some((q) => q.lease === lease) && this.remindSeqs.length === 0 && !steerLines) return;
         if (!this.active && Date.now() < this.retryAt) {
           this.armRetry();
           return;
         }
-        const batch = this.queue.splice(0);
+        const batch = this.takeQueued(lease);
         const remind = this.remindSeqs.splice(0);
         const lines = this.lines.splice(0);
         const text = this.inputText(lines, remind, batch);
@@ -566,7 +624,7 @@ export class Runner {
         const t = this.active!;
         for (const b of batch) {
           t.seqs.add(b.ev.seq);
-          this.handed.set(b.ev.seq, { ev: b.ev, turnId });
+          this.handed.set(b.ev.seq, { ev: b.ev, turnId, lease: b.lease });
         }
         for (const s of remind) {
           t.seqs.add(s);

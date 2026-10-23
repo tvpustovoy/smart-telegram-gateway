@@ -35,6 +35,12 @@ The chat interface and the design documents are in Russian; the entries below de
   the events of the unfinished turn go again marked as a repeat after a Codex failure; if Codex stays down for a
   minute, the lease is given up. A thread is replaced only when Codex no longer has it. Without a ChatGPT login there
   is no lease, and the reason is in the feed and in `state.json`.
+- Codex gets only events the gateway handed to the current lease. After a new lease (a reconnect, or the lease given
+  up and taken again) a waiting event goes to Codex when the gateway hands it to that lease again — once, without
+  waiting for the owner's next message; the gateway's repeat of an event already waiting is not queued twice.
+- The adapter's own lines in a Codex input start with `[адаптер · …]`. Text in an event that looks like one is
+  written with a full-width bracket («［адаптер»), as the channel already does for `[№` and `[шлюз`, so forwarded
+  text cannot pass as an adapter line; the channel rules for Codex say so.
 - Adapter state — thread id, agent folder, version of the channel rules, unanswered events — is kept in
   `<bot dir>/codex/state.json` (written atomically), so a restart continues the same thread.
 - A live feed for a terminal window on the adapter's stdout: incoming messages with their headers, turns, commands,
@@ -44,7 +50,8 @@ The chat interface and the design documents are in Russian; the entries below de
   no iTerm), or `--here`, `--tmux`, `--print`; the log goes to `<bot dir>/codex/adapter.log`.
 - Tests: a fake `codex app-server` (`test/fake-codex`) with a scripted model, unit tests of the adapter and an
   integration suite with the real gateway and the fake Telegram (boot, turn and reply, steering, stop and continue,
-  reminder, media, parcels, usage limit, app-server crash, adapter restart, vanished thread, no login).
+  reminder, media, parcels, usage limit, app-server crash, adapter restart, vanished thread, Codex down for longer
+  than a minute and the lease taken again, no login).
   `test/e2e/dist/drill-codex.js` runs the same against the real `codex app-server` with one owner message.
 
 ### Changed

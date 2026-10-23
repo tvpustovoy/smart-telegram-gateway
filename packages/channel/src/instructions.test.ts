@@ -38,7 +38,7 @@ describe('правила канала: Claude Code и Codex', () => {
       }
       assert.ok(!t.includes(w), `в тексте для Codex есть «${w}»`);
     }
-    for (const w of ['не у терминала', 'песочнице', 'сначала короткий reply', 'несколько событий подряд', '[адаптер · …]', 'reply(seq, text)', 'done(seqs)', 'episode_summary', 'чужое', 'Markdown']) {
+    for (const w of ['не у терминала', 'песочнице', 'сначала короткий reply', 'несколько событий подряд', '[адаптер · …]', '«［адаптер …»', 'reply(seq, text)', 'done(seqs)', 'episode_summary', 'чужое', 'Markdown']) {
       assert.ok(t.includes(w), `в тексте для Codex нет «${w}»`);
     }
     assert.notEqual(instructionsVersionOf(t), INSTRUCTIONS_VERSION);

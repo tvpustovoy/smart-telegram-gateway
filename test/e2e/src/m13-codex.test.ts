@@ -6,7 +6,8 @@
 // слово владельца → ход → delivered → reply в Telegram · два сообщения во время хода — один ход · стоп → turn/interrupt,
 // поздний вызов отклонён, [продолжить] → строки режима первыми · ход без ответа → одно напоминание · картинка — data URL ·
 // send_file из папки посылок · лимит → строка владельцу и повтор · падение app-server → resume того же треда, повтор с
-// пометкой · перезапуск адаптера → тот же тред, проба без хода.
+// пометкой · перезапуск адаптера → тот же тред, проба без хода · Codex лежит дольше минуты → аренда снята; поднялся →
+// новая аренда, событие упавшего хода уходит в Codex без нового сообщения и один раз.
 
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -225,6 +226,57 @@ describe('M13 · адаптер Codex (stg-codex) против поддельн�
     await waitUntil(() => (JSON.parse(fs.readFileSync(path.join(s.home.dir, 'codex', 'state.json'), 'utf8')) as { threadId: string }).threadId === id, 5000, 'state.json');
     const seq = await say('ты тут?');
     await waitReply(`ответ на № ${seq}`);
+  });
+});
+
+describe('M13 · адаптер Codex: Codex лежит дольше минуты — аренда снята и взята снова', () => {
+  let s: Setup;
+  let gw: GatewayProcess;
+  let adapter: CodexAdapter;
+  after(async () => {
+    if (process.env.STG_TEST_CODEX_FEED === '1') process.stderr.write(`\n— лента stg-codex —\n${adapter?.feed ?? ''}\n`);
+    if (adapter?.alive) await adapter.kill9();
+    if (gw?.alive) await gw.stop();
+    await s.close();
+  });
+
+  it('событие упавшего хода ждёт в очереди; новая аренда — шлюз отдаёт его снова, и оно уходит в Codex без нового сообщения, один раз', async () => {
+    s = await setup();
+    gw = await s.start();
+    const agentDir = fs.realpathSync(makeTempDir('stg-agent-'));
+    fs.writeFileSync(path.join(agentDir, 'AGENTS.md'), '# Агент для теста\n');
+    const fakeDir = makeTempDir('stg-fcx-');
+    const down = path.join(fakeDir, 'DOWN');
+    adapter = CodexAdapter.start({ home: s.home.dir, agentDir, codex: FAKE_CODEX_ENTRY, env: { FAKE_CODEX_DIR: fakeDir, FAKE_CODEX_DOWN_FLAG: down } });
+    await adapter.waitFeed((l) => /проверка канала № \d+ — закрыта адаптером/.test(l), 15_000, 'закрытия пробы');
+    const say = (text: string): Promise<number> => {
+      const u = s.fake.push(s.fake.builder.text(OWNER, text))[0]!;
+      return waitUntil(() => q1<{ seq: number }>(s.home, 'SELECT seq FROM events WHERE update_id = ?', u.update_id)?.seq, 5000, 'приёма');
+    };
+    const tries = (): string[] => requestsOf(fakeDir, 'turn/start').map(inputOf).filter((t) => t.includes('упади, пожалуйста'));
+    const statusOf = (seq: number): string | undefined => q1<{ status: string }>(s.home, 'SELECT status FROM events WHERE seq = ?', seq)?.status;
+    const verified = (): Array<Record<string, unknown>> => readJournal(s.home).filter((l) => l.ev === 'lease_verified' && l.adapter === 'stg-codex');
+    const a = await say('привет');
+    await waitSent(s, gw, (m) => m.text === `ответ на № ${a}`, 'первого ответа');
+
+    // Codex падает посреди хода и не поднимается: событие хода — в очередь адаптера, через минуту аренда снята.
+    fs.writeFileSync(down, '1');
+    const b = await say('упади, пожалуйста');
+    await adapter.waitFeed((l) => l.includes('аренда у шлюза снята'), 15_000, 'снятия аренды');
+    assert.equal(tries().length, 1);
+    fs.rmSync(down);
+
+    // Поднялся — новая аренда с пробой; шлюз отдаёт событие снова. Часы шлюза стоят: это не повтор по сроку.
+    await waitUntil(() => verified().length >= 2, 15_000, 'второй проверенной аренды');
+    await waitUntil(() => tries().length >= 2, 5000, 'события упавшего хода в Codex без нового сообщения');
+    assert.match(tries()[1]!, new RegExp(`^\\[адаптер · повтор после сбоя Codex: № ${b} — проверь, не сделано ли уже\\]\\n\\n\\[№ ${b} `));
+    await waitSent(s, gw, (m) => m.text === `ответ на № ${b}`, 'ответа на событие упавшего хода');
+    await waitUntil(() => statusOf(b) === 'processed', 5000, 'processed');
+    assert.equal(tries().length, 2, 'в Codex — один раз после сбоя');
+    assert.equal(s.fake.sentTo(OWNER.id).filter((m) => m.text === `ответ на № ${b}`).length, 1, 'ответ — один');
+    assert.ok(adapter.log.includes(`№ ${b} уже ждёт в очереди — повтор шлюза не дублирую; отдан новой аренде`), 'повтор шлюза перевесил событие на новую аренду');
+    const lease2 = verified()[1]!.lease;
+    assert.ok(readJournal(s.home).some((l) => l.ev === 'delivered' && l.seq === b && l.lease === lease2), 'delivered — от новой аренды');
   });
 });
 

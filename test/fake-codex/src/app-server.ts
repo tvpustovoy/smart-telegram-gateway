@@ -7,6 +7,7 @@
 //                          и что ответил адаптер), метки «уже падал»
 //   FAKE_CODEX_NO_ACCOUNT  1 — account/read без входа
 //   FAKE_CODEX_VERSION     версия в userAgent (по умолчанию 0.163.0)
+//   FAKE_CODEX_DOWN_FLAG   путь к файлу: пока он есть, «Codex» не поднимается — процесс сразу выходит с кодом 1
 //
 // «Модель» читает события в тексте ввода — «[№ N · …] текст» — и по каждому, по порядку:
 //   по умолчанию        reply(seq: N, text: «ответ на № N»)
@@ -46,6 +47,13 @@ interface FakeTurn {
 
 function log(entry: Record<string, unknown>): void {
   fs.appendFileSync(LOG, `${JSON.stringify({ pid: process.pid, at: Date.now(), ...entry })}\n`);
+}
+
+const DOWN_FLAG = process.env.FAKE_CODEX_DOWN_FLAG;
+if (DOWN_FLAG && fs.existsSync(DOWN_FLAG)) {
+  log({ dir: 'down' });
+  process.stderr.write('fake codex: down\n');
+  process.exit(1);
 }
 
 function loadThreads(): Record<string, ThreadRec> {

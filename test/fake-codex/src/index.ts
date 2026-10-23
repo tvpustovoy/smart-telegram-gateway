@@ -11,7 +11,7 @@ export const FAKE_CODEX_ENTRY = path.join(path.dirname(fileURLToPath(import.meta
 export interface FakeCodexLine {
   pid: number;
   at: number;
-  dir: 'in' | 'tool-result' | 'turn-start-result' | 'turn-completed' | 'crash' | 'exit';
+  dir: 'in' | 'tool-result' | 'turn-start-result' | 'turn-completed' | 'crash' | 'down' | 'exit';
   method?: string;
   params?: Record<string, unknown> | null;
   id?: number | null;
