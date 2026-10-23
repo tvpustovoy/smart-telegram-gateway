@@ -77,12 +77,15 @@ The chat interface and the design documents are in Russian; the entries below de
 - Database schema v14 (#60): `deliveries.send_as` (`document` or `photo`). The choice is made at `send_file` and
   stored, so a retry after a failure or a restart goes the same way; deliveries from earlier versions are `document`.
 - Channel rules, tool description, `/help` and the agent folder template (#60): pictures come as photos; `as: "file"`
-  when the owner asks for a file or the original. Unlike the Codex split above, this changes the Claude Code text of
-  the channel rules, so `INSTRUCTIONS_VERSION` is new (the pinned hash is updated on purpose): a resumed conversation
-  gets the current rules once as a "channel rules" event. The Codex text changes the same way. An agent folder
-  deployed earlier needs the new line in its `CLAUDE.md` by hand (see the template README). A gateway from before
-  this change does not know `as` and answers `bad_request`; the channel then tells the agent to send the file again
-  without `as`.
+  when the owner asks for a file or the original. Unlike the Codex split above, this changes the Claude Code text of the
+  channel rules, so `INSTRUCTIONS_VERSION` is new (the pinned hash is updated on purpose): a resumed conversation gets
+  the current rules once as a "channel rules" event. The Codex text changes the same way and reaches a resumed Codex
+  thread too (the rules go with every resume), but the tool descriptions do not: the adapter gives Codex the agent's
+  tools only at `thread/start`, not on `thread/resume`, so a Codex thread started before this change keeps the old
+  `send_file` without `as`. Pictures still go as photos there, but the agent may be unable to send one as a file; `as`
+  comes with a new thread. An agent folder deployed earlier needs the new line in its `CLAUDE.md` by hand (see the
+  template README). A gateway from before this change does not know `as` and answers `bad_request`; the channel then
+  tells the agent to send the file again without `as`.
 
 ## 0.3.6 - 2026-10-22
 
