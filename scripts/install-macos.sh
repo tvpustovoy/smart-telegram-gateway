@@ -1,13 +1,17 @@
 #!/bin/bash
 # smart-telegram-gateway — установка на macOS (TECH-SPEC 5.1, 5.3, 5.12; ACCEPTANCE N-4).
 # Ставит службу пользователя (LaunchAgent, без прав администратора) и разворачивает папку агента. Запускает владелец
-# сам (TECH-SPEC §9): скрипт загружает службу в launchd.
+# сам (TECH-SPEC §9) или агент по его просьбе (INSTALL.md): скрипт загружает службу в launchd.
 #
-#   scripts/install-macos.sh <бот> [--node <путь>] [--agent-dir <папка>] [--timezone <пояс>]
+#   scripts/install-macos.sh <бот> [--harness claude|codex] [--node <путь>] [--agent-dir <папка>] [--codex <путь>]
+#                            [--timezone <пояс>]
 #
 #   <бот>         имя бота у BotFather (латиница, цифры, «_») — каталог ~/.smart-telegram-gateway/<бот>/
 #   --node        Node ≥ 22.13 для службы и канала; по умолчанию /opt/homebrew/bin/node (Node из Homebrew)
-#   --agent-dir   папка агента; по умолчанию ~/Agents/assistant
+#   --harness     claude (по умолчанию) — сессия Claude Code с каналом; codex — существующий агент Codex через
+#                 адаптер stg-codex (#55): папку агента скрипт не трогает
+#   --agent-dir   папка агента; claude — по умолчанию ~/Agents/assistant; codex — обязательна (рабочая папка агента)
+#   --codex       codex для --harness codex; по умолчанию — codex из PATH
 #   --timezone    пояс владельца для config.yaml; по умолчанию — пояс системы
 #
 # Что делает: проверяет macOS и Node → собирает репозиторий (npm ci, если нет node_modules; npm run build) → каталог
@@ -26,21 +30,36 @@ die() {
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 BOT=""
 NODE="/opt/homebrew/bin/node"
-AGENT_DIR="$HOME/Agents/assistant"
+AGENT_DIR=""
+HARNESS="claude"
+CODEX=""
 TZ_NAME=""
 
 while [ $# -gt 0 ]; do
   case "$1" in
     --node) NODE="${2:?нужен путь к node}"; shift 2 ;;
     --agent-dir) AGENT_DIR="${2:?нужна папка}"; shift 2 ;;
+    --harness) HARNESS="${2:?нужно claude или codex}"; shift 2 ;;
+    --codex) CODEX="${2:?нужен путь к codex}"; shift 2 ;;
     --timezone) TZ_NAME="${2:?нужен пояс}"; shift 2 ;;
-    -h|--help) sed -n '2,20p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,24p' "$0"; exit 0 ;;
     -*) die "не знаю ключ $1" ;;
     *) [ -z "$BOT" ] || die "бот уже задан: $BOT"; BOT="$1"; shift ;;
   esac
 done
 
 [ -n "$BOT" ] || die "нужно имя бота: scripts/install-macos.sh <бот>"
+case "$HARNESS" in
+  claude) [ -n "$AGENT_DIR" ] || AGENT_DIR="$HOME/Agents/assistant" ;;
+  codex)
+    [ -n "$AGENT_DIR" ] || die "для --harness codex нужна --agent-dir: рабочая папка агента Codex"
+    [ -d "$AGENT_DIR" ] || die "нет папки агента: $AGENT_DIR"
+    AGENT_DIR="$(cd "$AGENT_DIR" && pwd)"
+    [ -n "$CODEX" ] || CODEX="$(command -v codex || true)"
+    [ -n "$CODEX" ] && [ -x "$CODEX" ] || die "нет codex: поставь Codex CLI (npm i -g @openai/codex) или укажи --codex"
+    ;;
+  *) die "--harness: claude или codex, а не $HARNESS" ;;
+esac
 printf '%s' "$BOT" | grep -Eq '^[A-Za-z0-9_]{1,64}$' || die "имя бота — латиница, цифры и «_»: $BOT"
 [ "$(uname -s)" = "Darwin" ] || die "только macOS"
 [ "$(id -u)" -ne 0 ] || die "не от root: служба — пользовательская"
@@ -113,6 +132,26 @@ for try in 1 2 3; do
 done
 [ "$BOOTSTRAPPED" -eq 1 ] || die "launchctl bootstrap не прошёл трижды: смотри launchctl print gui/$UID_NUM/$LABEL и $STG_HOME/logs/launchd.log"
 launchctl print "gui/$UID_NUM/$LABEL" | grep -E '^\s*(state|pid) =' || true
+
+if [ "$HARNESS" = "codex" ]; then
+  echo "5/6 агент Codex: $AGENT_DIR — папку не трогаю (роль — его AGENTS.md; правила канала адаптер передаёт сам)"
+  mkdir -p "$STG_HOME/parcels"
+  echo "6/6 готово. Дальше:"
+  cat <<NEXT
+  - токен бота — в связку ключей (ввод без эха; вводит владелец):
+      security add-generic-password -s smart-telegram-gateway -a $BOT/telegram -w
+  - голосовые (необязательно) — ключ OpenAI, ввод без эха:
+      security add-generic-password -s smart-telegram-gateway -a openai -w
+  - владелец пишет боту /start с телефона, затем:
+      STG_HOME="$STG_HOME" ${STG[*]} doctor
+    показанный номер — в $STG_HOME/config.yaml (owner_id), перезапустить службу:
+      launchctl kickstart -k gui/$UID_NUM/$LABEL
+  - агент Codex — в видимом окне Terminal/iTerm (живая лента разговора; Ctrl-C — остановить):
+      $REPO/scripts/codex-agent-start.sh --agent-dir "$AGENT_DIR" --stg-home "$STG_HOME" --node "$NODE" --codex "$CODEX"
+  - удалить службу: scripts/uninstall-macos.sh $BOT
+NEXT
+  exit 0
+fi
 
 echo "5/6 папка агента: $AGENT_DIR"
 STG_HOME="$STG_HOME" "${STG[@]}" agent-folder "$AGENT_DIR" --node "$NODE"

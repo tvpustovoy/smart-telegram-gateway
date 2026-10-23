@@ -5,6 +5,11 @@
 
 [English version](README.md) · [Изменения (англ.)](CHANGELOG.md) · [Issues][issues]
 
+
+**Быстрый старт:** дайте ссылку своему Codex (или Claude Code) и попросите: *«Поставь себе
+https://github.com/tvpustovoy/smart-telegram-gateway — по INSTALL.md»*. Установку делает агент; от вас — бот у
+@BotFather, его токен в связку ключей и первое сообщение боту. По шагам — [INSTALL.md](INSTALL.md) (на английском).
+
 ## Что это и зачем
 
 Говорить с личным агентом через бота Telegram просто, пока сессия агента не занята, не сжимает контекст, не
@@ -57,8 +62,11 @@ Code Channels) и который доносит события в работаю
 ```sh
 git clone <этот репозиторий> smart-telegram-gateway
 cd smart-telegram-gateway
-scripts/install-macos.sh <имя_бота> [--node <путь>] [--agent-dir <папка>] [--timezone <пояс>]
+scripts/install-macos.sh <имя_бота> [--harness claude|codex] [--node <путь>] [--agent-dir <папка>] [--timezone <пояс>]
 ```
+
+`--harness codex --agent-dir <папка>` — шлюз для существующего агента Codex, его папка не трогается (раздел «Codex» ниже);
+по умолчанию — агент Claude Code с новой папкой агента.
 
 Значения по умолчанию — `scripts/install-macos.sh --help`. Скрипт собирает репозиторий, заводит каталог бота
 `~/.smart-telegram-gateway/<бот>/` с `config.yaml`, ставит и запускает службу, разворачивает папку агента из шаблона
