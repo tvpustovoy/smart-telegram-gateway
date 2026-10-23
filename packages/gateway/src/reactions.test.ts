@@ -10,6 +10,9 @@
 // Telegram на снятии — повтор. Находка проверки (A12.11): 👌 на сообщениях, ответ на которые ушёл (так ставили версии до
 // 0.3.6 и ui.clear_receipts: false), следующее сообщение не снимает — снимается только «закрыто без ответа»; в полосе
 // снятия идут после 👀 и 👌.
+// Ход агента держит 👀 (#55 × #52): ход отпустил событие — снять, если ответ ушёл (ответ ждёт отправки — нет; done — 👌
+// остаётся; 👌 брошенного ответа, после которого ушёл другой, — снять, как сделал бы отправитель); старт шлюза — снять 👀
+// обработанных событий с ушедшим ответом, кроме тех, что держит ход; 👌 прежних версий и старше недели — не трогать.
 
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -18,7 +21,19 @@ import path from 'node:path';
 import { after, describe, it } from 'node:test';
 import { TelegramApiError, openForGateway, sql } from 'stg-core';
 import type { Ctx } from './context.js';
-import { REACTIONS_KEEP_MS, ReactionLane, clearReceipts, requestAnswerLost, requestAnswered, requestCleared, requestClosedCleared, requestProcessed, requestSeen } from './reactions.js';
+import {
+  REACTIONS_KEEP_MS,
+  ReactionLane,
+  clearReceipts,
+  requestAnswerLost,
+  requestAnswered,
+  requestAnsweredAfterTurn,
+  requestAnsweredStale,
+  requestCleared,
+  requestClosedCleared,
+  requestProcessed,
+  requestSeen,
+} from './reactions.js';
 
 const dirs: string[] = [];
 after(() => {
@@ -522,6 +537,87 @@ describe('полоса реакций: снятие квитанции (0.3.6, #
       await until('все сняты', () => closed.every((m) => row(m)?.status === 'done' && row(m)?.want === ''));
     } finally {
       await lane.stop();
+      db.close();
+    }
+  });
+});
+
+describe('ход агента держит 👀 (#55 × #52): снятие — когда ход отпустил событие, и при старте шлюза', () => {
+  it('ход отпустил события: ответ ушёл — снять; ответ ждёт отправки — нет (снимет отправитель); done — 👌 остаётся; 👌 брошенного ответа, а другой ушёл, — снять', () => {
+    const { db, ctx, event, row, tick, processed, shown, answer } = fresh();
+    try {
+      const sent = event('text', 300);
+      requestSeen(ctx, [sent]);
+      shown(300);
+      processed(sent);
+      answer(sent, 'sent');
+      const queued = event('text', 301);
+      requestSeen(ctx, [queued]);
+      shown(301);
+      processed(queued);
+      answer(queued, 'pending');
+      const closed = event('text', 302);
+      requestSeen(ctx, [closed]);
+      processed(closed);
+      requestProcessed(ctx, [closed]);
+      shown(302);
+      // Промежуточный ответ не принят Telegram (👌 вместо 👀), окончательный — ушёл, пока ход шёл.
+      const lost = event('text', 303);
+      requestSeen(ctx, [lost]);
+      processed(lost);
+      answer(lost, 'dropped');
+      requestAnswerLost(ctx, [lost]);
+      shown(303);
+      answer(lost, 'sent');
+      tick();
+      assert.equal(requestAnsweredAfterTurn(ctx, [sent, queued, closed, lost]), 2);
+      assert.equal(row(300)?.want, '', 'ответ ушёл — снят');
+      assert.equal(row(301)?.want, '👀', 'ответ ждёт отправки — 👀 до отправки');
+      assert.equal(row(302)?.want, '👌', 'done — 👌 остаётся');
+      assert.equal(row(303)?.want, '', '👌 брошенного ответа — снят: другой ответ ушёл');
+      assert.equal(requestAnsweredAfterTurn(ctx, []), 0);
+    } finally {
+      db.close();
+    }
+  });
+
+  it('старт шлюза: 👀 обработанных событий с ушедшим ответом — снять, кроме тех, что держит ход; 👀 без ответа, 👌 на отвеченных (прежние версии), старше недели — не трогать', () => {
+    const { db, ctx, event, row, tick, processed, shown, answer } = fresh();
+    try {
+      const mk = (messageId: number): number => {
+        const seq = event('text', messageId);
+        requestSeen(ctx, [seq]);
+        shown(messageId);
+        return seq;
+      };
+      const old = mk(310);
+      processed(old);
+      answer(old, 'sent');
+      tick(REACTIONS_KEEP_MS + 1);
+      const stale = mk(311);
+      processed(stale);
+      answer(stale, 'sent');
+      const held = mk(312);
+      processed(held);
+      answer(held, 'sent');
+      mk(313);
+      const legacy = event('text', 314);
+      requestSeen(ctx, [legacy]);
+      processed(legacy);
+      requestProcessed(ctx, [legacy]);
+      shown(314);
+      answer(legacy, 'sent');
+      tick();
+      assert.equal(requestAnsweredStale(ctx, (s) => s === held), 1);
+      assert.equal(row(311)?.want, '', '👀 с ушедшим ответом — снят');
+      assert.equal(row(312)?.want, '👀', 'ход держит — не трогать');
+      assert.equal(row(313)?.want, '👀', 'ответа нет — агент ещё работает');
+      assert.equal(row(314)?.want, '👌', '👌 прежней версии на отвеченном — как был');
+      assert.equal(row(310)?.want, '👀', 'старше недели — не обходим');
+      assert.equal(requestAnsweredStale(ctx, () => false), 1, 'ход отпустил — снять и его');
+      assert.equal(row(312)?.want, '');
+      assert.equal(requestAnsweredStale(ctx, () => false), 0, 'снимать больше нечего');
+    } finally {
       db.close();
     }
   });

@@ -50,8 +50,19 @@ The chat interface and the design documents are in Russian; the entries below de
   life from Codex (thread notifications, tool calls) at most every 30 s, and sends `on: false` on `turn/completed` and on
   "stop". Only a verified lease; only messages already handed to the agent (this lease or an earlier one); others are
   skipped. It is not a tool call, so it does not postpone redelivery. The Claude Code channel does not send it, and its
-  "typing…" is unchanged; 👀 and its removal by the answer (#52) are unchanged. A gateway without `working` answers
-  `bad_request`, and the adapter stops sending it.
+  "typing…" is unchanged. A gateway without `working` answers `bad_request`, and the adapter stops sending it.
+- 👀 stays on the owner's message for the whole Codex turn that handles it (#55 with #52). Found on the live check: asked
+  for a picture, the agent answered at once with an interim "Нарисую…" and drew for about two minutes; the interim
+  reply removed 👀 (#52: the answer is its own sign), so nothing in the chat showed that the agent was still on it. Now
+  an answer (`reply`, `send_file`) to an event that the running turn holds (it is in the last `working {on: true}`)
+  does not remove the reaction — it may be interim; the journal's `out` line says `receipt_held`. The reaction goes
+  when the turn lets the event go — `working {on: false}`, a new set without it, "stop", the lease lost, or the
+  15-minute limit — if an answer to it went out (journal `receipts_released`); an answer still waiting to be sent is
+  handled by the sender as before. `done` inside a turn still puts 👌 at once, and the end of the turn does not remove
+  it. The reaction lane keeps its order (removals last). A gateway restart in the middle of a turn: the turn lives in
+  memory, so at start the gateway removes 👀 from processed events whose answer went out — without a turn such a 👀
+  does not exist (only 👀, within 7 days; 👌 of earlier versions is not touched); journal `start.receipts_released`.
+  The same runs after the disk recovers. The Claude Code channel does not send `working`, so nothing changes there.
 - The adapter's own lines in a Codex input start with `[адаптер · …]`. Text in an event that looks like one is
   written with a full-width bracket («［адаптер»), as the channel already does for `[№` and `[шлюз`, so forwarded
   text cannot pass as an adapter line; the channel rules for Codex say so.
@@ -65,9 +76,11 @@ The chat interface and the design documents are in Russian; the entries below de
 - Tests: a fake `codex app-server` (`test/fake-codex`) with a scripted model, unit tests of the adapter and an
   integration suite with the real gateway and the fake Telegram (boot, turn and reply, steering, stop and continue,
   reminder, media, parcels, usage limit, app-server crash, adapter restart, vanished thread, Codex down for longer
-  than a minute and the lease taken again, no login, "typing…" through a long turn with an interim reply and on
+  than a minute and the lease taken again, no login, "typing…" and 👀 through a long turn with an interim reply and on
   "stop"), and `working` against the gateway with a fake adapter (past an interim reply and 2 minutes, 🟡, off, the
-  15-minute limit and its extension, "stop", an adapter that drops off, foreign numbers, an unverified lease).
+  15-minute limit and its extension, "stop", an adapter that drops off, foreign numbers, an unverified lease; 👀 held
+  through the turn and removed by its end, a new set, "stop", a dropped adapter, the limit and a gateway restart;
+  `done` inside a turn; an answer without a turn as before).
   `test/e2e/dist/drill-codex.js` runs the same against the real `codex app-server` with one owner message.
 - Pictures as photos (#60; the owner asked for a picture "not as a file, but as a picture"). `send_file` sends a picture
   — `jpg`, `jpeg`, `png` or `webp` within Telegram's photo limits (at most 10 MB, width plus height at most 10,000, the

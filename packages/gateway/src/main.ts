@@ -263,6 +263,8 @@ class Gateway {
     // Закреплённая строка (5.7): на связи ли агент — знает только аренда; идёт ли ход (working, #55) — «печатает…»;
     // значки агента — agent-state.json.
     sender.statusLine.bindLive({ online: () => adapter.hasLease, working: () => adapter.typing.isWorking, agent: (now) => agentState.view(now) });
+    // Событие идущего хода агента (working, #55): ответ на него 👀 не снимает — снимет конец хода (#52, adapter.ts).
+    sender.bindReceiptHold((seq) => adapter.typing.holds(seq));
     // Расшифровка или отказ записаны: ответ владельцу (расшифровка или причина) — отправителю, событие (и ждавшие за
     // ним) — переходнику.
     // Распознанный материал без слов владельца в окне снова удерживается (0.3.6, material.ts) — таймер окна сверяется.
@@ -298,6 +300,10 @@ class Gateway {
     const keyboard = diskSafe('keyboard_removed', () => transaction(ctx.db, () => upgradeTo031OnStart(ctx)), null);
     const recovery = diskSafe('recovery', () => recoverCrashes(ctx, info), { crashed: [], deferred: [] });
     const stale = diskSafe('stale_in_progress', () => deferStaleInProgress(ctx, this.clock.now()), []);
+    // 👀, который держал ход агента прежнего процесса (#55 × #52): ход был в памяти, его конца этот процесс не увидит —
+    // снять, если ответ ушёл. После восстановления диска — то же (снятие могло не записаться).
+    const receiptsReleased = adapter.releaseStaleReceipts();
+    ctx.disk.onRecovered(() => adapter.releaseStaleReceipts());
     journal.write('start', {
       pid: process.pid,
       version: PRODUCT_VERSION,
@@ -312,6 +318,7 @@ class Gateway {
       ...(keyboard ? { keyboard_removed: { outbox_id: keyboard.outboxId, notes_dropped: keyboard.notesDropped } } : {}),
       crashed: recovery.crashed,
       deferred: [...recovery.deferred, ...stale],
+      ...(receiptsReleased ? { receipts_released: receiptsReleased } : {}),
       ...(ctx.disk.isFull ? { disk_full: true } : {}),
     });
 

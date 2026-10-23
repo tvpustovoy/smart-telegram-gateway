@@ -58,7 +58,10 @@
 // Реакции на сообщении владельца (reactions.ts): delivered — 👀 «агент увидел» (и при повторной отдаче правки), reply на
 // событие или done — 👌 «агент ответил». Агент не на связи — реакции нет. С 0.3.6 (issue #52; ui.clear_receipts, по
 // умолчанию да) reply и send_file с seq 👌 не ставят: реакцию снимает отправитель, когда ответ ушёл в Telegram
-// (sender.ts, requestAnswered); done — 👌, как раньше (её снимает следующее сообщение владельца, admission.ts).
+// (sender.ts, requestAnswered); done — 👌, как раньше (её снимает следующее сообщение владельца, admission.ts). Событие в
+// идущем ходе агента (working, #55) — снятие ждёт конца хода: отправитель его не снимает (typing.holds), а ход больше не
+// держит событие — releaseReceipts (requestAnsweredAfterTurn); 👀 держится на сообщении весь ход. Конец хода, которого
+// шлюз не увидел (перезапуск посреди хода, диск был полон), — releaseStaleReceipts при старте и после восстановления диска.
 //
 // Картинки (0.3, media.ts): media(seq) — только проверенной аренде и только по сообщению, которое уже отдавалось
 // агенту: этой аренде или прежней (после переподключения агент снова открывает фото, на которое ответил час назад;
@@ -144,9 +147,9 @@ import type { AgentResult, Control, Effects } from './control.js';
 import type { Episodes } from './episodes.js';
 import type { MediaService } from './media.js';
 import type { ParcelService } from './parcels.js';
-import { clearReceipts, requestProcessed, requestSeen } from './reactions.js';
+import { clearReceipts, requestAnsweredAfterTurn, requestAnsweredStale, requestProcessed, requestSeen } from './reactions.js';
 import type { GatewayConnection } from './socket-server.js';
-import { Typing } from './typing.js';
+import { Typing, type WorkingEvent } from './typing.js';
 
 /**
  * Откладываний повтора подряд — не больше (5.10, J-8): дальше событие отдаётся снова (или после повтора — строка
@@ -422,9 +425,12 @@ export class AdapterService {
     private readonly control: Control,
     private readonly hooks: AdapterHooks,
   ) {
-    // Ход агента начался или кончился (working, #55): кружок закреплённой строки — 🟡 или 🟢.
-    this.typing = new Typing(ctx, () => {
-      if (!this.closed) this.hooks.onReplyQueued();
+    // Ход агента начался или кончился (working, #55): кружок закреплённой строки — 🟡 или 🟢; ход больше не держит
+    // события — отложенные снятия 👀 (#52) — сейчас. Остановка шлюза — без снятий: база закрывается, снимет старт.
+    this.typing = new Typing(ctx, (released) => {
+      if (this.closed) return;
+      if (released.length) this.releaseReceipts(released);
+      this.hooks.onReplyQueued();
     });
     this.lastTick = ctx.clock.now();
   }
@@ -455,6 +461,44 @@ export class AdapterService {
     this.timer?.cancel();
     this.timer = null;
     this.typing.stopAll();
+  }
+
+  /**
+   * Ход агента больше не держит события seqs (#55 × #52; typing.ts): working off или другой набор, «стоп», снятие аренды,
+   * срок хода. Ответ на них, ушедший, пока ход шёл, реакцию не снял — снять теперь (requestAnsweredAfterTurn). Не
+   * записалось (диск полон) — снимет releaseStaleReceipts после восстановления диска.
+   */
+  private releaseReceipts(seqs: number[]): void {
+    if (!clearReceipts(this.ctx)) return;
+    let cleared = 0;
+    try {
+      cleared = transaction(this.ctx.db, () => requestAnsweredAfterTurn(this.ctx, seqs));
+    } catch (err) {
+      if (!this.ctx.disk.check(err, 'receipts_released', { seqs })) this.ctx.journal.write('receipts_release_failed', { seqs, error: (err as Error).message });
+      return;
+    }
+    if (cleared) this.ctx.journal.write('receipts_released', { seqs, cleared });
+  }
+
+  /**
+   * 👀, который держал ход, а конца хода шлюз не увидел (#55 × #52): старт шлюза (ход был в памяти прежнего процесса),
+   * восстановление диска. Снимаются 👀 обработанных событий с ушедшим ответом агента, кроме тех, что ход держит сейчас
+   * (requestAnsweredStale). Возвращает, сколько снято.
+   */
+  releaseStaleReceipts(): number {
+    if (this.closed || !clearReceipts(this.ctx)) return 0;
+    let cleared = 0;
+    try {
+      cleared = transaction(this.ctx.db, () => requestAnsweredStale(this.ctx, (seq) => this.typing.holds(seq)));
+    } catch (err) {
+      if (!this.ctx.disk.check(err, 'receipts_released')) this.ctx.journal.write('receipts_release_failed', { stale: true, error: (err as Error).message });
+      return 0;
+    }
+    if (cleared) {
+      this.ctx.journal.write('receipts_released', { stale: true, cleared });
+      this.hooks.onReplyQueued();
+    }
+    return cleared;
   }
 
   /** Есть проверенная аренда — агент на связи (Ш-14, «где мы»). */
@@ -1732,25 +1776,26 @@ export class AdapterService {
    * № — сообщения, которые уже отдавались агенту (этой аренде или прежней, как у media): после переподключения ход тот
    * же, а событие с промежуточным ответом осталось за прежней арендой. Прочие № пропускаются молча: «печатает…» —
    * подсказка, а не доставка. В «стопе» — ни одного (ход прерывается). Не вызов инструмента модели: срок повтора (К-5)
-   * он не откладывает.
+   * он не откладывает. Пока ход держит событие, ответ на него 👀 не снимает (#52): снятие — когда ход его отпустит.
    */
   private onWorking(msg: Extract<AdapterMessage, { type: 'working' }>, conn: GatewayConnection): void {
     const lease = this.verifiedLease(conn, msg.req_id);
     if (!lease) return;
     const stopped = this.mode() === 'stopped';
     const seqs: number[] = [];
-    const chats: Array<{ chatId: number; threadId: number | null }> = [];
+    const events: WorkingEvent[] = [];
     if (msg.on && !stopped) {
       for (const seq of new Set(msg.seqs ?? [])) {
         const ev = this.event(seq);
         if (!ev || ev.chat_id === null || !(MESSAGE_EVENT_KINDS as readonly string[]).includes(ev.kind)) continue;
         if (!this.ownsEvent(lease, ev) && (ev.delivered_at ?? null) === null) continue;
         seqs.push(seq);
-        chats.push({ chatId: ev.chat_id, threadId: ev.thread_id });
+        events.push({ seq, chatId: ev.chat_id, threadId: ev.thread_id });
       }
       seqs.sort((a, b) => a - b);
     }
-    const n = this.typing.working(chats);
+    // Набор хода сменился: событие, которое ход больше не держит, — его отложенное снятие 👀 сейчас (typing → releaseReceipts).
+    const n = this.typing.working(events);
     const sig = msg.on && !stopped ? seqs.join(',') : null;
     if (sig !== lease.working) {
       lease.working = sig;

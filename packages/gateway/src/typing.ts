@@ -5,7 +5,10 @@
 // Ход агента идёт (`working`, #55): переходник, который видит начало и конец хода (адаптер Codex), держит «печатает…» в
 // чатах событий хода всё время хода — и после промежуточного ответа на них (ответ снимает событие, а ход — нет). Конец —
 // `working {on: false}`, «стоп», потеря аренды или WORKING_HOLD_MS без нового working (переходник замолчал, ход завис).
-// Ход есть — агент «думает» (🟡) в закреплённой строке: о смене — onWorkingChange.
+// Ход есть — агент «думает» (🟡) в закреплённой строке. Пока ход держит событие (holds), ответ на него 👀 не снимает
+// (#52 × #55): снятие ждёт конца хода. Ход больше не держит события (набор сменился, off, «стоп», аренда, срок) —
+// onWorkingChange с их № (released): шлюз снимает отложенное (adapter.ts); тот же вызов — и когда ход начался или кончился
+// (кружок закреплённой строки).
 // Таймеры — часы шлюза (поддельные под тестом). Сбой запроса — не повод ни для чего: «печатает…» — подсказка, а не
 // доставка; в журнал — первый сбой подряд.
 
@@ -22,13 +25,22 @@ interface ChatTyping {
   seqs: Map<number, number>;
   /** Ход агента идёт в этом чате (working): держать до этого времени; null — хода нет. */
   workUntil: number | null;
+  /** № событий хода в этом чате (working); пусто — хода нет. Ответ на них 👀 не снимает, пока ход идёт. */
+  workSeqs: Set<number>;
   timer: Timer | null;
 }
 
-/** Чат (и тема) события хода. */
-export interface WorkingChat {
+/** Событие хода: № и его чат (и тема). */
+export interface WorkingEvent {
+  seq: number;
   chatId: number;
   threadId: number | null;
+}
+
+/** Что держит ход: идёт ли он и какие № держит — до изменения (для onWorkingChange). */
+interface Mark {
+  working: boolean;
+  held: Set<number>;
 }
 
 function keyOf(chatId: number, threadId: number | null): string {
@@ -39,10 +51,13 @@ export class Typing {
   private readonly chats = new Map<string, ChatTyping>();
   private failing = false;
 
-  /** onWorkingChange — ход агента начался или кончился (в каком-нибудь чате): закреплённой строке пора сменить кружок. */
+  /**
+   * onWorkingChange(released) — ход больше не держит события released (их отложенные снятия 👀 — пора), или ход начался
+   * или кончился (в каком-нибудь чате): закреплённой строке пора сменить кружок.
+   */
   constructor(
     private readonly ctx: Ctx,
-    private readonly onWorkingChange: () => void = () => undefined,
+    private readonly onWorkingChange: (released: number[]) => void = () => undefined,
   ) {}
 
   /** Событие отдано агенту: печатать в его чат. Не сообщение владельца (итог эпизода, probe) — не печатать. */
@@ -55,28 +70,35 @@ export class Typing {
   }
 
   /**
-   * Ход агента идёт в этих чатах (working {on: true}); пусто — хода нет (working {on: false}). Набор заменяет прежний:
-   * чат, которого в нём нет, больше не держится ходом. Каждый working продлевает срок на WORKING_HOLD_MS. Возвращает,
-   * в скольких чатах ход держит «печатает…».
+   * Ход агента идёт с этими событиями (working {on: true}); пусто — хода нет (working {on: false}). Набор заменяет
+   * прежний: чат и №, которых в нём нет, больше не держатся ходом. Каждый working продлевает срок на WORKING_HOLD_MS.
+   * Возвращает, в скольких чатах ход держит «печатает…».
    */
-  working(chats: readonly WorkingChat[]): number {
-    const was = this.isWorking;
+  working(events: readonly WorkingEvent[]): number {
+    const before = this.mark();
     const until = this.ctx.clock.now() + WORKING_HOLD_MS;
-    const keep = new Set<string>();
+    const keep = new Map<string, ChatTyping>();
     if (this.ctx.api) {
-      for (const w of chats) {
-        const c = this.chat(w.chatId, w.threadId);
-        keep.add(keyOf(w.chatId, w.threadId));
-        c.workUntil = until;
-        this.arm(c);
+      for (const e of events) {
+        const key = keyOf(e.chatId, e.threadId);
+        let c = keep.get(key);
+        if (!c) {
+          c = this.chat(e.chatId, e.threadId);
+          c.workSeqs = new Set();
+          c.workUntil = until;
+          keep.set(key, c);
+        }
+        c.workSeqs.add(e.seq);
       }
+      for (const c of keep.values()) this.arm(c);
     }
     for (const [key, c] of this.chats) {
       if (keep.has(key) || c.workUntil === null) continue;
       c.workUntil = null;
+      c.workSeqs = new Set();
       if (!c.seqs.size) this.end(key, c);
     }
-    this.changed(was);
+    this.changed(before);
     return keep.size;
   }
 
@@ -90,9 +112,9 @@ export class Typing {
 
   /** «Стоп», потеря аренды, остановка шлюза — и ход агента тоже. */
   stopAll(): void {
-    const was = this.isWorking;
+    const before = this.mark();
     for (const [key, c] of this.chats) this.end(key, c);
-    this.changed(was);
+    this.changed(before);
   }
 
   /** Сколько чатов «печатают» (для тестов и журнала). */
@@ -106,11 +128,27 @@ export class Typing {
     return false;
   }
 
+  /** Событие — в идущем ходе агента (working): ответ на него 👀 не снимает, пока ход идёт (#52 × #55). */
+  holds(seq: number): boolean {
+    for (const c of this.chats.values()) if (c.workUntil !== null && c.workSeqs.has(seq)) return true;
+    return false;
+  }
+
+  private heldSeqs(): Set<number> {
+    const out = new Set<number>();
+    for (const c of this.chats.values()) if (c.workUntil !== null) for (const s of c.workSeqs) out.add(s);
+    return out;
+  }
+
+  private mark(): Mark {
+    return { working: this.isWorking, held: this.heldSeqs() };
+  }
+
   private chat(chatId: number, threadId: number | null): ChatTyping {
     const key = keyOf(chatId, threadId);
     let c = this.chats.get(key);
     if (!c) {
-      c = { chatId, threadId, seqs: new Map(), workUntil: null, timer: null };
+      c = { chatId, threadId, seqs: new Map(), workUntil: null, workSeqs: new Set(), timer: null };
       this.chats.set(key, c);
     }
     return c;
@@ -123,8 +161,11 @@ export class Typing {
     if (this.chats.get(keyOf(c.chatId, c.threadId)) === c) c.timer = this.ctx.clock.setInterval(() => this.beat(c), TYPING_EVERY_MS);
   }
 
-  private changed(was: boolean): void {
-    if (was !== this.isWorking) this.onWorkingChange();
+  /** Ход начался или кончился, или больше не держит какие-то № — onWorkingChange. */
+  private changed(before: Mark): void {
+    const held = this.heldSeqs();
+    const released = [...before.held].filter((s) => !held.has(s)).sort((a, b) => a - b);
+    if (released.length || before.working !== this.isWorking) this.onWorkingChange(released);
   }
 
   private end(key: string, c: ChatTyping): void {
@@ -136,18 +177,19 @@ export class Typing {
   private beat(c: ChatTyping): void {
     const now = this.ctx.clock.now();
     for (const [seq, started] of c.seqs) if (now - started >= TYPING_MAX_MS) c.seqs.delete(seq);
-    const was = this.isWorking;
+    const before = this.mark();
     if (c.workUntil !== null && now >= c.workUntil) {
       // Переходник не повторил working за срок: ход завис или переходник замолчал — «печатает…» больше не держится.
       c.workUntil = null;
+      c.workSeqs = new Set();
       this.ctx.journal.write('working_expired', { chat_id: c.chatId, hold_ms: WORKING_HOLD_MS });
     }
     if (!c.seqs.size && c.workUntil === null) {
       this.end(keyOf(c.chatId, c.threadId), c);
-      this.changed(was);
+      this.changed(before);
       return;
     }
-    this.changed(was);
+    this.changed(before);
     const api = this.ctx.api;
     if (!api) return;
     const params: Record<string, unknown> = { chat_id: c.chatId, action: 'typing' };

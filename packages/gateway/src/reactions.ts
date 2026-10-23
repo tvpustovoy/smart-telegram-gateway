@@ -18,6 +18,13 @@
 //   списком; схема та же (v13). В полосе снятия идут после 👀 и 👌 (pick): знак «агент увидел» нового сообщения не ждёт
 //   очереди снятий — ждёт не больше одного снятия, которое уже в пути. Текстовой квитанции нет с 0.3.2 (fallback_at,
 //   fallback_sent не заполняются): удалять нечего.
+// - ход агента идёт (`working`, #55; адаптер Codex): ответ на событие хода может быть промежуточным («Нарисую…»), а
+//   агент работает над ним дальше — снятие ждёт конца хода (typing.holds; отправитель не снимает): 👀 держится на
+//   сообщении весь ход. Ход больше не держит событие (working off или другой набор, «стоп», снятие аренды, срок хода) —
+//   снимается (requestAnsweredAfterTurn, adapter.ts), если ответ ушёл. done — 👌 сразу, как без хода: агент сам сказал,
+//   что с сообщением закончил. Конец хода, которого шлюз не увидел (перезапуск шлюза посреди хода), — снятие при старте
+//   (requestAnsweredStale): 👀 на обработанном событии с ушедшим ответом без хода не бывает. Канал Claude Code working
+//   не шлёт — у него всё как выше;
 // ui.clear_receipts: false — как до 0.3.6: reply и send_file с seq ставят 👌 сразу, 👌 остаётся.
 // Агент не на связи — на сообщении ничего (видно по ⚪ и 📥 N в закреплённой строке, а через 10 мин — по строке «агент
 // не на связи»). Команды и нажатия реакций не получают (сообщение с командой удаляется); закрытая тема — тоже: агенту
@@ -145,6 +152,38 @@ export function requestAnswered(ctx: Ctx, seqs: readonly number[]): number {
     n += Number(r.changes);
   }
   return n;
+}
+
+/** Ответ агента на событие `e` ушёл в Telegram: строка outbox агента — sent (SQL, событие — под псевдонимом e). */
+const ANSWER_SENT_SQL = `EXISTS (SELECT 1 FROM outbox o WHERE o.event_seq = e.seq AND o.origin = 'agent' AND o.status = 'sent')`;
+
+/**
+ * Ход агента больше не держит события seqs (#55 × #52: working off, «стоп», снятие аренды, срок хода): ответ на них,
+ * ушедший, пока ход шёл, реакцию не снимал (👀 держался ходом) — снять теперь, как снял бы отправитель
+ * (requestAnswered). Только у событий, ответ агента на которые ушёл; ответ ещё ждёт отправки — снимет отправитель; done
+ * без ответа — 👌 остаётся. Внутри транзакции.
+ */
+export function requestAnsweredAfterTurn(ctx: Ctx, seqs: readonly number[]): number {
+  if (!seqs.length) return 0;
+  const sent = (sql(ctx.db, `SELECT seq FROM events e WHERE seq IN (SELECT value FROM json_each(?)) AND ${ANSWER_SENT_SQL}`).all(JSON.stringify(seqs)) as Array<{
+    seq: number;
+  }>).map((r) => r.seq);
+  return requestAnswered(ctx, sent);
+}
+
+/**
+ * 👀, который держал ход агента, а конца хода шлюз не увидел (#55 × #52): перезапуск шлюза посреди хода (ход — в памяти),
+ * снятие, не записанное из-за полного диска. На сообщении — 👀 события, которое обработано, и ответ агента на него ушёл:
+ * без хода так не бывает (ответ ушёл — реакция снята в той же записи) — снять. Кроме событий, которые ход держит сейчас
+ * (held). Только 👀 и только за REACTIONS_KEEP_MS: 👌 прежних версий на отвеченных сообщениях не трогается. Внутри
+ * транзакции.
+ */
+export function requestAnsweredStale(ctx: Ctx, held: (seq: number) => boolean): number {
+  const rows = sql(ctx.db,
+    `SELECT r.event_seq AS seq FROM reactions r JOIN events e ON e.seq = r.event_seq
+     WHERE r.want = ? AND r.created_at >= ? AND e.status = 'processed' AND ${ANSWER_SENT_SQL}`,
+  ).all(REACTIONS.seen, ctx.clock.now() - REACTIONS_KEEP_MS) as Array<{ seq: number }>;
+  return requestAnswered(ctx, rows.map((r) => r.seq).filter((s) => !held(s)));
 }
 
 /**

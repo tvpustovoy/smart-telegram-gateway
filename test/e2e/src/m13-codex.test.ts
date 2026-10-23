@@ -4,7 +4,7 @@
 // Подъём: initialize с experimentalApi, тред с правилами Codex (developer instructions), песочница workspace-write без
 // сети, папка посылок — writable root вне папки агента, 8 инструментов; проба закрыта адаптером без хода модели ·
 // слово владельца → ход → delivered → reply в Telegram · два сообщения во время хода — один ход · промежуточный ответ,
-// а ход идёт → «печатает…» и 🟡 до turn/completed (working), «стоп» снимает сразу · стоп → turn/interrupt,
+// а ход идёт → «печатает…», 🟡 и 👀 до turn/completed (working; 👀 — #52), «стоп» снимает сразу · стоп → turn/interrupt,
 // поздний вызов отклонён, [продолжить] → строки режима первыми · ход без ответа → одно напоминание · картинка — data URL ·
 // send_file из папки посылок · лимит → строка владельцу и повтор · падение app-server → resume того же треда, повтор с
 // пометкой · перезапуск адаптера → тот же тред, проба без хода · Codex лежит дольше минуты → аренда снята; поднялся →
@@ -18,7 +18,7 @@ import { STOPPED_TEXT, type Update } from 'stg-core';
 import { FAKE_CODEX_ENTRY, inputOf, readFakeCodexLog, requestsOf } from 'stg-fake-codex';
 import { CodexAdapter } from './codex-adapter.js';
 import { makeTempDir, pump, q1, readJournal, sleep, waitUntil, type GatewayProcess } from './harness.js';
-import { OWNER, setup, statusLineOf, type Setup } from './m1-common.js';
+import { OWNER, reactionOf, receiptCleared, setup, statusLineOf, type Setup } from './m1-common.js';
 import { press, waitSent } from './m2-common.js';
 import { jpegBytes } from './m7-common.js';
 
@@ -32,6 +32,11 @@ describe('M13 · адаптер Codex (stg-codex) против поддельн�
   const seqOf = (u: Update): Promise<number> =>
     waitUntil(() => q1<{ seq: number }>(s.home, 'SELECT seq FROM events WHERE update_id = ?', u.update_id)?.seq, 5000, 'приёма');
   const say = async (text: string): Promise<number> => seqOf(s.fake.push(s.fake.builder.text(OWNER, text))[0]!);
+  /** То же, с обновлением: реакция на сообщении. */
+  const sayU = async (text: string): Promise<{ u: Update; seq: number }> => {
+    const u = s.fake.push(s.fake.builder.text(OWNER, text))[0]!;
+    return { u, seq: await seqOf(u) };
+  };
   const feeds: string[] = [];
   const startAdapter = (): CodexAdapter => {
     if (adapter) feeds.push(adapter.feed);
@@ -142,8 +147,8 @@ describe('M13 · адаптер Codex (stg-codex) против поддельн�
     await adapter.waitFeed((l) => l.includes(`ввод добавлен в идущий ход: № ${b}`), 5000, 'строки «ввод добавлен»');
   });
 
-  it('промежуточный ответ, а ход идёт (#55): «печатает…» держится до turn/completed, дольше 2 минут, в строке 🟡; ход кончился — тишина и 🟢', async () => {
-    const seq = await say('промежуточно: что у нас записано?');
+  it('промежуточный ответ, а ход идёт (#55): «печатает…» и 👀 держатся до turn/completed, дольше 2 минут, в строке 🟡; ход кончился — тишина, 🟢, 👀 снят', async () => {
+    const { u, seq } = await sayU('промежуточно: что у нас записано?');
     await waitReply(`смотрю, № ${seq}`);
     await waitUntil(() => working(true, seq)[0], 5000, 'working от адаптера');
     assert.equal(statusOf(seq), 'processed', 'промежуточный ответ — обработано');
@@ -151,10 +156,14 @@ describe('M13 · адаптер Codex (stg-codex) против поддельн�
     const during = await typedDuring(40);
     assert.ok(during >= 35, `typing за 160 с хода: ${during}`);
     await waitStatus((t) => /\n🟡($| · )/u.test(t), '🟡 — ход идёт');
+    // #52 × #55: промежуточный ответ ушёл, а 👀 на сообщении — агент над ним ещё работает.
+    assert.equal(reactionOf(s.fake, u), '👀', '👀 держится, пока ход идёт');
+    assert.ok(readJournal(s.home).some((l) => l.ev === 'out' && (l.event_seqs as number[] | undefined)?.includes(seq) && l.receipt_held === true), 'out — receipt_held');
     const offBefore = working(false).length;
     fs.writeFileSync(path.join(fakeDir, `go-${seq}`), '1');
     await waitReply(`ответ на № ${seq}`);
     await waitUntil(() => working(false).length > offBefore || null, 5000, 'working off по turn/completed');
+    await pump(gw, () => receiptCleared(s.fake, u) || null, { what: '👀 снят по turn/completed' });
     assert.equal(await typedDuring(5), 0, 'ход кончился — тишина');
     await waitStatus((t) => /\n🟢($| · )/u.test(t), '🟢 — ход кончился');
   });
@@ -180,11 +189,12 @@ describe('M13 · адаптер Codex (stg-codex) против поддельн�
     await pump(gw, () => s.fake.sentTo(OWNER.id).some((m) => m.text === `ответ на № ${seq}`) || null, { step: '30s', timeoutMs: 30_000, what: 'ответа на повтор шлюза' });
   });
 
-  it('«стоп» во время хода после промежуточного ответа (#55): «печатает…» снят сразу и не возвращается; адаптер — working off', async () => {
-    const seq = await say('промежуточно и не спеши');
+  it('«стоп» во время хода после промежуточного ответа (#55): «печатает…» и 👀 сняты сразу и не возвращаются; адаптер — working off', async () => {
+    const { u, seq } = await sayU('промежуточно и не спеши');
     await waitReply(`смотрю, № ${seq}`);
     await waitUntil(() => working(true, seq)[0], 5000, 'working от адаптера');
     assert.ok((await typedDuring(3)) >= 2);
+    assert.equal(reactionOf(s.fake, u), '👀');
     const offBefore = working(false).length;
     const interruptedBefore = readFakeCodexLog(fakeDir).filter((l) => l.dir === 'turn-completed' && l.status === 'interrupted').length;
     // Строка «остановлен» прежнего теста — уже нажата: ждать новую.
@@ -194,9 +204,11 @@ describe('M13 · адаптер Codex (stg-codex) против поддельн�
     await waitUntil(() => working(false).length > offBefore || null, 5000, 'working off от адаптера');
     await waitUntil(() => readFakeCodexLog(fakeDir).filter((l) => l.dir === 'turn-completed' && l.status === 'interrupted').length > interruptedBefore || null, 5000, 'хода interrupted');
     assert.equal(await typedDuring(5), 0, '«стоп» — тишина');
+    await pump(gw, () => receiptCleared(s.fake, u) || null, { what: '👀 снят «стопом»' });
     assert.equal(await press(s, stopLine, 'продолжить'), null);
     await sleep(300);
     assert.equal(await typedDuring(3), 0, 'хода нет — и после «продолжить» тишина');
+    assert.ok(receiptCleared(s.fake, u), '👀 не вернулся');
   });
 
   it('ход без ответа → одно напоминание тем же тредом → ответ доходит', async () => {

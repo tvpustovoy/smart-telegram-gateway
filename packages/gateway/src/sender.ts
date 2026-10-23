@@ -38,7 +38,9 @@
 // - Квитанция своё сделала (0.3.6, issue #52; ui.clear_receipts): ответ агента на событие ушёл в Telegram целиком (все
 //   части; и когда «стоп» пришёл, пока последняя была в пути) — в той же записи, что отметка, реакция на сообщении
 //   события снимается (requestAnswered); строка ответа брошена (Telegram не принял, копии посылки нет) — 👌 вместо 👀
-//   (requestAnswerLost; «стоп» — то же, control.ts).
+//   (requestAnswerLost; «стоп» — то же, control.ts). Событие в идущем ходе агента (working, #55; bindReceiptHold) — не
+//   снимается: ответ мог быть промежуточным, 👀 держится до конца хода (снимает adapter.ts, releaseReceipts); журнал
+//   out — receipt_held.
 // - Закреплённая строка состояния (statusline.ts) — правка на месте не чаще раза в 3 с; нет сообщения — новое и
 //   закрепить; служебное сообщение о закреплении — удалить. Его номер Telegram боту не сообщает: это первый номер после
 //   закреплённого, которого нет ни у сообщений владельца, ни у сообщений бота. Владелец мог написать между отправкой
@@ -361,6 +363,8 @@ export class Sender {
   private reception: ReceptionView | null = null;
   /** Документ посылки в пути (0.3.3): строка outbox и свой сигнал отмены — «стоп» прерывает загрузку. */
   private upload: { outboxId: number; ctl: AbortController } | null = null;
+  /** Событие в идущем ходе агента (working, #55; typing.holds): ответ на него реакцию не снимает — снимет конец хода. */
+  private receiptHold: ((seq: number) => boolean) | null = null;
 
   constructor(
     private readonly ctx: Ctx,
@@ -374,6 +378,11 @@ export class Sender {
 
   bindReception(r: ReceptionView): void {
     this.reception = r;
+  }
+
+  /** Какие события держит идущий ход агента (#55 × #52): ответ на них 👀 не снимает. */
+  bindReceiptHold(holds: (seq: number) => boolean): void {
+    this.receiptHold = holds;
   }
 
   /** Есть что отправить — запустить обе полосы (повторные вызовы сливаются). */
@@ -865,6 +874,7 @@ export class Sender {
     const now = ctx.clock.now();
     let afterStop = false;
     let receiptsCleared = 0;
+    let receiptsHeld = 0;
     this.record(group, () => {
       // Только из pending: «стоп», пришедший, пока последняя часть была в пути, оставляет строку dropped — решение владельца
       // в базе не перетирается; что часть всё же ушла, видно в журнале (sent_after_stop) и в messages_out.
@@ -881,9 +891,14 @@ export class Sender {
         }
       }
       // Ответ агента на событие ушёл целиком (0.3.6, #52) — реакция на сообщении события своё сделала: снять. Строка,
-      // брошенная «стопом», пока последняя часть была в пути, — тоже: ответ в чате.
+      // брошенная «стопом», пока последняя часть была в пути, — тоже: ответ в чате. Событие идущего хода агента (#55) —
+      // нет: ответ мог быть промежуточным; 👀 снимет конец хода.
       if (isAgent && clearReceipts(ctx)) {
-        receiptsCleared = requestAnswered(ctx, group.map((g) => g.event_seq).filter((x): x is number => x !== null));
+        const seqs = group.map((g) => g.event_seq).filter((x): x is number => x !== null);
+        const hold = this.receiptHold;
+        const held = hold ? seqs.filter((x) => hold(x)) : [];
+        receiptsHeld = held.length;
+        receiptsCleared = requestAnswered(ctx, held.length ? seqs.filter((x) => !held.includes(x)) : seqs);
       }
     });
     this.synth?.forget(r0.id);
@@ -903,6 +918,7 @@ export class Sender {
       ...(parcel ? { delivery: parcel.id, parcel: parcel.parcel, file: parcel.file, method: parts[0]!.method } : {}),
       ...(r0.quote && !isAgent ? { quote: true } : {}),
       ...(receiptsCleared ? { receipt_cleared: true } : {}),
+      ...(receiptsHeld ? { receipt_held: true } : {}),
     });
     if (isAgent) this.hooks.onAgentSent?.(r0);
   }

@@ -9,13 +9,18 @@
 // - обрыв переходника посреди хода — снято сразу (аренда снята);
 // - чужие № (не сообщение, нет такого) пропускаются; без проверки аренды — unverified.
 // Переходник без working (канал Claude Code) — «печатает…» как раньше: m3-lease.
+// 👀 держится весь ход (#52 × #55; живая проверка: «Нарисую…» снял 👀, а агент ещё 2 минуты рисовал — в чате не было знака,
+// что он работает над сообщением): ответ на событие хода 👀 не снимает (журнал out — receipt_held); снимает конец хода —
+// working off, другой набор (отпущенное событие), «стоп», обрыв переходника, срок хода — журнал receipts_released; done в
+// ходе — 👌 сразу, конец хода его не снимает; без working — как раньше (ответ снимает 👀, как ушёл); перезапуск шлюза
+// посреди хода — 👀 снят при старте (журнал start.receipts_released).
 
 import assert from 'node:assert/strict';
 import { after, before, describe, it } from 'node:test';
 import { STOPPED_TEXT, type GatewayMessage, type Update } from 'stg-core';
 import type { FakeChannel } from 'stg-fake-channel';
 import { connectAdapter, pump, q1, readJournal, sleep, waitUntil, type GatewayProcess } from './harness.js';
-import { OWNER, setup, statusLineOf, type Setup } from './m1-common.js';
+import { OWNER, reactionOf, receiptCleared, setup, statusLineOf, type Setup } from './m1-common.js';
 import { press, waitSent } from './m2-common.js';
 
 describe('M13 · ход агента идёт (working): «печатает…» на весь ход', () => {
@@ -23,7 +28,22 @@ describe('M13 · ход агента идёт (working): «печатает…»
   let gw: GatewayProcess;
   const seqOf = (u: Update): Promise<number> =>
     waitUntil(() => q1<{ seq: number }>(s.home, 'SELECT seq FROM events WHERE update_id = ?', u.update_id)?.seq, 5000, 'приёма');
-  const say = (text: string): Promise<number> => seqOf(s.fake.push(s.fake.builder.text(OWNER, text))[0]!);
+  /** Сообщение владельца отдано агенту (delivered) — 👀 встал. */
+  const seen = async (ch: FakeChannel, text: string): Promise<{ u: Update; seq: number }> => {
+    const u = s.fake.push(s.fake.builder.text(OWNER, text))[0]!;
+    const seq = await seqOf(u);
+    await ch.waitEvent(seq);
+    await ch.delivered(seq);
+    await pump(gw, () => reactionOf(s.fake, u) === '👀' || null, { what: `👀 на № ${seq}` });
+    return { u, seq };
+  };
+  /** Ответ на событие ушёл в Telegram, а 👀 держит ход: журнал out — receipt_held. */
+  const heldAfterSent = async (seq: number, text: string): Promise<void> => {
+    await waitSent(s, gw, (m) => m.text === text, `ответа «${text}»`);
+    await waitUntil(() => readJournal(s.home).find((l) => l.ev === 'out' && (l.event_seqs as number[] | undefined)?.includes(seq) && l.receipt_held === true), 5000, 'out с receipt_held');
+  };
+  const waitCleared = (u: Update, what: string): Promise<true> => pump(gw, () => receiptCleared(s.fake, u) || null, { what });
+  const released = (seq: number): boolean => readJournal(s.home).some((l) => l.ev === 'receipts_released' && (l.seqs as number[] | undefined)?.includes(seq));
   const typing = (): number => s.fake.chatActions.filter((a) => a.chat_id === OWNER.id && a.action === 'typing').length;
   /** Сдвинуть часы шлюза шагами (с паузой настоящего времени: pong и «печатает…» успевают дойти); сколько typing за это время. */
   const typedDuring = async (steps: number, step: string): Promise<number> => {
@@ -63,22 +83,24 @@ describe('M13 · ход агента идёт (working): «печатает…»
     await s.close();
   });
 
-  it('промежуточный ответ, а ход идёт: «печатает…» дальше и дольше 2 минут, в строке 🟡; working off — тишина и 🟢', async () => {
+  it('промежуточный ответ, а ход идёт: «печатает…» дальше и дольше 2 минут, в строке 🟡, 👀 держится (#52); working off — тишина, 🟢, 👀 снят', async () => {
     const { ch, turn } = await connectAdapter(s.home);
     try {
-      const a = await say('что у нас записано про отпуск?');
-      await ch.waitEvent(a);
-      await ch.delivered(a);
+      const { u, seq: a } = await seen(ch, 'что у нас записано про отпуск?');
       assert.deepEqual(ackOf(await ch.working(true, [a])), { chats: 1, seqs: [a] });
       assert.equal((await ch.reply(a, 'Посмотрю записи и дам пример', turn)).type, 'ack');
-      await waitSent(s, gw, (m) => m.text === 'Посмотрю записи и дам пример', 'промежуточного ответа');
+      await heldAfterSent(a, 'Посмотрю записи и дам пример');
       // Ответ снял событие, а ход — нет: 160 с (больше 2 минут на событие) — «печатает…» каждые 4 с.
       const sent = await typedDuring(40, '4s');
       assert.ok(sent >= 35, `typing за 160 с хода: ${sent}`);
       await waitStatus((t) => /\n🟡($| · )/u.test(t), '🟡 — ход идёт');
       assert.ok(workingLines().some((l) => l.on === true && JSON.stringify(l.seqs) === JSON.stringify([a]) && l.chats === 1), 'working в журнале');
+      assert.equal(reactionOf(s.fake, u), '👀', 'ответ промежуточный — 👀 держится весь ход');
+      assert.ok(!receiptCleared(s.fake, u));
       // Ход кончился.
       assert.deepEqual(ackOf(await ch.working(false)), { chats: 0, seqs: [] });
+      await waitCleared(u, '👀 снят по концу хода');
+      assert.ok(released(a), 'receipts_released в журнале');
       assert.equal(await typedDuring(5, '4s'), 0, 'после конца хода — тишина');
       await waitStatus((t) => /\n🟢($| · )/u.test(t), '🟢 — ход кончился');
       assert.ok(workingLines().some((l) => l.on === false));
@@ -87,22 +109,69 @@ describe('M13 · ход агента идёт (working): «печатает…»
     }
   });
 
-  it('переходник замолчал: без нового working 15 минут — «печатает…» снят сам (working_expired); повтор working продлевает срок', async () => {
+  it('набор хода сменился: отпущенное событие — 👀 снят, остальное держится до конца хода (#52)', async () => {
     const { ch, turn } = await connectAdapter(s.home);
     try {
-      const b = await say('собери пример');
-      await ch.waitEvent(b);
-      await ch.delivered(b);
+      const first = await seen(ch, 'нарисуй кота');
+      const second = await seen(ch, 'и собаку');
+      ackOf(await ch.working(true, [first.seq, second.seq]));
+      await ch.reply(first.seq, 'Рисую кота', turn);
+      await ch.reply(second.seq, 'Собаку тоже', turn);
+      await heldAfterSent(first.seq, 'Рисую кота');
+      await heldAfterSent(second.seq, 'Собаку тоже');
+      assert.equal(reactionOf(s.fake, first.u), '👀');
+      assert.equal(reactionOf(s.fake, second.u), '👀');
+      assert.deepEqual(ackOf(await ch.working(true, [second.seq])), { chats: 1, seqs: [second.seq] });
+      await waitCleared(first.u, '👀 отпущенного события снят');
+      await typedDuring(3, '4s');
+      assert.equal(reactionOf(s.fake, second.u), '👀', 'событие хода — 👀 держится');
+      ackOf(await ch.working(false));
+      await waitCleared(second.u, '👀 снят по концу хода');
+    } finally {
+      await closeLease(ch);
+    }
+  });
+
+  it('done в ходе — 👌 сразу, конец хода его не снимает; без working (канал Claude Code) ответ снимает 👀, как ушёл — как раньше', async () => {
+    const { ch, turn } = await connectAdapter(s.home);
+    try {
+      const d = await seen(ch, 'это просто к сведению');
+      ackOf(await ch.working(true, [d.seq]));
+      assert.equal((await ch.done([d.seq])).type, 'ack');
+      await pump(gw, () => reactionOf(s.fake, d.u) === '👌' || null, { what: '👌 на done в ходе' });
+      ackOf(await ch.working(false));
+      await typedDuring(3, '4s');
+      assert.equal(reactionOf(s.fake, d.u), '👌', 'конец хода 👌 не снимает');
+      assert.ok(!released(d.seq));
+      // Без хода — #52 как был: ответ ушёл — 👀 снят в той же записи.
+      const e = await seen(ch, 'а это вопрос');
+      await ch.reply(e.seq, 'Ответ сразу', turn);
+      await waitCleared(e.u, '👀 снят ответом');
+      const out = readJournal(s.home).find((l) => l.ev === 'out' && (l.event_seqs as number[] | undefined)?.includes(e.seq));
+      assert.ok(out && out.receipt_cleared === true && out.receipt_held === undefined, JSON.stringify(out));
+      assert.ok(!released(e.seq));
+    } finally {
+      await closeLease(ch);
+    }
+  });
+
+  it('переходник замолчал: без нового working 15 минут — «печатает…» и 👀 сняты сами (working_expired); повтор working продлевает срок', async () => {
+    const { ch, turn } = await connectAdapter(s.home);
+    try {
+      const { u, seq: b } = await seen(ch, 'собери пример');
       ackOf(await ch.working(true, [b]));
       await ch.reply(b, 'Собираю', turn);
+      await heldAfterSent(b, 'Собираю');
       await typedDuring(10, '60s');
       // 10 минут: повтор — срок снова 15 минут от него.
       assert.deepEqual(ackOf(await ch.working(true, [b])), { chats: 1, seqs: [b] });
       await typedDuring(9, '60s');
       assert.ok((await typedDuring(1, '60s')) >= 10, 'на 20-й минуте (5 минут сверх первого срока) — ещё «печатает…»');
       assert.ok(!readJournal(s.home).some((l) => l.ev === 'working_expired'));
+      assert.equal(reactionOf(s.fake, u), '👀', 'ход идёт — 👀 держится');
       await typedDuring(6, '60s');
       await waitUntil(() => readJournal(s.home).find((l) => l.ev === 'working_expired' && l.chat_id === OWNER.id), 5000, 'working_expired');
+      await waitCleared(u, '👀 снят по сроку хода');
       assert.equal(await typedDuring(5, '4s'), 0, 'срок вышел — тишина');
       await waitStatus((t) => /\n🟢($| · )/u.test(t), '🟢 — срок вышел');
       assert.equal(ch.isClosed, false, 'аренда жива: снял предел, а не обрыв');
@@ -111,18 +180,19 @@ describe('M13 · ход агента идёт (working): «печатает…»
     }
   });
 
-  it('«стоп» снимает сразу; working в «стопе» не действует; после «продолжить» — снова', async () => {
+  it('«стоп» снимает сразу — и «печатает…», и 👀 после промежуточного ответа; working в «стопе» не действует; после «продолжить» — снова', async () => {
     const { ch, turn } = await connectAdapter(s.home);
     try {
-      const c = await say('проверь календарь');
-      await ch.waitEvent(c);
-      await ch.delivered(c);
+      const { u, seq: c } = await seen(ch, 'проверь календарь');
       ackOf(await ch.working(true, [c]));
       await ch.reply(c, 'Смотрю календарь', turn);
+      await heldAfterSent(c, 'Смотрю календарь');
       assert.ok((await typedDuring(3, '4s')) >= 2);
+      assert.equal(reactionOf(s.fake, u), '👀');
       s.fake.push(s.fake.builder.text(OWNER, 'стоп'));
       const stopLine = await waitSent(s, gw, (m) => m.text === STOPPED_TEXT, 'строки «остановлен»');
       await ch.waitMode('stopped');
+      await waitCleared(u, '👀 снят «стопом»');
       assert.equal(await typedDuring(5, '4s'), 0, '«стоп» — тишина');
       assert.deepEqual(ackOf(await ch.working(true, [c])), { chats: 0, seqs: [] }, 'в «стопе» working не действует');
       assert.equal(await typedDuring(3, '4s'), 0);
@@ -137,16 +207,17 @@ describe('M13 · ход агента идёт (working): «печатает…»
     }
   });
 
-  it('обрыв переходника посреди хода — «печатает…» снят сразу (аренда снята)', async () => {
+  it('обрыв переходника посреди хода — «печатает…» и 👀 сняты сразу (аренда снята)', async () => {
     const { ch, turn } = await connectAdapter(s.home);
-    const d = await say('и ещё одно');
-    await ch.waitEvent(d);
-    await ch.delivered(d);
+    const { u, seq: d } = await seen(ch, 'и ещё одно');
     ackOf(await ch.working(true, [d]));
     await ch.reply(d, 'Сейчас', turn);
+    await heldAfterSent(d, 'Сейчас');
     assert.ok((await typedDuring(3, '4s')) >= 2);
+    assert.equal(reactionOf(s.fake, u), '👀');
     await closeLease(ch, 'destroy');
     assert.equal(await typedDuring(5, '4s'), 0, 'обрыв — тишина');
+    await waitCleared(u, '👀 снят обрывом');
   });
 
   it('чужие № — не сообщение (проба), нет такого — пропускаются; без проверки аренды — unverified', async () => {
@@ -165,5 +236,19 @@ describe('M13 · ход агента идёт (working): «печатает…»
     } finally {
       await closeLease(raw);
     }
+  });
+
+  it('перезапуск шлюза посреди хода: 👀, который держал ход, снят при старте (ход был в памяти прежнего процесса)', async () => {
+    const { ch, turn } = await connectAdapter(s.home);
+    const { u, seq: r } = await seen(ch, 'долгая задача');
+    ackOf(await ch.working(true, [r]));
+    await ch.reply(r, 'Начинаю', turn);
+    await heldAfterSent(r, 'Начинаю');
+    assert.equal(reactionOf(s.fake, u), '👀');
+    await gw.stop();
+    ch.destroy();
+    gw = await s.start();
+    await waitCleared(u, '👀 снят при старте');
+    assert.ok(readJournal(s.home).some((l) => l.ev === 'start' && Number(l.receipts_released) >= 1), 'start.receipts_released');
   });
 });
