@@ -13,9 +13,11 @@
     "packages/gateway",
     "packages/channel",
     "packages/cli",
+    "packages/codex",
     "test/fake-telegram",
     "test/fake-channel",
     "test/fake-elevenlabs",
+    "test/fake-codex",
     "test/e2e"
   ],
   "scripts": {

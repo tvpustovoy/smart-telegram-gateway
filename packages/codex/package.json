@@ -1,0 +1,24 @@
+{
+  "license": "Apache-2.0",
+  "name": "stg-codex",
+  "version": "0.1.0",
+  "private": true,
+  "description": "stg-codex: the Codex adapter — keeps the gateway lease and drives `codex app-server` (one thread per conversation, the agent's tools as dynamic tools)",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "bin": {
+    "stg-codex": "dist/index.js"
+  },
+  "dependencies": {
+    "stg-core": "0.1.0",
+    "stg-channel": "0.1.0"
+  }
+}

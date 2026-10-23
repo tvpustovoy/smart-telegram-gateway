@@ -5,9 +5,11 @@
     { "path": "packages/gateway" },
     { "path": "packages/channel" },
     { "path": "packages/cli" },
+    { "path": "packages/codex" },
     { "path": "test/fake-telegram" },
     { "path": "test/fake-channel" },
     { "path": "test/fake-elevenlabs" },
+    { "path": "test/fake-codex" },
     { "path": "test/e2e" }
   ]
 }
