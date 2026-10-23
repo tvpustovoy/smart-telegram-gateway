@@ -1,9 +1,14 @@
 # smart-telegram-gateway
 
-A smart and reliable gateway between Telegram and an AI agent that runs as a Claude Code session: nothing gets lost,
-and your agent doesn't spend its turns on chores the gateway can do itself.
+A smart and reliable gateway between Telegram and an AI agent that runs as a Claude Code session or on Codex: nothing
+gets lost, and your agent doesn't spend its turns on chores the gateway can do itself.
 
 [Русская версия](README.ru.md) · [Changelog](CHANGELOG.md) · [Issues][issues]
+
+**Quick start:** give this link to your Codex (or Claude Code) and ask: *"Install
+https://github.com/tvpustovoy/smart-telegram-gateway for yourself — follow INSTALL.md"*. The agent does the setup; you
+create the bot with @BotFather, type its token into the Keychain and write to the bot. Step by step:
+[INSTALL.md](INSTALL.md).
 
 ## What it is and why
 
@@ -81,8 +86,11 @@ Details are in [CHANGELOG.md](CHANGELOG.md).
 ```sh
 git clone <this repository> smart-telegram-gateway
 cd smart-telegram-gateway
-scripts/install-macos.sh <bot_username> [--node <path>] [--agent-dir <folder>] [--timezone <IANA zone>]
+scripts/install-macos.sh <bot_username> [--harness claude|codex] [--node <path>] [--agent-dir <folder>] [--timezone <IANA zone>]
 ```
+
+`--harness codex --agent-dir <folder>` installs the gateway for an existing Codex agent and leaves its folder as it is
+(see [Codex](#codex--connect-an-existing-agent)); the default is a Claude Code agent with a fresh agent folder.
 
 `scripts/install-macos.sh --help` shows the defaults. The script:
 
@@ -140,8 +148,9 @@ of Claude Code. The adapter `stg-codex` takes the gateway's lease the way the Cl
 `codex app-server` itself: every owner message becomes a turn in one Codex thread, and the agent answers with the same
 tools (`reply`, `done`, `send_file`, …), given to Codex as dynamic tools.
 
-You need the gateway installed and running (see [Install](#install)), the Codex CLI (checked with 0.163,
-`npm install -g @openai/codex`) signed in with ChatGPT, and the agent's folder. Then:
+You need the gateway installed and running (`scripts/install-macos.sh <bot> --harness codex --agent-dir <folder>`,
+see [INSTALL.md](INSTALL.md)), the Codex CLI (checked with 0.163, `npm install -g @openai/codex`) signed in with
+ChatGPT, and the agent's folder. Then:
 
 ```sh
 scripts/codex-agent-start.sh --agent-dir ~/Agents/my-codex-agent [--stg-home ~/.smart-telegram-gateway/<bot>]
@@ -178,7 +187,7 @@ other way round.
 - Usage counts against your ChatGPT plan, shared with your own Codex work. The agent's thread is visible in your Codex
   history; do not open it there while the adapter runs (a thread has one writer).
 
-Not there yet: a LaunchAgent service for the adapter, a separate Codex login for the agent, `stg doctor` checks, the 🧠
+Not there yet: a LaunchAgent service for the adapter (it runs in a visible window on purpose), a separate Codex login for the agent, `stg doctor` checks, the 🧠
 and 🕐 icons in the pinned line. A check against the real Codex — a test gateway with a fake Telegram and one owner
 message: `node test/e2e/dist/drill-codex.js <run dir>`.
 

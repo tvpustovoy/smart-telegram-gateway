@@ -13,6 +13,11 @@ The chat interface and the design documents are in Russian; the entries below de
 
 ### Added
 
+- Install with your agent: `INSTALL.md` is written for Codex or Claude Code — the owner gives the agent the repository
+  link, the agent installs the gateway for itself and asks the owner only for the bot, the token (typed into the
+  Keychain by the owner) and the first message. `scripts/install-macos.sh --harness codex --agent-dir <folder>` installs
+  the gateway for an existing Codex agent without touching its folder and prints how to start `stg-codex` in a visible
+  window.
 - Codex adapter, a prototype (#55): `stg-codex` (`packages/codex`) connects an existing Codex agent to the gateway.
   It takes the gateway's lease with the same client as the Claude Code channel and keeps a child `codex app-server`
   (JSON-RPC over stdio) with one thread for the conversation. Every waiting event goes to Codex as one `turn/start`

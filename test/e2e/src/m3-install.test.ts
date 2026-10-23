@@ -248,6 +248,13 @@ describe('M3 · скрипты установки — разбор без зап
     assert.match(install, /agent-folder "\$AGENT_DIR"/);
     assert.match(install, /LABEL="local\.smart-telegram-gateway\.\$BOT"/);
     assert.equal(LABEL, `local.smart-telegram-gateway.${BOT}`);
+    // --harness codex (#55, INSTALL.md): папка агента Codex не трогается — без agent-folder; дальше — окно stg-codex.
+    const codex = install.slice(install.indexOf('if [ "$HARNESS" = "codex" ]; then'), install.indexOf('echo "5/6 папка агента: $AGENT_DIR"'));
+    assert.ok(codex.length > 0, 'есть ветка --harness codex');
+    assert.ok(!/agent-folder/.test(codex), 'codex: папку агента не разворачивает');
+    assert.match(codex, /scripts\/codex-agent-start\.sh --agent-dir "\$AGENT_DIR" --stg-home "\$STG_HOME"/);
+    assert.match(codex, /exit 0/);
+    assert.match(install, /codex\) *\n *\[ -n "\$AGENT_DIR" \] \|\| die/);
     const uninstall = fs.readFileSync(path.join(ROOT, 'scripts', 'uninstall-macos.sh'), 'utf8');
     assert.match(uninstall, /launchctl bootout "gui\/\$UID_NUM\/\$LABEL"/);
     assert.ok(!/rm -rf "\$HOME\/\.smart-telegram-gateway/.test(uninstall), 'каталог состояния не удаляется');
