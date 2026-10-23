@@ -14,7 +14,7 @@ import { codexCommand, versionFromUserAgent } from './codex-bin.js';
 import { codexEnvOf, parcelsLayout } from './index.js';
 import { errorKind, eventText } from './runner.js';
 import { emptyState, loadState, saveState } from './state.js';
-import { answeredBy, dynamicTools, toToolResponse } from './tools-bridge.js';
+import { answeredBy, dynamicTools, toToolResponse, toolsHashOf } from './tools-bridge.js';
 
 const dirs: string[] = [];
 function tmp(): string {
@@ -138,6 +138,18 @@ describe('stg-codex · state.json', () => {
     assert.equal(back.state.threadId, 'th-1');
     assert.deepEqual(back.state.pending, [5, 7]);
     assert.ok(back.state.updatedAt);
+    assert.equal(back.state.toolsHash, null);
+    saveState(f, { ...st, toolsHash: 'abcdef0123456789', previousThreadId: 'th-0' });
+    assert.deepEqual([loadState(f).state.toolsHash, loadState(f).state.previousThreadId], ['abcdef0123456789', 'th-0']);
+  });
+
+  it('файл до хеша инструментов (без toolsHash) читается: хеш null — тред заведён прежними инструментами', () => {
+    const d = tmp();
+    const f = path.join(d, 'state.json');
+    fs.writeFileSync(f, JSON.stringify({ version: 1, threadId: 'th-old', agentDir: '/a', instructionsVersion: 'v', codexVersion: '0.163.0', pending: [], problem: null }));
+    const r = loadState(f);
+    assert.equal(r.warning, null);
+    assert.deepEqual([r.state.threadId, r.state.toolsHash, r.state.previousThreadId], ['th-old', null, null]);
   });
 
   it('испорченный файл — пустое состояние, предупреждение, прежний — state.json.bad', () => {
@@ -163,6 +175,18 @@ describe('stg-codex · инструменты ↔ Codex', () => {
       assert.ok(t.description.length > 20);
       assert.ok(!t.description.includes('проверочн'), t.name);
     }
+  });
+
+  it('хеш схемы инструментов: 16 знаков hex, тот же на те же инструменты; другое описание или схема — другой', () => {
+    const tools = dynamicTools();
+    const h = toolsHashOf(tools);
+    assert.match(h, /^[0-9a-f]{16}$/);
+    assert.equal(toolsHashOf(dynamicTools()), h);
+    const send = tools.find((t) => t.name === 'send_file')!;
+    assert.ok(JSON.stringify(send.inputSchema).includes('"as"'), 'send_file с as (#60) — в схеме');
+    const without = tools.map((t) => (t.name === 'send_file' ? { ...t, inputSchema: { ...t.inputSchema, properties: {} } } : t));
+    assert.notEqual(toolsHashOf(without), h);
+    assert.notEqual(toolsHashOf(tools.map((t) => (t.name === 'reply' ? { ...t, description: `${t.description}.` } : t))), h);
   });
 
   it('исход → contentItems: текст — inputText, картинка — inputImage с data URL, ошибка — success: false', () => {

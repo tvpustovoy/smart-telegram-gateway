@@ -4,12 +4,21 @@
 // Отсюда же адаптер узнаёт, на какие № есть ответ агента: reply, done, send_file с seq; episode_summary закрывает событие
 // «эп. N закрыт» своего эпизода.
 
+import crypto from 'node:crypto';
 import { toolsFor, type ToolOutcome } from 'stg-channel';
 import type { DynamicContentItem, DynamicToolSpec, ToolCallResponse } from './protocol.js';
 
 /** Наши инструменты в форме DynamicToolFunctionSpec. */
 export function dynamicTools(): DynamicToolSpec[] {
   return toolsFor('codex').map((t) => ({ type: 'function', name: t.name, description: t.description, inputSchema: t.inputSchema }));
+}
+
+/**
+ * Хеш схемы инструментов (имена, описания, схемы входа) — начало SHA-256 их JSON. Тред Codex получает инструменты только
+ * в thread/start (thread/resume их не принимает): хеш в state.json другой — тред заведён прежними инструментами.
+ */
+export function toolsHashOf(tools: readonly DynamicToolSpec[]): string {
+  return crypto.createHash('sha256').update(JSON.stringify(tools)).digest('hex').slice(0, 16);
 }
 
 /** Исход callTool → ответ на item/tool/call. */

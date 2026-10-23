@@ -161,7 +161,10 @@ other way round.
   the agent says so in Telegram. The model's own web search follows your Codex settings.
 - **Parcels** stay outside the agent's folder: `parcels.dir` from `config.yaml`, otherwise `<bot dir>/parcels`.
 - **One thread** for the conversation; its id is kept in `<bot dir>/codex/state.json`, so a restart continues the same
-  thread. The technical log is `<bot dir>/codex/adapter.log`.
+  thread. Codex takes the agent's tools only when a thread starts, so when the gateway's tools change (a new version
+  with a new tool, field or description), the adapter starts a new thread instead and says so in the feed; the old
+  thread's id stays in `state.json` (`previousThreadId`) and in your Codex history. The technical log is
+  `<bot dir>/codex/adapter.log`.
 - **"typing…" and 👀 for the whole turn.** While a Codex turn runs, the chat shows "typing…" and the pinned line shows
   🟡 — also after an interim answer ("Let me look at what we have, and I'll give an example"), which used to clear it and
   leave 🟢 while the agent kept working. 👀 stays on your message for the whole turn too: an interim answer no longer

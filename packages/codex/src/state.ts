@@ -1,5 +1,6 @@
-// Состояние адаптера (#55): id треда Codex, для какой папки агента он заведён, версия правил канала, номера событий,
-// отданных в Codex и ещё без ответа. Лежит в каталоге бота ($STG_HOME/codex/state.json), не в папке агента: папка агента —
+// Состояние адаптера (#55): id треда Codex, для какой папки агента он заведён, версия правил канала, хеш схемы
+// инструментов, с которыми тред заведён, прежний тред (если его сменили), номера событий, отданных в Codex и ещё без
+// ответа. Лежит в каталоге бота ($STG_HOME/codex/state.json), не в папке агента: папка агента —
 // чужой репозиторий, адаптер туда не пишет. Запись — через временный файл и переименование: обрыв посреди записи не
 // портит прежний файл. Испорченный файл не роняет адаптер: начинаем с чистого состояния (новый тред), прежний файл
 // остаётся рядом с суффиксом .bad.
@@ -17,6 +18,13 @@ export interface AdapterState {
   instructionsVersion: string | null;
   /** Версия Codex из initialize. */
   codexVersion: string | null;
+  /**
+   * Хеш схемы инструментов шлюза (dynamicTools), с которыми заведён тред: thread/resume инструментов не принимает —
+   * другой хеш при старте значит новый тред. null — файл до хеша (тред заведён прежними инструментами).
+   */
+  toolsHash: string | null;
+  /** Тред, который сменили на новый (инструменты изменились, тред пропал, другая папка агента); null — не сменяли. */
+  previousThreadId: string | null;
   /** Номера событий, отданных в Codex и ещё без ответа агента. */
   pending: number[];
   /** Почему аренды нет (нет входа в ChatGPT и т. п.); null — всё в порядке. */
@@ -25,7 +33,18 @@ export interface AdapterState {
 }
 
 export function emptyState(): AdapterState {
-  return { version: 1, threadId: null, agentDir: null, instructionsVersion: null, codexVersion: null, pending: [], problem: null, updatedAt: null };
+  return {
+    version: 1,
+    threadId: null,
+    agentDir: null,
+    instructionsVersion: null,
+    codexVersion: null,
+    toolsHash: null,
+    previousThreadId: null,
+    pending: [],
+    problem: null,
+    updatedAt: null,
+  };
 }
 
 export interface LoadedState {
@@ -57,6 +76,8 @@ export function loadState(file: string): LoadedState {
         agentDir: str(raw.agentDir),
         instructionsVersion: str(raw.instructionsVersion),
         codexVersion: str(raw.codexVersion),
+        toolsHash: str(raw.toolsHash),
+        previousThreadId: str(raw.previousThreadId),
         pending,
         problem: str(raw.problem),
         updatedAt: str(raw.updatedAt),

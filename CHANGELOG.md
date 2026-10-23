@@ -47,31 +47,38 @@ The chat interface and the design documents are in Russian; the entries below de
   "stop" `working` has no effect), when the lease is lost (an adapter that drops off — at once), or after 15 minutes
   without a new `working` (the adapter went silent or the turn hung; journal `working_expired`). The Codex adapter sends
   it when Codex accepts `turn/start` (a new turn or input added to the running one — at once), repeats it on signs of
-  life from Codex (thread notifications, tool calls) at most every 30 s, and sends `on: false` on `turn/completed` and on
-  "stop". Only a verified lease; only messages already handed to the agent (this lease or an earlier one); others are
+  life from Codex (thread notifications, tool calls) at most every 30 s, and sends `on: false` on `turn/completed` and
+  on "stop". Only a verified lease; only messages already handed to the agent (this lease or an earlier one); others are
   skipped. It is not a tool call, so it does not postpone redelivery. The Claude Code channel does not send it, and its
   "typing…" is unchanged. A gateway without `working` answers `bad_request`, and the adapter stops sending it.
 - 👀 stays on the owner's message for the whole Codex turn that handles it (#55 with #52). Found on the live check: asked
-  for a picture, the agent answered at once with an interim "Нарисую…" and drew for about two minutes; the interim
-  reply removed 👀 (#52: the answer is its own sign), so nothing in the chat showed that the agent was still on it. Now
-  an answer (`reply`, `send_file`) to an event that the running turn holds (it is in the last `working {on: true}`)
-  does not remove the reaction — it may be interim; the journal's `out` line says `receipt_held`. The reaction goes
-  when the turn lets the event go — `working {on: false}`, a new set without it, "stop", the lease lost, or the
-  15-minute limit — if an answer to it went out (journal `receipts_released`); an answer still waiting to be sent is
-  handled by the sender as before. `done` inside a turn still puts 👌 at once, and the end of the turn does not remove
-  it. The reaction lane keeps its order (removals last). A gateway restart in the middle of a turn: the turn lives in
-  memory, so at start the gateway removes 👀 from processed events whose answer went out — without a turn such a 👀
-  does not exist (only 👀, within 7 days; 👌 of earlier versions is not touched); journal `start.receipts_released`.
-  The same runs after the disk recovers. The Claude Code channel does not send `working`, so nothing changes there.
+  for a picture, the agent answered at once with an interim "Нарисую…" and drew for about two minutes; the interim reply
+  removed 👀 (#52: the answer is its own sign), so nothing in the chat showed that the agent was still on it. Now an
+  answer (`reply`, `send_file`) to an event that the running turn holds (it is in the last `working {on: true}`) does
+  not remove the reaction — it may be interim; the journal's `out` line says `receipt_held`. The reaction goes when the
+  turn lets the event go — `working {on: false}`, a new set without it, "stop", the lease lost, or the 15-minute limit —
+  if an answer to it went out (journal `receipts_released`); an answer still waiting to be sent is handled by the sender
+  as before. `done` inside a turn still puts 👌 at once, and the end of the turn does not remove it. The reaction lane
+  keeps its order (removals last). A gateway restart in the middle of a turn: the turn lives in memory, so at start the
+  gateway removes 👀 from processed events whose answer went out — without a turn such a 👀 does not exist (only 👀, within
+  7 days; 👌 of earlier versions is not touched); journal `start.receipts_released`. The same runs after the disk
+  recovers. The Claude Code channel does not send `working`, so nothing changes there.
 - What the chat header shows while the turn works (#55). Found on the same live check: the agent drew a picture for two
   minutes under "typing…". `working` takes an optional `action`: `typing` (the default, also without the field),
-  `upload_photo` ("sending a photo…") or `upload_document` ("sending a file…"); the gateway sends `sendChatAction` with it
-  to the chats of the turn, at once when it changes. The Codex adapter sets `upload_photo` while Codex generates an image
-  (the turn item `imageGeneration`, from `item/started` to `item/completed`, or the end of the turn) and goes back to
-  `typing` after it; the feed says "рисует картинку…" and "картинка готова". While a turn runs and the gateway uploads
-  one of the agent's parcels to that chat, the header shows `upload_document` or `upload_photo` (by how it is sent)
-  instead, then the turn's action again. An event without a turn always shows `typing`. A gateway that does not know
-  `action` answers `bad_request` ("нераспознанный ключ"), and the adapter sends `working` without it.
+  `upload_photo` ("sending a photo…") or `upload_document` ("sending a file…"); the gateway sends `sendChatAction` with
+  it to the chats of the turn, at once when it changes. The Codex adapter sets `upload_photo` while Codex generates an
+  image (the turn item `imageGeneration`, from `item/started` to `item/completed`, or the end of the turn) and goes back
+  to `typing` after it; the feed says "рисует картинку…" and "картинка готова". While a turn runs and the gateway
+  uploads one of the agent's parcels to that chat, the header shows `upload_document` or `upload_photo` (by how it is
+  sent) instead, then the turn's action again. An event without a turn always shows `typing`. A gateway that does not
+  know `action` answers `bad_request` ("нераспознанный ключ"), and the adapter sends `working` without it.
+- A new Codex thread when the gateway's tools change (#55). `thread/resume` takes no tools, so a thread keeps the tools
+  it was started with: after #60 the live agent still had `send_file` without `as` and told the owner that sending as a
+  photo was not available. The adapter keeps a hash of the tool schema (names, descriptions, input schemas) in
+  `state.json` (`toolsHash`). At start, if the hash differs — or is missing, as in a state file from before this change
+  — and there is a thread, the adapter does not resume it: it starts a new thread with the current tools, keeps the old
+  id as `previousThreadId` and says "инструменты шлюза изменились — новый тред Codex (прежний: …)" in the feed and the
+  log. The old thread stays in the Codex history; the new one starts without the earlier conversation.
 - The adapter's own lines in a Codex input start with `[адаптер · …]`. Text in an event that looks like one is
   written with a full-width bracket («［адаптер»), as the channel already does for `[№` and `[шлюз`, so forwarded
   text cannot pass as an adapter line; the channel rules for Codex say so.
@@ -84,14 +91,14 @@ The chat interface and the design documents are in Russian; the entries below de
   no iTerm), or `--here`, `--tmux`, `--print`; the log goes to `<bot dir>/codex/adapter.log`.
 - Tests: a fake `codex app-server` (`test/fake-codex`) with a scripted model, unit tests of the adapter and an
   integration suite with the real gateway and the fake Telegram (boot, turn and reply, steering, stop and continue,
-  reminder, media, parcels, usage limit, app-server crash, adapter restart, vanished thread, Codex down for longer
-  than a minute and the lease taken again, no login, "typing…" and 👀 through a long turn with an interim reply and on
-  "stop"), and `working` against the gateway with a fake adapter (past an interim reply and 2 minutes, 🟡, off, the
-  15-minute limit and its extension, "stop", an adapter that drops off, foreign numbers, an unverified lease; 👀 held
-  through the turn and removed by its end, a new set, "stop", a dropped adapter, the limit and a gateway restart;
+  reminder, media, parcels, usage limit, app-server crash, adapter restart, vanished thread, changed tools, Codex down
+  for longer than a minute and the lease taken again, no login, "typing…" and 👀 through a long turn with an interim
+  reply and on "stop"), and `working` against the gateway with a fake adapter (past an interim reply and 2 minutes, 🟡,
+  off, the 15-minute limit and its extension, "stop", an adapter that drops off, foreign numbers, an unverified lease; 👀
+  held through the turn and removed by its end, a new set, "stop", a dropped adapter, the limit and a gateway restart;
   `done` inside a turn; an answer without a turn as before; `working.action`, and "sending a file…" while a parcel
-  uploads during a turn), and "sending a photo…" while the fake Codex generates an image.
-  `test/e2e/dist/drill-codex.js` runs the same against the real `codex app-server` with one owner message.
+  uploads during a turn), and "sending a photo…" while the fake Codex generates an image. `test/e2e/dist/drill-codex.js`
+  runs the same against the real `codex app-server` with one owner message.
 - Pictures as photos (#60; the owner asked for a picture "not as a file, but as a picture"). `send_file` sends a picture
   — `jpg`, `jpeg`, `png` or `webp` within Telegram's photo limits (at most 10 MB, width plus height at most 10,000, the
   long side at most 20 times the short one) — as a photo (`sendPhoto`), so it shows in the chat as a picture; anything
@@ -119,12 +126,11 @@ The chat interface and the design documents are in Russian; the entries below de
   when the owner asks for a file or the original. Unlike the Codex split above, this changes the Claude Code text of the
   channel rules, so `INSTRUCTIONS_VERSION` is new (the pinned hash is updated on purpose): a resumed conversation gets
   the current rules once as a "channel rules" event. The Codex text changes the same way and reaches a resumed Codex
-  thread too (the rules go with every resume), but the tool descriptions do not: the adapter gives Codex the agent's
-  tools only at `thread/start`, not on `thread/resume`, so a Codex thread started before this change keeps the old
-  `send_file` without `as`. Pictures still go as photos there, but the agent may be unable to send one as a file; `as`
-  comes with a new thread. An agent folder deployed earlier needs the new line in its `CLAUDE.md` by hand (see the
-  template README). A gateway from before this change does not know `as` and answers `bad_request`; the channel then
-  tells the agent to send the file again without `as`.
+  thread too (the rules go with every resume), but the tool descriptions do not: Codex takes the agent's tools only at
+  `thread/start`, not on `thread/resume`. The adapter therefore starts a new thread when the tools change (above), so a
+  Codex thread started before this change is replaced by one with `as`. An agent folder deployed earlier needs the new
+  line in its `CLAUDE.md` by hand (see the template README). A gateway from before this change does not know `as` and
+  answers `bad_request`; the channel then tells the agent to send the file again without `as`.
 
 ## 0.3.6 - 2026-10-22
 

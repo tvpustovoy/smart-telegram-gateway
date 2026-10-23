@@ -8,7 +8,8 @@
 // (imageGeneration) → «отправляет фото…» (working.action upload_photo), готова — снова «печатает…» · стоп → turn/interrupt,
 // поздний вызов отклонён, [продолжить] → строки режима первыми · ход без ответа → одно напоминание · картинка — data URL ·
 // send_file из папки посылок · лимит → строка владельцу и повтор · падение app-server → resume того же треда, повтор с
-// пометкой · перезапуск адаптера → тот же тред, проба без хода · Codex лежит дольше минуты → аренда снята; поднялся →
+// пометкой · перезапуск адаптера → тот же тред, проба без хода · инструменты шлюза изменились (хеш схемы в state.json) →
+// новый тред, прежний — previousThreadId · Codex лежит дольше минуты → аренда снята; поднялся →
 // новая аренда, событие упавшего хода уходит в Codex без нового сообщения и один раз.
 
 import assert from 'node:assert/strict';
@@ -328,6 +329,50 @@ describe('M13 · адаптер Codex (stg-codex) против поддельн�
     await waitUntil(() => (JSON.parse(fs.readFileSync(path.join(s.home.dir, 'codex', 'state.json'), 'utf8')) as { threadId: string }).threadId === id, 5000, 'state.json');
     const seq = await say('ты тут?');
     await waitReply(`ответ на № ${seq}`);
+  });
+
+  it('инструменты шлюза изменились (хеш схемы в state.json другой или его нет) → не resume, а новый тред с инструментами; прежний — previousThreadId; строка в ленте и журнале', async () => {
+    const stateFile = path.join(s.home.dir, 'codex', 'state.json');
+    type St = { threadId: string; toolsHash?: string | null; previousThreadId: string | null };
+    const readState = (): St => JSON.parse(fs.readFileSync(stateFile, 'utf8')) as St;
+    const hash = readState().toolsHash!;
+    assert.match(hash, /^[0-9a-f]{16}$/, 'хеш схемы инструментов — в state.json');
+    for (const change of ['другой хеш', 'файл до хеша'] as const) {
+      await adapter.stop();
+      const st = readState();
+      const old = st.threadId;
+      if (change === 'другой хеш') st.toolsHash = '0000000000000000';
+      else delete st.toolsHash;
+      fs.writeFileSync(stateFile, JSON.stringify(st));
+      const resumes = requestsOf(fakeDir, 'thread/resume').length;
+      const starts = requestsOf(fakeDir, 'thread/start').length;
+      adapter = startAdapter();
+      const line = `инструменты шлюза изменились — новый тред Codex (прежний: ${old})`;
+      await adapter.waitFeed((l) => l.includes(line), 10_000, `строки ленты (${change})`);
+      await adapter.waitFeed((l) => /проверка канала № \d+ — закрыта адаптером/.test(l), 10_000, 'закрытия пробы');
+      assert.ok(adapter.log.includes(line), 'и в журнале адаптера');
+      assert.equal(requestsOf(fakeDir, 'thread/resume').length, resumes, `${change}: resume не было`);
+      const ts = requestsOf(fakeDir, 'thread/start');
+      assert.equal(ts.length, starts + 1, `${change}: новый thread/start`);
+      const send = (ts.at(-1)!.params?.dynamicTools as Array<{ name: string; inputSchema: unknown }>).find((t) => t.name === 'send_file')!;
+      assert.ok(JSON.stringify(send.inputSchema).includes('"as"'), 'новый тред — с нынешним send_file (as)');
+      const id = (requestsOf(fakeDir, 'thread/name/set').at(-1)!.params as { threadId: string }).threadId;
+      await waitUntil(() => readState().threadId === id || null, 5000, 'state.json — новый тред');
+      assert.notEqual(id, old);
+      assert.deepEqual([readState().previousThreadId, readState().toolsHash], [old, hash]);
+      // Текст — без слов сценария подделки («файл» и т. п.).
+      const seq = await say(`новые инструменты, ${change === 'другой хеш' ? 'первый' : 'второй'} раз`);
+      await waitReply(`ответ на № ${seq}`);
+    }
+    // Тот же хеш — тред продолжен, как раньше.
+    await adapter.stop();
+    const starts = requestsOf(fakeDir, 'thread/start').length;
+    const current = readState().threadId;
+    adapter = startAdapter();
+    await adapter.waitFeed((l) => /проверка канала № \d+ — закрыта адаптером/.test(l), 10_000, 'закрытия пробы');
+    assert.equal(requestsOf(fakeDir, 'thread/start').length, starts, 'тот же хеш — нового треда нет');
+    assert.equal(requestsOf(fakeDir, 'thread/resume').at(-1)!.params?.threadId, current);
+    assert.ok(!adapter.feed.includes('инструменты шлюза изменились'));
   });
 });
 

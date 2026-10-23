@@ -2,7 +2,10 @@
 // `codex app-server`; один тред Codex на разговор.
 //
 // - Подъём: app-server → initialize (experimentalApi) → account/read → тред (thread/resume по id из state.json или
-//   thread/start) → аренда у шлюза. Проверочное событие адаптер закрывает сам (done с кодом): доставку в Codex
+//   thread/start) → аренда у шлюза. Инструменты Codex получает только в thread/start — thread/resume их не принимает
+//   (после #60 живой агент видел send_file без as и сказал владельцу неверное): в state.json — хеш схемы инструментов
+//   треда; при старте другой (или его нет — файл до хеша) — не resume, а новый тред с нынешними инструментами, прежний
+//   id — previousThreadId, в ленте и журнале — строка «инструменты шлюза изменились — новый тред Codex (прежний: …)». Проверочное событие адаптер закрывает сам (done с кодом): доставку в Codex
 //   подтверждает ответ на turn/start, ход модели на пробу не тратится.
 // - События → ход: onEvent кладёт событие в очередь и возвращает false (клиент сам delivered не шлёт). Все ждущие
 //   события уходят одним вводом turn/start: строки режима и адаптера, затем заголовок и текст каждого события (формат
@@ -60,7 +63,7 @@ import {
 } from './protocol.js';
 import { loadState, saveState, type AdapterState } from './state.js';
 import type { CodexTiming } from './timing.js';
-import { answeredBy, describeCall, dynamicTools, refusal, toToolResponse } from './tools-bridge.js';
+import { answeredBy, describeCall, dynamicTools, refusal, toToolResponse, toolsHashOf } from './tools-bridge.js';
 
 export const ADAPTER_NAME = 'stg-codex';
 
@@ -335,8 +338,16 @@ export class Runner {
   private async openThread(srv: AppServer): Promise<void> {
     const settings = this.threadSettings();
     const version = instructionsVersionOf(settings.developerInstructions);
+    const tools = dynamicTools();
+    const toolsHash = toolsHashOf(tools);
     const s = this.state;
-    if (s.threadId && s.agentDir === this.opts.agentDir) {
+    if (s.threadId && s.agentDir === this.opts.agentDir && s.toolsHash !== toolsHash) {
+      // thread/resume инструментов не принимает: тред остался бы с прежними (после #60 агент видел send_file без as и
+      // сказал владельцу, что фото отправить нельзя). Новый тред — с нынешними; прежний остаётся в истории Codex.
+      const w = `инструменты шлюза изменились — новый тред Codex (прежний: ${s.threadId})`;
+      this.opts.log(`${w}; хеш схемы ${s.toolsHash ?? 'не записан'} → ${toolsHash}`);
+      this.opts.feed.line('warn', w);
+    } else if (s.threadId && s.agentDir === this.opts.agentDir) {
       try {
         const r = await srv.request<ThreadResponse>('thread/resume', { threadId: s.threadId, ...settings, excludeTurns: true });
         this.threadId = r.thread.id;
@@ -356,9 +367,17 @@ export class Runner {
         this.opts.feed.line('warn', w);
       }
     }
-    const r = await srv.request<ThreadResponse>('thread/start', { ...settings, dynamicTools: dynamicTools() });
+    const r = await srv.request<ThreadResponse>('thread/start', { ...settings, dynamicTools: tools });
     this.threadId = r.thread.id;
-    this.state = { ...s, threadId: this.threadId, agentDir: this.opts.agentDir, instructionsVersion: version, codexVersion: this.codexVersion };
+    this.state = {
+      ...s,
+      threadId: this.threadId,
+      agentDir: this.opts.agentDir,
+      instructionsVersion: version,
+      codexVersion: this.codexVersion,
+      toolsHash,
+      previousThreadId: s.threadId ?? s.previousThreadId,
+    };
     this.saveState();
     this.opts.log(`thread/start ${this.threadId}: песочница ${JSON.stringify(r.sandbox ?? null)}`);
     try {
