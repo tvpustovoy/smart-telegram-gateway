@@ -142,6 +142,31 @@ export const TOOLS: ToolDef[] = [
   },
 ];
 
+/**
+ * Правки описаний для Codex (#55): у адаптера Codex нет пробы и событий «правила канала» (пробу он закрывает сам, правила
+ * идут в developer instructions треда), а папка посылок — не parcels/ в рабочей папке, а её путь из правил канала.
+ * [инструмент, что, на что]; каждое «что» есть в описании ровно один раз (tools.test.ts).
+ */
+export const CODEX_TOOL_EDITS: ReadonlyArray<readonly [ToolName, string, string]> = [
+  ['reply', ' Правила канала — в инструкциях сервера и в событии «правила канала»; не видел их в этом разговоре — вызови where().', ''],
+  ['done', '(материал, пересылка, проверочное событие)', '(материал, пересылка)'],
+  ['done', ' На проверочное событие — done(seqs: [N], code: "…") с кодом из его текста; на событие «правила канала» — done(seqs: [N]).', ''],
+  ['done', ' Правила канала — в инструкциях сервера и в событии «правила канала»; не видел их в этом разговоре — вызови where().', ''],
+  ['where', '; и получил ли этот разговор правила канала — не получал, шлюз пришлёт их событием «правила канала» (прочти и ответь done)', ''],
+  ['send_file', 'из папки посылок (parcels/ в твоей рабочей папке)', 'из папки посылок (её путь — в правилах канала)'],
+  ['send_file', 'Сначала положи файл в папку посылки: parcels/<посылка>/<файл>', 'Сначала положи файл в папку посылки: <папка посылок>/<посылка>/<файл>'],
+];
+
+/** Набор инструментов для среды агента: Claude Code — TOOLS как есть; Codex — с правками описаний (CODEX_TOOL_EDITS). */
+export function toolsFor(harness: 'claude' | 'codex'): ToolDef[] {
+  if (harness === 'claude') return TOOLS;
+  return TOOLS.map((t) => {
+    let description = t.description;
+    for (const [name, from, to] of CODEX_TOOL_EDITS) if (name === t.name) description = description.replace(from, to);
+    return { ...t, description };
+  });
+}
+
 export type ToolContent = { type: 'text'; text: string } | { type: 'image'; data: string; mimeType: string };
 
 export interface ToolOutcome {
@@ -236,6 +261,11 @@ export interface CallContext {
   log: (line: string) => void;
   /** Сколько ждать картинку (media): по умолчанию 90 с (timing.ts). */
   mediaTimeoutMs?: number;
+  /**
+   * Ход шлюза для reply и send_file (адаптер Codex, #55): тот, что был, когда начался ход модели. Не задан — последний
+   * известный клиенту (из welcome и mode), как у канала Claude Code.
+   */
+  turn?: number;
 }
 
 /** Что за картинка — словами агенту. */
@@ -275,7 +305,7 @@ export async function callTool(ctx: CallContext, name: string, args: Record<stri
       if (args.from !== undefined && args.from !== null && typeof args.from !== 'string') return fail('reply: from — имя строкой');
       const from = typeof args.from === 'string' && args.from.trim() ? args.from.trim() : null;
       replyContent = replyContentKey(seq, text, voice, from);
-      frame = { type: 'reply', fields: { seq, text, voice, turn: ctx.client.turn, idem: replyKeyFor(replyContent), ...(from !== null ? { from } : {}) } };
+      frame = { type: 'reply', fields: { seq, text, voice, turn: ctx.turn ?? ctx.client.turn, idem: replyKeyFor(replyContent), ...(from !== null ? { from } : {}) } };
       break;
     }
     case 'done': {
@@ -326,7 +356,7 @@ export async function callTool(ctx: CallContext, name: string, args: Record<stri
       replyContent = JSON.stringify(['send_file', seq, p, caption, from]);
       frame = {
         type: 'send_file',
-        fields: { path: p, seq, turn: ctx.client.turn, idem: replyKeyFor(replyContent), ...(caption !== null ? { caption } : {}), ...(from !== null ? { from } : {}) },
+        fields: { path: p, seq, turn: ctx.turn ?? ctx.client.turn, idem: replyKeyFor(replyContent), ...(caption !== null ? { caption } : {}), ...(from !== null ? { from } : {}) },
       };
       break;
     }

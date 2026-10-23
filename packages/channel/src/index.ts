@@ -7,43 +7,34 @@
 import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
-import { PROTOCOL_VERSION, isValidTimeZone, loadConfig, resolveHome, stgPaths } from 'stg-core';
+import { PROTOCOL_VERSION } from 'stg-core';
+import { gatewayFromEnv } from './env.js';
 import { createChannel, PACKAGE_NAME, SERVER_NAME } from './server.js';
-import { timingFromEnv } from './timing.js';
 
 export { createChannel, PACKAGE_NAME, SERVER_NAME } from './server.js';
-export { formatEvent, formatMode, CHANNEL_NOTIFICATION, OUTCOME } from './format.js';
-export { TOOLS, TOOL_NAMES, callTool } from './tools.js';
-export { INSTRUCTIONS, INSTRUCTIONS_VERSION } from './instructions.js';
+export { formatEvent, formatMode, CHANNEL_NOTIFICATION, OUTCOME, type ChannelNotice } from './format.js';
+export { TOOLS, TOOL_NAMES, callTool, toolsFor, type CallContext, type ToolContent, type ToolDef, type ToolName, type ToolOutcome } from './tools.js';
+export { INSTRUCTIONS, INSTRUCTIONS_VERSION, instructionsFor, instructionsVersionOf, type Harness } from './instructions.js';
 export { DEFAULT_TIMING, timingFromEnv, type ChannelTiming } from './timing.js';
+// Общее для переходников (#55: адаптер Codex берёт клиент шлюза, инструменты и формат событий отсюда, а не копией).
+export { GatewayClient, GatewayGoneError, GatewayLostError, GatewayTimeoutError, type ClientState, type GatewayClientOptions } from './gateway-client.js';
+export { gatewayFromEnv, type GatewayEnv } from './env.js';
 export const ADAPTER_PROTOCOL_VERSION = PROTOCOL_VERSION;
 
 function log(line: string): void {
   process.stderr.write(`${new Date().toISOString()} ${PACKAGE_NAME}: ${line}\n`);
 }
 
-function systemTimezone(): string {
-  return Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
-}
-
 async function main(): Promise<number> {
-  const env = process.env;
-  let socketPath: string;
-  let timezone = systemTimezone();
+  let gw: ReturnType<typeof gatewayFromEnv>;
   try {
-    const paths = stgPaths(resolveHome(env));
-    socketPath = paths.socket;
-    try {
-      const tz = loadConfig(paths.config, { test: env.STG_TEST === '1' }).timezone;
-      if (isValidTimeZone(tz)) timezone = tz;
-    } catch (err) {
-      log(`config.yaml не прочитан (${(err as Error).message}) — время в строках по поясу системы`);
-    }
+    gw = gatewayFromEnv(process.env, log);
   } catch (err) {
     log(`каталог бота не найден: ${(err as Error).message}. Задай STG_HOME в .mcp.json папки агента`);
     return 2;
   }
-  const channel = createChannel({ socketPath, timezone, timing: timingFromEnv(env), log });
+  const { socketPath, timezone, timing } = gw;
+  const channel = createChannel({ socketPath, timezone, timing, log });
   const transport = new StdioServerTransport();
   let stopping = false;
   const shutdown = (why: string): void => {
