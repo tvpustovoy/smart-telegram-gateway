@@ -132,6 +132,46 @@ This is not a sandbox: the agent runs as the same macOS user and can read the us
 See [docs/THREAT-MODEL.md](docs/THREAT-MODEL.md). More about the template:
 [scripts/agent-folder/README.md](scripts/agent-folder/README.md) (in Russian).
 
+## Codex — connect an existing agent
+
+A prototype (#55): the gateway can also serve an agent that runs on [Codex](https://github.com/openai/codex) instead
+of Claude Code. The adapter `stg-codex` takes the gateway's lease the way the Claude Code channel does and drives
+`codex app-server` itself: every owner message becomes a turn in one Codex thread, and the agent answers with the same
+tools (`reply`, `done`, `send_file`, …), given to Codex as dynamic tools.
+
+You need the gateway installed and running (see [Install](#install)), the Codex CLI (checked with 0.163,
+`npm install -g @openai/codex`) signed in with ChatGPT, and the agent's folder. Then:
+
+```sh
+scripts/codex-agent-start.sh --agent-dir ~/Agents/my-codex-agent [--stg-home ~/.smart-telegram-gateway/<bot>]
+```
+
+This opens a new iTerm window (Terminal if there is no iTerm) with a live feed of the conversation: what came from
+Telegram, the commands the agent runs and its tool calls, what went to the owner. `--here` runs in the current
+terminal, `--tmux` in a tmux session, `--print` only prints the command. Ctrl-C in the window stops the adapter and
+gives up the lease. One environment per bot: while the Claude Code channel holds the lease, `stg-codex` waits, and the
+other way round.
+
+- **The agent stays as it is.** Codex runs with your own settings and login (`~/.codex`; `CODEX_HOME` is not set), the
+  model from your config and the agent's own `AGENTS.md` from its folder. The adapter writes nothing into the agent's
+  folder; the gateway's channel rules go into the thread's developer instructions.
+- **Basic permissions.** Commands run in Codex's `workspace-write` sandbox: they can write only to the agent's folder
+  and the gateway's parcels folder, have no network and never ask for approval — an action that needs more fails, and
+  the agent says so in Telegram. The model's own web search follows your Codex settings.
+- **Parcels** stay outside the agent's folder: `parcels.dir` from `config.yaml`, otherwise `<bot dir>/parcels`.
+- **One thread** for the conversation; its id is kept in `<bot dir>/codex/state.json`, so a restart continues the same
+  thread. The technical log is `<bot dir>/codex/adapter.log`.
+- A message that arrives while the agent is working goes into the running turn; `стоп` interrupts the turn at once;
+  the adapter closes the channel check itself, without a model turn; a turn that ends without an answer gets one
+  reminder; a crashed `app-server` is restarted and the thread resumed; a lost login or a usage limit is reported to
+  the owner once.
+- Usage counts against your ChatGPT plan, shared with your own Codex work. The agent's thread is visible in your Codex
+  history; do not open it there while the adapter runs (a thread has one writer).
+
+Not there yet: a LaunchAgent service for the adapter, a separate Codex login for the agent, `stg doctor` checks, the 🧠
+and 🕐 icons in the pinned line. A check against the real Codex — a test gateway with a fake Telegram and one owner
+message: `node test/e2e/dist/drill-codex.js <run dir>`.
+
 ## Using it
 
 Commands work from the ☰ menu, as slash commands or as plain words (in Russian): 📍 `/where` — where are we,
@@ -174,7 +214,8 @@ What you see in the chat:
   (`ui.material_followup_minutes`) reaches the agent as "words after material No. N", and the agent does not repeat the
   gist it already sent.
 
-The agent's tools (MCP): `reply`, `done`, `episode`, `episode_summary`, `where`, `rule`, `media`, `send_file`.
+The agent's tools (MCP for Claude Code, dynamic tools for Codex): `reply`, `done`, `episode`, `episode_summary`, `where`,
+`rule`, `media`, `send_file`.
 
 ## Configuration
 
@@ -250,8 +291,9 @@ npm run build    # build only
 node --disable-warning=ExperimentalWarning --test test/e2e/dist/m5-rules.test.js   # one file, after a build
 ```
 
-The suite (about 700 tests, roughly two minutes) runs against fakes: a fake Telegram Bot API, a fake channel adapter, a
-fake Claude Code client and fake speech providers, with a fake clock and fault injection points. Under test
+The suite (about 800 tests, roughly two minutes) runs against fakes: a fake Telegram Bot API, a fake channel adapter, a
+fake Claude Code client, a fake Codex `app-server` and fake speech providers, with a fake clock and fault injection
+points. Under test
 (`STG_TEST=1`) the gateway never touches the real Telegram, speech providers, the Keychain or launchd. Temporary
 directories are removed afterwards; set `STG_TEST_KEEP=1` to keep them. Unit tests sit next to the code
 (`packages/*/src/*.test.ts`), integration tests are in `test/e2e/src/`.
@@ -284,8 +326,9 @@ accept the project's own commit identity; the same name is also accepted on `Cop
 | `packages/gateway` | `stg-gateway` service: Telegram intake, sender, reactions, pinned status line, commands, episodes, access rules, voice, images, parcels, socket server for adapters |
 | `packages/channel` | `stg-channel`: MCP server for Claude Code Channels — events into the session, tools for the agent |
 | `packages/cli` | `stg` CLI: `doctor`, `status`, `where`, `rules show`, `backup`, `restore`, `deferred`, `log tail`, `service plist`, `agent-folder`, `agent-state` |
-| `scripts/` | `install-macos.sh`, `uninstall-macos.sh`, `launchd/gateway.plist.template`, `agent-folder/` template, `release-check.mjs` |
-| `test/fake-telegram`, `test/fake-channel`, `test/fake-elevenlabs` | fakes of the Telegram Bot API, the channel adapter and the speech providers (ElevenLabs and OpenAI dialects) |
+| `packages/codex` | `stg-codex`: the Codex adapter — gateway lease, `codex app-server` over stdio, one thread per conversation, the agent's tools as dynamic tools, live feed |
+| `scripts/` | `install-macos.sh`, `uninstall-macos.sh`, `codex-agent-start.sh`, `launchd/gateway.plist.template`, `agent-folder/` template, `release-check.mjs` |
+| `test/fake-telegram`, `test/fake-channel`, `test/fake-elevenlabs`, `test/fake-codex` | fakes of the Telegram Bot API, the channel adapter, the speech providers (ElevenLabs and OpenAI dialects) and Codex `app-server` |
 | `test/e2e` | integration tests: the gateway as a child process against the fakes |
 
 ## Documentation

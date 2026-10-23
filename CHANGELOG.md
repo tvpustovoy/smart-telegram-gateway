@@ -9,6 +9,51 @@ an older version after a migration is only possible from a database backup taken
 
 The chat interface and the design documents are in Russian; the entries below describe behavior in English.
 
+## Unreleased
+
+### Added
+
+- Codex adapter, a prototype (#55): `stg-codex` (`packages/codex`) connects an existing Codex agent to the gateway.
+  It takes the gateway's lease with the same client as the Claude Code channel and keeps a child `codex app-server`
+  (JSON-RPC over stdio) with one thread for the conversation. Every waiting event goes to Codex as one `turn/start`
+  input in the channel's header format; an event that arrives while a turn runs is added to that turn. `delivered`
+  (👀) is sent only after Codex accepted the input. The agent's eight tools are given to Codex as dynamic tools and run
+  through the channel's own `callTool`, with the gateway turn of the Codex turn.
+- The agent is used as it is: Codex runs with the user's own settings and ChatGPT login (`CODEX_HOME` is not set), the
+  model from the user's config and the agent's `AGENTS.md` from its folder. The adapter writes nothing into the
+  agent's folder. The gateway's channel rules for Codex go into the thread's developer instructions, at thread start
+  and on every resume. Permissions are basic: the `workspace-write` sandbox in the agent's folder plus the gateway's
+  parcels folder as a writable root, no network for commands, approval policy `never` (approval requests, if any, are
+  declined).
+- Parcels for a Codex agent stay outside its folder: `parcels.dir` from `config.yaml`, otherwise `<bot dir>/parcels`
+  (the adapter names the bot directory as the session directory to the gateway).
+- The adapter closes the channel check itself, without a model turn. "Stop" interrupts the running turn
+  (`turn/interrupt`), and a late tool call from it is refused without reaching the gateway; the stop, pause and
+  continue lines go first in the next input. A turn that ends without `reply`, `done`, `send_file` or an episode summary
+  for one of its events gets one reminder. A failed turn is retried; a lost login, a usage limit or a rate limit is
+  reported to the owner once. A crashed `app-server` is restarted with a pause of 1–30 s and the thread resumed, and
+  the events of the unfinished turn go again marked as a repeat after a Codex failure; if Codex stays down for a
+  minute, the lease is given up. A thread is replaced only when Codex no longer has it. Without a ChatGPT login there
+  is no lease, and the reason is in the feed and in `state.json`.
+- Adapter state — thread id, agent folder, version of the channel rules, unanswered events — is kept in
+  `<bot dir>/codex/state.json` (written atomically), so a restart continues the same thread.
+- A live feed for a terminal window on the adapter's stdout: incoming messages with their headers, turns, commands,
+  file changes, reasoning summaries, tool calls and replies, token usage per turn; no probe codes or command output.
+  The technical log is on stderr.
+- `scripts/codex-agent-start.sh --agent-dir <folder>`: starts the adapter in a new iTerm window (Terminal if there is
+  no iTerm), or `--here`, `--tmux`, `--print`; the log goes to `<bot dir>/codex/adapter.log`.
+- Tests: a fake `codex app-server` (`test/fake-codex`) with a scripted model, unit tests of the adapter and an
+  integration suite with the real gateway and the fake Telegram (boot, turn and reply, steering, stop and continue,
+  reminder, media, parcels, usage limit, app-server crash, adapter restart, vanished thread, no login).
+  `test/e2e/dist/drill-codex.js` runs the same against the real `codex app-server` with one owner message.
+
+### Changed
+
+- `stg-channel` exports what another adapter needs: `GatewayClient`, `gatewayFromEnv` (socket, time zone, timings and
+  the parcels folder from `config.yaml` in one place), `instructionsFor('claude' | 'codex')`, `toolsFor('claude' |
+  'codex')` and an optional `turn` in the tool call context. The Claude Code text of the channel rules is unchanged
+  byte for byte, so `INSTRUCTIONS_VERSION` stays the same (a test pins its hash).
+
 ## 0.3.6 - 2026-10-22
 
 ### Added

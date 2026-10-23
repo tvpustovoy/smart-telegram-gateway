@@ -78,6 +78,26 @@ scripts/install-macos.sh <имя_бота> [--node <путь>] [--agent-dir <п�
 Агент работает под тем же пользователем macOS и может читать его файлы, в том числе файлы шлюза: это не песочница
 (`docs/THREAT-MODEL.md`). Подробно о папке агента — [scripts/agent-folder/README.md](scripts/agent-folder/README.md).
 
+## Codex — подключить существующего агента
+
+Прототип (#55): шлюз может служить и агенту на [Codex](https://github.com/openai/codex) вместо Claude Code. Адаптер
+`stg-codex` держит аренду у шлюза, как канал Claude Code, и сам ведёт `codex app-server`: каждое сообщение владельца —
+ход в одном треде Codex, отвечает агент теми же инструментами (`reply`, `done`, `send_file` …).
+
+Нужны: установленный и работающий шлюз, Codex (проверено на 0.163) со входом в ChatGPT и папка агента. Запуск:
+
+```sh
+scripts/codex-agent-start.sh --agent-dir ~/Agents/my-codex-agent [--stg-home ~/.smart-telegram-gateway/<бот>]
+```
+
+Откроется новое окно iTerm (или Терминала) с живой лентой разговора: что пришло из Telegram, какие команды и вызовы
+инструментов делает агент, что ушло владельцу. `--here` — в этом окне, `--tmux` — в tmux, `--print` — только показать
+команду; Ctrl-C в окне — остановить. Codex — с вашими настройками и входом (`~/.codex`), роль агента — его `AGENTS.md`;
+в папку агента адаптер не пишет. Права базовые: песочница `workspace-write` (запись — только в папку агента и папку
+посылок шлюза, сеть у команд закрыта, запросов разрешения нет). Посылки — вне папки агента: `parcels.dir` из
+`config.yaml` или `<каталог бота>/parcels`. Тред один на разговор, его id — в `<каталог бота>/codex/state.json`, журнал
+— `<каталог бота>/codex/adapter.log`. Подробнее — в [README.md](README.md#codex--connect-an-existing-agent).
+
 ## Настройки
 
 `~/.smart-telegram-gateway/<бот>/config.yaml`, после правки — перезапуск службы; лишний ключ — ошибка. Главное:
@@ -107,7 +127,7 @@ npm ci
 npm test         # tsc -b и все модульные и интеграционные тесты (node:test) на подделках
 ```
 
-Около 700 тестов, примерно две минуты. Под тестом (`STG_TEST=1`) шлюз не ходит ни в настоящий Telegram, ни к
+Около 800 тестов, примерно две минуты. Под тестом (`STG_TEST=1`) шлюз не ходит ни в настоящий Telegram, ни к
 провайдерам голоса, не трогает связку ключей и launchd; временные каталоги удаляются (оставить — `STG_TEST_KEEP=1`).
 
 Перед выпуском — проверка на то, что нельзя публиковать: `STG_DENYLIST=<файл> npm run release-check` (с `-- --history` —
@@ -117,8 +137,8 @@ npm test         # tsc -b и все модульные и интеграцион
 ## Пакеты и документы
 
 `packages/core` — общее ядро · `packages/gateway` — служба `stg-gateway` · `packages/channel` — MCP-сервер
-`stg-channel` · `packages/cli` — CLI `stg` · `scripts/` — установка и шаблон папки агента · `test/` — подделки и
-интеграционные тесты.
+`stg-channel` · `packages/cli` — CLI `stg` · `packages/codex` — адаптер Codex `stg-codex` · `scripts/` — установка,
+запуск адаптера Codex и шаблон папки агента · `test/` — подделки и интеграционные тесты.
 
 Документы (по-русски): [ARCHITECTURE](docs/ARCHITECTURE.md) — архитектурные решения AD-1…AD-10 ·
 [TECH-SPEC](docs/TECH-SPEC.md) — спецификация реализации · [THREAT-MODEL](docs/THREAT-MODEL.md) — модель угроз ·
