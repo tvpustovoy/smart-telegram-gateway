@@ -15,6 +15,9 @@
 //   сообщение — 👌 материала снят;
 // A12.9 ответ не ушёл — 👌 вместо 👀 ⟨предл.⟩: Telegram не принял ответ (400); «стоп» бросил ответ — 👌 (сам «стоп» —
 //   следующее сообщение: снимает прежние 👌), [продолжить] его не снимает, следующее сообщение — снимает.
+// A12.11 переход с базы, где 👌 уже стоят на отвеченных сообщениях (как ставила 0.3.5; здесь — ui.clear_receipts: false,
+//   затем перезапуск с настройкой по умолчанию): при старте ничего не снимается; первое сообщение снимает только 👌
+//   «закрыто без ответа» (done), 👌 на отвеченных остаются — разовой пачки снятий нет (находка проверки).
 
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -306,5 +309,79 @@ describe('M12 · ui.clear_receipts: false — как до 0.3.6 (A12.5)', () => 
     s.fake.push(s.fake.builder.command(OWNER, '/help'));
     const help = await waitSent(s, gw, (m) => (m.text ?? '').startsWith('⚙ Как устроен чат'), 'справки');
     assert.ok((help.text ?? '').includes('На твоём сообщении: 👀 агент увидел · 👌 агент ответил.'), help.text ?? '');
+  });
+});
+
+describe('M12 · переход с базы, где 👌 уже стоят на отвеченных (A12.11)', () => {
+  let s: Setup;
+  let gw: GatewayProcess;
+  let ch: FakeChannel;
+  let turn = 0;
+  before(async () => {
+    // Как под 0.3.5: ответ агента ставит 👌 и тот остаётся (то же, что ui.clear_receipts: false).
+    s = await setup({ home: { extraConfig: 'ui: { material_hold_seconds: 0, clear_receipts: false }\n' } });
+    gw = await s.start();
+    ({ ch, turn } = await connectAdapter(s.home));
+  });
+  after(async () => {
+    ch?.close();
+    if (gw?.alive) await gw.stop();
+    await s.close();
+  });
+
+  it('A12.11: 👌 прежней версии на отвеченных — первое сообщение после обновления их не снимает; снимается только 👌 done; при старте ничего', async () => {
+    const seqOf = (u: Update): number | undefined => q1<{ seq: number }>(s.home, 'SELECT seq FROM events WHERE update_id = ?', u.update_id)?.seq;
+    const seen = async (u: Update): Promise<number> => {
+      const seq = await waitUntil(() => seqOf(u), 5000, 'приёма');
+      await ch.waitEvent(seq);
+      await ch.delivered(seq);
+      await pump(gw, () => reactionOf(s.fake, u) === '👀' || null, { what: '👀' });
+      return seq;
+    };
+    const N = 12;
+    const asked = s.fake.push(...Array.from({ length: N }, (_, i) => s.fake.builder.text(OWNER, `вопрос ${i + 1}`)));
+    const seqs: number[] = [];
+    for (const [i, u] of asked.entries()) {
+      const seq = await seen(u);
+      seqs.push(seq);
+      assert.equal((await ch.reply(seq, `ответ ${i + 1}`, turn)).type, 'ack');
+    }
+    const [d] = s.fake.push(s.fake.builder.text(OWNER, 'просто запиши'));
+    const dSeq = await seen(d!);
+    assert.equal((await ch.done([dSeq])).type, 'ack');
+    await pump(gw, () => [...asked, d!].every((u) => reactionOf(s.fake, u) === '👌') || null, { what: '👌 на всех' });
+    const sentAll = (): boolean => seqs.every((seq) => !!q1(s.home, "SELECT 1 FROM outbox WHERE event_seq = ? AND origin = 'agent' AND status = 'sent'", seq));
+    await pump(gw, () => sentAll() || null, { what: 'ответов агента' });
+    await waitUntil(() => (q1<{ n: number }>(s.home, "SELECT count(*) AS n FROM reactions WHERE shown = '👌' AND status = 'done'")?.n ?? 0) === N + 1 || null, 5000, 'отметок 👌');
+
+    // Обновление: та же база, настройка по умолчанию (ui.clear_receipts: true).
+    ch.close();
+    await gw.stop();
+    const file = path.join(s.home.dir, 'config.yaml');
+    const cfg = fs.readFileSync(file, 'utf8');
+    assert.ok(cfg.includes(', clear_receipts: false'));
+    fs.writeFileSync(file, cfg.replace(', clear_receipts: false', ''));
+    const callsBefore = s.fake.callsOf('setMessageReaction').length;
+    gw = await s.start();
+    ({ ch, turn } = await connectAdapter(s.home));
+    for (let i = 0; i < 5; i++) await gw.advance('1s');
+    await sleep(50);
+    assert.equal(s.fake.callsOf('setMessageReaction').length, callsBefore, 'при старте ничего не снимается');
+
+    const [n] = s.fake.push(s.fake.builder.text(OWNER, 'что дальше?'));
+    const nSeq = await seen(n!);
+    await pump(gw, () => receiptCleared(s.fake, d!) || null, { what: 'снятия 👌 done' });
+    for (let i = 0; i < 5; i++) await gw.advance('1s');
+    await sleep(50);
+    assert.equal(readJournal(s.home).find((l) => l.ev === 'in' && l.seq === nSeq)?.receipts_cleared, 1, 'журнал in — receipts_cleared: 1');
+    for (const u of asked) assert.deepEqual(reactionsOf(s.fake, u), ['👀', '👌'], 'отвеченное прежней версией — 👌 на месте');
+    const since = s.fake.callsOf('setMessageReaction').slice(callsBefore);
+    assert.deepEqual(
+      since.map((c) => [Number(c.params.message_id), isClear(c.params) ? '' : (c.params.reaction as Array<{ emoji: string }>)[0]!.emoji]).sort(),
+      [[messageIdOf(d!), ''], [messageIdOf(n!), '👀']].sort(),
+      'после обновления — два запроса: снятие 👌 done и 👀 нового',
+    );
+    assert.equal((await ch.reply(nSeq, 'Слушаю', turn)).type, 'ack');
+    await pump(gw, () => receiptCleared(s.fake, n!) || null, { what: 'снятия 👀 после ответа' });
   });
 });

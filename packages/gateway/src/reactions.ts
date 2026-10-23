@@ -10,11 +10,14 @@
 //   ⟨предл.⟩: событие закрыто, ответа в чате нет, а 👀 висел бы на нём всегда;
 // - событие закрыто без ответа (done) — 👌, как раньше; эти 👌 снимает следующее сообщение владельца в этом чате
 //   (requestClosedCleared, admission.ts: любое новое сообщение — текст, голосовое, фото, команда словом; не нажатие, не
-//   реакция и не правка ⟨предл.⟩) — все 👌 бота на его сообщениях здесь, поставленные за неделю (REACTIONS_KEEP_MS)
-//   ⟨предл.⟩; старую историю шлюз не обходит, при старте ничего не снимает;
+//   реакция и не правка ⟨предл.⟩) — все 👌 «закрыто без ответа» бота на его сообщениях здесь, поставленные за неделю
+//   (REACTIONS_KEEP_MS) ⟨предл.⟩; старую историю шлюз не обходит, при старте ничего не снимает. 👌 на сообщении, ответ
+//   на которое ушёл (так ставили версии до 0.3.6 и ui.clear_receipts: false), — не «закрыто без ответа»: остаётся, иначе
+//   первое сообщение после обновления снимало бы разом 👌 почти со всех сообщений недели (находка проверки);
 // - снятие — та же строка и та же очередь с повторами: want пуст (REACTION_CLEARED), setMessageReaction с пустым
-//   списком; схема та же (v13). Текстовой квитанции нет с 0.3.2 (fallback_at, fallback_sent не заполняются): удалять
-//   нечего.
+//   списком; схема та же (v13). В полосе снятия идут после 👀 и 👌 (pick): знак «агент увидел» нового сообщения не ждёт
+//   очереди снятий — ждёт не больше одного снятия, которое уже в пути. Текстовой квитанции нет с 0.3.2 (fallback_at,
+//   fallback_sent не заполняются): удалять нечего.
 // ui.clear_receipts: false — как до 0.3.6: reply и send_file с seq ставят 👌 сразу, 👌 остаётся.
 // Агент не на связи — на сообщении ничего (видно по ⚪ и 📥 N в закреплённой строке, а через 10 мин — по строке «агент
 // не на связи»). Команды и нажатия реакций не получают (сообщение с командой удаляется); закрытая тема — тоже: агенту
@@ -169,7 +172,11 @@ export function requestAnswerLost(ctx: Ctx, seqs: readonly number[]): number {
 /**
  * Владелец написал следующее сообщение в этом чате (0.3.6, issue #52): 👌 бота на его сообщениях здесь (событие закрыто
  * без ответа) своё сделали — снять. Только поставленные за REACTIONS_KEEP_MS (неделя ⟨предл.⟩; строки старше и так
- * чистит ticker): старую историю шлюз не обходит. 👀 (агент ещё не ответил) не трогается. Внутри транзакции записи
+ * чистит ticker): старую историю шлюз не обходит. 👀 (агент ещё не ответил) не трогается. 👌 события, ответ агента на
+ * которое ушёл (outbox: origin agent, sent), — не «закрыто без ответа»: его поставила версия до 0.3.6 (или
+ * ui.clear_receipts: false) вместо снятия; он остаётся как был — без разовой пачки снятий при обновлении (находка
+ * проверки). С 0.3.6 у такого события 👌 не бывает: ответ ушёл — реакция снята (requestAnswered), брошенный ответ ставит
+ * 👌, только если ни один не ушёл (requestAnswerLost), а done на обработанное не действует. Внутри транзакции записи
  * сообщения (admission.ts).
  */
 export function requestClosedCleared(ctx: Ctx, chatId: number, subjectId: string): number {
@@ -177,7 +184,8 @@ export function requestClosedCleared(ctx: Ctx, chatId: number, subjectId: string
   const r = sql(ctx.db,
     `UPDATE reactions SET want = ?, status = 'pending', attempts = 0, next_try_at = NULL, created_at = ?
      WHERE chat_id = ? AND want = ? AND created_at >= ?
-       AND EXISTS (SELECT 1 FROM events e WHERE e.seq = reactions.event_seq AND e.subject_id = ?)`,
+       AND EXISTS (SELECT 1 FROM events e WHERE e.seq = reactions.event_seq AND e.subject_id = ?)
+       AND NOT EXISTS (SELECT 1 FROM outbox o WHERE o.event_seq = reactions.event_seq AND o.origin = 'agent' AND o.status = 'sent')`,
   ).run(REACTION_CLEARED, now, chatId, REACTIONS.processed, now - REACTIONS_KEEP_MS, subjectId);
   return Number(r.changes);
 }
@@ -276,13 +284,18 @@ export class ReactionLane {
     );
   }
 
-  /** Ближайшая готовая строка — по порядку постановки. */
+  /**
+   * Ближайшая готовая строка — по порядку постановки; снятия (want пуст) — после 👀 и 👌 (0.3.6, #52, находка проверки):
+   * снятия 👌 следующим сообщением владельца и снятия после ответа не задерживают 👀 нового сообщения. Реакции одного
+   * сообщения друг друга не обгоняют и так: строка на сообщение одна.
+   */
   private pick(): ReactionRow | null {
     return (
       (sql(this.ctx.db,
         `SELECT r.*, e.update_id AS ev_update FROM reactions r LEFT JOIN events e ON e.seq = r.event_seq
-         WHERE r.status = 'pending' AND (r.next_try_at IS NULL OR r.next_try_at <= ?) ORDER BY r.created_at, r.event_seq LIMIT 1`,
-      ).get(this.ctx.clock.now()) as ReactionRow | undefined) ?? null
+         WHERE r.status = 'pending' AND (r.next_try_at IS NULL OR r.next_try_at <= ?)
+         ORDER BY (r.want = ?), r.created_at, r.event_seq LIMIT 1`,
+      ).get(this.ctx.clock.now(), REACTION_CLEARED) as ReactionRow | undefined) ?? null
     );
   }
 

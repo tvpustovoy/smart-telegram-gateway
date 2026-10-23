@@ -145,7 +145,8 @@ What you see in the chat:
   without an answer (material it took note of, "just note it"); it goes away when you write your next message in this
   chat (any message, a command word too; not a button tap or a reaction). If an answer could not be delivered (you
   said `стоп`, Telegram refused it), the message gets 👌 instead of 👀. Nothing — the agent is offline and the message
-  waits. `ui.clear_receipts: false` brings back the old behaviour: 👌 after an answer too, and it stays.
+  waits. `ui.clear_receipts: false` brings back the old behaviour: 👌 after an answer too, and it stays. The 👌 that
+  0.3.5 and earlier put on answered messages stay as they were.
 - The pinned line, for example `📍 #7 · Trip in May` and `🟢 · 🧠 16% · 🕐 31% · 📅 64%`: episode and topic; the
   agent idle 🟢, working 🟡, offline ⚪ or failing 🔴; `📥 N` waiting; context used (🌀 while compacting); 5-hour and
   weekly usage limits.

@@ -122,10 +122,17 @@ The chat interface and the design documents are in Russian; the entries below de
     answer, the document of a parcel — and not before; until then the message keeps 👀. The answer itself is the sign.
     Removing the bot's reaction also clears the owner's unread-reaction mark in the chat list (checked on a live chat).
   - `done` (closed without an answer) still sets 👌. The owner's next message in that chat — any new message: text,
-    voice, photo, forward, a command word too; not a button tap, a reaction or an edit — removes every 👌 the bot set on
-    the owner's messages there within the last 7 days, in the same transaction that stores the message. Older history
-    is not walked, and nothing is removed when the gateway starts; a restart between `done` and the next message does
-    not lose the removal (the state is in the `reactions` table).
+    voice, photo, forward, a command word too; not a button tap, a reaction or an edit — removes every "closed without
+    an answer" 👌 the bot set on the owner's messages there within the last 7 days, in the same transaction that stores
+    the message. Older history is not walked, and nothing is removed when the gateway starts; a restart between `done`
+    and the next message does not lose the removal (the state is in the `reactions` table).
+  - Upgrading: a 👌 on a message whose answer was sent (that is how 0.3.5 and earlier marked every answered message,
+    and how `ui.clear_receipts: false` still does) is not a "closed without an answer" mark, so the next message leaves
+    it as it is. The first message after the upgrade removes only the 👌 of `done` and of dropped answers, not a 👌 on
+    almost every message of the past week (found in review: one message would otherwise send hundreds of
+    `setMessageReaction` calls in a row).
+  - In the reaction lane, removals go after 👀 and 👌: a new message's 👀 no longer waits behind a queue of removals,
+    only behind a removal already in flight.
   - An answer that never reached the chat (dropped by `стоп`, refused by Telegram, a parcel copy gone) leaves the event
     closed with no answer in the chat: the message gets 👌 instead of a 👀 that would otherwise stay forever, and the next
     message removes it. `стоп` is itself the owner's next message: it removes the earlier 👌 first, then drops the

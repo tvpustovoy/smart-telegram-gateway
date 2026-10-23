@@ -7,7 +7,9 @@
 // Квитанция своё сделала (0.3.6, #52; A12.9): ответ ушёл — снять (только у обработанного события; правка, которую агент ещё
 // не видел, строку держит); ответ не ушёл — 👌 вместо 👀 (снятая не возвращается, ответ уже был — нет); следующее сообщение
 // владельца — снять его 👌 в этом чате за неделю (👀, чужие сообщения, другой чат, старше недели — не трогаются); ошибка
-// Telegram на снятии — повтор.
+// Telegram на снятии — повтор. Находка проверки (A12.11): 👌 на сообщениях, ответ на которые ушёл (так ставили версии до
+// 0.3.6 и ui.clear_receipts: false), следующее сообщение не снимает — снимается только «закрыто без ответа»; в полосе
+// снятия идут после 👀 и 👌.
 
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -386,6 +388,44 @@ describe('квитанция своё сделала (0.3.6, #52; A12.9): отв
     }
   });
 
+  it('👌 на сообщении, ответ на которое ушёл (версии до 0.3.6, ui.clear_receipts: false), следующее сообщение не снимает: только «закрыто без ответа» (A12.11)', () => {
+    const { db, ctx, event, row, tick, processed, shown, answer } = fresh();
+    try {
+      // Неделя под прежней версией: на каждый вопрос ответ ушёл, на сообщении — 👌 (reply ставил 👌 сразу).
+      const legacy: number[] = [];
+      for (let i = 0; i < 150; i++) {
+        const m = 300 + i;
+        const seq = event('text', m);
+        requestSeen(ctx, [seq]);
+        processed(seq);
+        requestProcessed(ctx, [seq]);
+        answer(seq, 'sent');
+        shown(m);
+        legacy.push(m);
+        tick();
+      }
+      // «Закрыто без ответа»: done; ответ брошен целиком (ни одна строка ответа не sent).
+      const closed = event('text', 460);
+      requestSeen(ctx, [closed]);
+      processed(closed);
+      requestProcessed(ctx, [closed]);
+      shown(460);
+      const lost = event('text', 461);
+      requestSeen(ctx, [lost]);
+      processed(lost);
+      answer(lost, 'dropped');
+      assert.equal(requestAnswerLost(ctx, [lost]), 1);
+      shown(461);
+      tick();
+      assert.equal(requestClosedCleared(ctx, 1, 'owner'), 2, 'только 👌 «закрыто без ответа», без пачки на 150 снятий');
+      assert.deepEqual([row(460)?.want, row(461)?.want], ['', '']);
+      assert.ok(legacy.every((m) => row(m)?.want === '👌' && row(m)?.status === 'done'), '👌 прежней версии на отвеченных — как были');
+      assert.equal(requestClosedCleared(ctx, 1, 'owner'), 0, 'снимать больше нечего');
+    } finally {
+      db.close();
+    }
+  });
+
   it('ui.clear_receipts — по умолчанию да; false — нет; без настроек — да', () => {
     assert.equal(clearReceipts({ config: { ui: { clear_receipts: true } } } as unknown as Ctx), true);
     assert.equal(clearReceipts({ config: { ui: { clear_receipts: false } } } as unknown as Ctx), false);
@@ -438,6 +478,48 @@ describe('полоса реакций: снятие квитанции (0.3.6, #
       assert.equal(calls[2]!.emoji, '');
       calls[2]!.answer();
       await until('снятие отмечено', () => row(231)?.status === 'done' && row(231)?.want === '');
+    } finally {
+      await lane.stop();
+      db.close();
+    }
+  });
+
+  it('снятия — после 👀 и 👌: пять снятий, поставленных раньше, не задерживают 👀 нового сообщения и 👌 done (A12.11)', async () => {
+    const { db, event, row, processed } = fresh();
+    const { ctx, lane, calls, until, tick } = laneOn(db);
+    try {
+      const closed = [240, 241, 242, 243, 244];
+      for (const m of closed) {
+        const seq = event('text', m);
+        processed(seq);
+        sql(db, "INSERT INTO reactions(chat_id, message_id, event_seq, want, shown, status, created_at) VALUES (1, ?, ?, '👌', '👌', 'done', 0)").run(m, seq);
+      }
+      // На другом сообщении 👀: агент его видел и ещё не закрыл.
+      const other = event('text', 246);
+      sql(db, "INSERT INTO reactions(chat_id, message_id, event_seq, want, shown, status, created_at) VALUES (1, 246, ?, '👀', '👀', 'done', 0)").run(other);
+      // Владелец написал дальше — пять 👌 снять (👀 не трогается); затем агент увидел новое — 👀, и закрыл то — 👌.
+      tick();
+      const next = event('text', 245);
+      assert.equal(requestClosedCleared(ctx, 1, 'owner'), 5);
+      tick();
+      requestSeen(ctx, [next]);
+      tick();
+      processed(other);
+      assert.equal(requestProcessed(ctx, [other]), 1);
+      lane.kick();
+      await until('первого запроса', () => calls.length === 1);
+      assert.deepEqual({ emoji: calls[0]!.emoji, message_id: calls[0]!.message_id }, { emoji: '👀', message_id: 245 }, '👀 — первым, хотя снятия поставлены раньше');
+      calls[0]!.answer();
+      await until('второго запроса', () => calls.length === 2);
+      assert.deepEqual({ emoji: calls[1]!.emoji, message_id: calls[1]!.message_id }, { emoji: '👌', message_id: 246 }, '👌 done — тоже раньше снятий');
+      calls[1]!.answer();
+      for (let i = 2; i <= 6; i++) {
+        await until(`снятия ${i - 1}`, () => calls.length === i + 1);
+        assert.equal(calls[i]!.emoji, '', `запрос ${i + 1} — снятие`);
+        calls[i]!.answer();
+      }
+      assert.deepEqual(calls.slice(2).map((c) => c.message_id), closed, 'снятия — по порядку постановки');
+      await until('все сняты', () => closed.every((m) => row(m)?.status === 'done' && row(m)?.want === ''));
     } finally {
       await lane.stop();
       db.close();
