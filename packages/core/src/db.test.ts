@@ -21,6 +21,7 @@ import {
 } from './db.js';
 import {
   DELETION_REASONS,
+  DELIVERY_SEND_AS,
   DELIVERY_STATUSES,
   EPISODE_CLOSE_REASONS,
   EPISODE_OPENED_BY,
@@ -233,7 +234,7 @@ describe('база: v11 (0.3.4) — пересборка events с видом re
     const others = ['outbox', 'receipts', 'messages_out', 'latency', 'edits', 'reactions'].map((t) => JSON.stringify(db.prepare(`SELECT * FROM ${t} ORDER BY 1`).all()));
     const r = migrate(db);
     try {
-      assert.deepEqual(r.applied, [10, 11, 12, 13], 'миграции по порядку: v10 (0.3.3, посылки) → v11 (0.3.4) → v12 (0.3.5) → v13 (0.3.6)');
+      assert.deepEqual(r.applied, [10, 11, 12, 13, 14], 'миграции по порядку: v10 (0.3.3, посылки) → v11 (0.3.4) → v12 (0.3.5) → v13 (0.3.6) → v14 (#60)');
       assert.equal(schemaVersion(db), SCHEMA_VERSION);
       const after = db.prepare('SELECT * FROM events ORDER BY seq').all() as Array<Record<string, unknown>>;
       assert.equal(
@@ -322,9 +323,18 @@ describe('база: v11 (0.3.4) — пересборка events с видом re
     const dIdx = idxOf('deliveries');
     const r = migrate(db);
     try {
-      assert.deepEqual(r.applied, [11, 12, 13]);
+      assert.deepEqual(r.applied, [11, 12, 13, 14]);
       assert.equal(schemaVersion(db), SCHEMA_VERSION);
-      assert.equal(JSON.stringify(deliveries()), dBefore, 'строки deliveries — те же');
+      assert.equal(
+        JSON.stringify(
+          (deliveries() as Array<Record<string, unknown>>).map(({ send_as, ...rest }) => {
+            assert.equal(send_as, 'document', 'доставки прежних версий — документом (v14)');
+            return rest;
+          }),
+        ),
+        dBefore,
+        'строки deliveries — те же',
+      );
       assert.equal(JSON.stringify(links()), lBefore, 'deliveries → events, outbox, messages_out — те же связи');
       assert.deepEqual(idxOf('deliveries'), dIdx, 'индексы deliveries на месте');
       // Ссылка deliveries → events указывает на новую таблицу events (переименование, а не events_v11) и проверяется.
@@ -410,7 +420,7 @@ describe('база: v12 (0.3.5) — правила канала разговор
     const dBefore = JSON.stringify(deletions());
     const r = migrate(db);
     try {
-      assert.deepEqual(r.applied, [12, 13], 'v12, затем v13 (0.3.6)');
+      assert.deepEqual(r.applied, [12, 13, 14], 'v12, затем v13 (0.3.6) и v14 (#60)');
       assert.equal(schemaVersion(db), SCHEMA_VERSION);
       assert.equal(
         JSON.stringify(
@@ -503,8 +513,8 @@ describe('база: v13 (0.3.6) — окно для материала без с
     const before = JSON.stringify(events());
     const r = migrate(db);
     try {
-      assert.deepEqual(r.applied, [13]);
-      assert.equal(schemaVersion(db), 13);
+      assert.deepEqual(r.applied, [13, 14]);
+      assert.equal(schemaVersion(db), SCHEMA_VERSION);
       assert.equal(
         JSON.stringify(
           events().map(({ material_json, ...rest }) => {
@@ -560,6 +570,77 @@ describe('база: v13 (0.3.6) — окно для материала без с
   });
 });
 
+describe('база: v14 (#60) — посылка картинкой: фото или документ (deliveries.send_as)', () => {
+  function dbAt(v: number): Db {
+    const db = openDatabase(tmpDb());
+    for (const m of MIGRATIONS.filter((x) => x.version <= v)) {
+      db.exec(m.sql);
+      setMeta(db, 'schema_version', String(m.version));
+    }
+    return db;
+  }
+
+  it('A8.28 · v13 → v14: доставки прежних версий целы и стали document; новые — document или photo, другое — CHECK; связи и индексы на месте', () => {
+    const db = dbAt(13);
+    insertSample(db);
+    transaction(db, () => {
+      db.prepare("INSERT INTO outbox(event_seq, chat_id, kind, text, origin, status, created_at) VALUES (1, 123456789, 'agent', 'схема', 'agent', 'sent', 1001)").run();
+      db.prepare("INSERT INTO outbox(event_seq, chat_id, kind, text, origin, status, created_at) VALUES (NULL, 123456789, 'agent', NULL, 'agent', 'pending', 1002)").run();
+      const d = db.prepare(
+        'INSERT INTO deliveries(parcel, file, bytes, sha256, copy_ref, target, chat_id, event_seq, outbox_id, status, tg_message_id, updated, idem, note, timeouts, created_at, sent_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      );
+      d.run('схемы', 'plan.png', 1234, 'a'.repeat(64), 'raw/parcels/' + 'a'.repeat(64), 'telegram', 123456789, 1, 2, 'sent', 12, 0, 'k1', null, 0, 1001, 1001);
+      d.run('схемы', 'plan.png', 1300, 'b'.repeat(64), 'raw/parcels/' + 'b'.repeat(64), 'telegram', 123456789, null, 3, 'pending', null, 1, null, null, 1, 1002, null);
+    });
+    const deliveries = (): Array<Record<string, unknown>> => db.prepare('SELECT * FROM deliveries ORDER BY id').all() as Array<Record<string, unknown>>;
+    const idx = (): string[] =>
+      (db.prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'deliveries' AND sql IS NOT NULL ORDER BY name").all() as Array<{ name: string }>).map((x) => x.name);
+    const before = JSON.stringify(deliveries());
+    const idxBefore = idx();
+    const r = migrate(db);
+    try {
+      assert.deepEqual(r.applied, [14]);
+      assert.equal(schemaVersion(db), 14);
+      assert.equal(SCHEMA_VERSION, 14);
+      assert.equal(
+        JSON.stringify(
+          deliveries().map(({ send_as, ...rest }) => {
+            assert.equal(send_as, 'document', 'прежние доставки уходили и уходят документом');
+            return rest;
+          }),
+        ),
+        before,
+        'строки deliveries — те же',
+      );
+      assert.deepEqual(idx(), idxBefore, 'индексы deliveries на месте');
+      const ins = db.prepare("INSERT INTO deliveries(parcel, file, bytes, sha256, target, status, created_at, send_as) VALUES ('p', 'a.png', 1, 'x', 'telegram', 'pending', 1, ?)");
+      ins.run('photo');
+      ins.run('document');
+      assert.throws(() => ins.run('video'), /CHECK/);
+      assert.throws(() => ins.run(null), /NOT NULL/);
+      db.prepare("INSERT INTO deliveries(parcel, file, bytes, sha256, target, status, created_at) VALUES ('p', 'b.png', 1, 'x', 'telegram', 'pending', 1)").run();
+      assert.equal((db.prepare("SELECT send_as FROM deliveries WHERE file = 'b.png'").get() as { send_as: string }).send_as, 'document', 'по умолчанию — документом');
+      // Фото не принято — photo → document на месте.
+      db.prepare("UPDATE deliveries SET send_as = 'document' WHERE send_as = 'photo'").run();
+      assert.throws(() => db.prepare("INSERT INTO deliveries(parcel, file, bytes, sha256, target, event_seq, status, created_at, send_as) VALUES ('p', 'f', 1, 'x', 'telegram', 999, 'pending', 1, 'photo')").run(), /FOREIGN KEY/);
+      assert.deepEqual(db.prepare('PRAGMA foreign_key_check').all(), []);
+      assert.deepEqual(quickCheck(db), []);
+    } finally {
+      db.close();
+    }
+  });
+
+  it('повторный запуск на v14 — ничего не применяется, данные те же', () => {
+    const db = dbAt(14);
+    try {
+      assert.deepEqual(migrate(db).applied, []);
+      assert.equal(schemaVersion(db), 14);
+    } finally {
+      db.close();
+    }
+  });
+});
+
 describe('база: перечни 5.2 — CHECK совпадает с константами', () => {
   const db = openForGateway(tmpDb()).db;
   const cases: Array<[string, string, readonly string[]]> = [
@@ -577,6 +658,7 @@ describe('база: перечни 5.2 — CHECK совпадает с конс�
     ['rules_log', 'status', RULES_LOG_STATUSES],
     ['edits', 'status', EDIT_STATUSES],
     ['deliveries', 'status', DELIVERY_STATUSES],
+    ['deliveries', 'send_as', DELIVERY_SEND_AS],
     ['deletions', 'reason', DELETION_REASONS],
   ];
   for (const [table, column, values] of cases) {

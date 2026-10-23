@@ -1482,7 +1482,7 @@ INSERT, в той же транзакции, — `linkFollowup`: материа�
 - **Зачем.** J-9: агент отвечает и файлом — до 0.3.3 ему было нечем отдать файл владельцу (P-23, issue #29). Папка
   посылок — промежуточная: в ней агент обновляет файлы, а позже сможет публиковать их в веб-сервис (issue #35). Это
   единственное место, откуда агент отдаёт файл наружу; что ушло и какой версией — у шлюза.
-- **Когда работает.** По запросу агента: модель вызывает `send_file(path, seq?, caption?, from?)`, канал шлёт кадр
+- **Когда работает.** По запросу агента: модель вызывает `send_file(path, seq?, caption?, from?, as?)`, канал шлёт кадр
   `send_file` (`ch/tools.ts`), шлюз — `AdapterService.onSendFile` → `ParcelService.send` (`adapter.ts`, `parcels.ts`).
   Своего таймера нет: дальше доставку несёт очередь цели (у Telegram — `sender-outbox`), копии убирает `retention`.
 - **Что берёт.** Аренду (проверена ли, каталог сессии `session_hint.cwd`); `meta.mode`, `meta.turn`; строку события
@@ -1505,12 +1505,15 @@ INSERT, в той же транзакции, — `linkFollowup`: материа�
      50 МБ), сверить путь (тот же `realpath` и inode), после сверки — ещё раз `fstat` (одно имя, тот же inode: звено
      вернули папкой с жёсткой ссылкой на открытый чужой файл — `changed`), читать из дескриптора кусками по 1 МБ, считать SHA-256 и писать
      во временный файл `raw/parcels/.copy.*.tmp` → `fsync` → переименовать в `raw/parcels/<sha256>`; та же версия уже
-     есть — копия та же (время файла освежается).
+     есть — копия та же (время файла освежается). У картинки по имени (`isPhotoName`) снимок держит начало файла (до
+     1 МБ) — по нему `photoProblem` решает, годится ли она в фото Telegram (#60): цель умеет фото, агент не просил
+     `as: "file"`, размеры из заголовка в пределах — `send_as photo`, иначе `document`; просил `as: "photo"`, а не годится
+     — `as_note`, почему.
   6. Одной транзакцией: строка `outbox` агента (`TelegramTarget.enqueue`: подпись — текст, пауза — `held`), строка
-     `deliveries` (`pending`, версия, копия, `updated` — прежде уходила другая версия, `idem`), с `seq` — `processed` и
+     `deliveries` (`pending`, версия, копия, `updated` — прежде уходила другая версия, `idem`, `send_as`), с `seq` — `processed` и
      👌 (`requestProcessed`), как у `reply`.
   7. Агенту — `ack` (`queued` или `held_paused`, № доставки, посылка, файл, байты, версия, `sent_before`, `updated`,
-     `where`); «печатает…» снят; отправитель разбужен.
+     `where`, `as`, `as_note`); «печатает…» снят; отправитель разбужен.
 - **Во что переводит.** `deliveries`: ∅ → `pending` (машина 3а); `outbox` агента: ∅ → `pending` · `held` (машина 3);
   событие с `seq` → `processed`; файл `raw/parcels/<sha256>`.
 - **Пределы и сроки.** 50 МБ (`PARCEL_MAX_BYTES`, предел бота через общий сервер Bot API); подпись — 1024 знака, длиннее
@@ -1522,19 +1525,19 @@ INSERT, в той же транзакции, — `linkFollowup`: материа�
   отправит `sender-outbox` после старта из копии, даже если исходник уже удалён. Диск полон — `unavailable` «диск шлюза
   полон», `disk_full` с `where: send_file`; иная ошибка записи копии или базы — `unavailable`, `send_file_failed`, шлюз
   не падает ⟨предл.⟩.
-- **Что видит владелец.** Документ в чате ответом на просьбу (5.5а), подпись агента; чужой файл — `↪ Имя` в подписи,
+- **Что видит владелец.** Документ в чате ответом на просьбу (5.5а), подпись агента; картинка — фото (#60); чужой файл — `↪ Имя` в подписи,
   и без подписи агента; новая версия — последней строкой `⚙ обновлено` ⟨предл.⟩; на просьбе — 👌. Отказ видит только
   агент — и говорит словами. Принятый файл не ушёл (Telegram не принял, копии нет, три таймаута) — строка
   `⚙ файл <посылка>/<файл> не отправлен: <почему>` ⟨предл.⟩.
 - **Журнал.** `send_file` (доставка, `outbox_id`, цель, чат, посылка, файл, байты, `sha256`, `sent_before`, `updated`,
-  подпись, `from`, `held`), `send_file_refused` (`reason`), `send_file_dropped` (`stale_turn` · `stopped`), `send_file_failed`,
+  подпись, `from`, `held`, `as`, `asked`, `as_note`), `send_file_refused` (`reason`), `send_file_dropped` (`stale_turn` · `stopped`), `send_file_failed`,
   `send_file_repeated`, `disk_full` с `where: send_file`.
 - **Код и тесты.**
   - Код: `parcels.ts` (`ParcelService`, `DeliveryTarget`, `TelegramTarget`), `adapter.ts` (`onSendFile`), `main.ts`
     (`setParcels`), `core/parcels.ts`, `core/protocol.ts` (`SendFileSchema`, `SendFileResultSchema`), `core/schema.ts`
-    (v10, `DELIVERY_STATUSES`), `core/config.ts` (`parcels`, `ChatRuleSchema.parcels`), `ch/tools.ts` (`send_file`,
+    (v10, `DELIVERY_STATUSES`; v14, `DELIVERY_SEND_AS`), `core/config.ts` (`parcels`, `ChatRuleSchema.parcels`), `ch/tools.ts` (`send_file`,
     `sendFileOutcome`).
-  - Тесты: `m8-parcels.test.ts` (A8.1–A8.19), `parcels.test.ts` шлюза (гонка «проверка — чтение» через точки теста
+  - Тесты: `m8-parcels.test.ts` (A8.1–A8.27), `parcels.test.ts` шлюза (гонка «проверка — чтение» через точки теста
     `beforeOpen`, `beforeRecheck`; дописанный файл; группа и лички участников), `core/parcels.test.ts`,
     `core/protocol.test.ts`, `core/config.test.ts`, `core/rules.test.ts`, `core/db.test.ts`, `ch/tools.test.ts`,
     `ch/format.test.ts`, `m3-install.test.ts`.
@@ -1972,6 +1975,12 @@ INSERT, в той же транзакции, — `linkFollowup`: материа�
   запросом. 429, 5xx, обрыв, «стоп» между частями, `in_send` — как у ответа. В `out` — `delivery`, `parcel`, `file`.
   Тесты: `m8-parcels.test.ts` (A8.1–A8.4, A8.7, A8.8, A8.11, A8.15, A8.17–A8.19), `core/parcels.test.ts`
   (`documentTimeoutMs`).
+- **Картинка — фото (#60).** Доставка с `send_as photo` уходит `sendPhoto` (поле `photo`) — те же части
+  (`documentParts`: метод из `send_as`), подпись, реплай, предел загрузки, стоп, повторы, 429. Фото не принято (400 или
+  413; `attempt`) — не `drop`: той же записью `deliveries.send_as` → `document` и `note` «Telegram не принял фото (…) —
+  отправка документом» (`parcelNotePhotoRejected`), `photo_rejected` в журнал, строку берут снова — документом (как
+  голосовое — текстом); документ тоже не принят — обычный `drop`. В `out` — ещё `method` (`sendPhoto` ·
+  `sendDocument`). Тесты: `m8-parcels.test.ts` (A8.22–A8.27).
 - **Код и тесты.**
   - Код: sender.ts:276-364 (запуск и цикл), 370-411 (выбор), 457-496 (таймер), 510-684 (строка, части, `sendGroup`), 697-717 (клавиатура), 733-828 (`attempt`, `defer`, `drop`).
   - Постановка: context.ts:53-75 (`insertOutbox`) и 121-136 (`enqueueServiceLine`); ответ агента — adapter.ts:864-876.
@@ -3227,6 +3236,7 @@ INSERT, в той же транзакции, — `linkFollowup`: материа�
 | `dropped` → `sent` (`note` «ушёл после стопа») | `sendGroup` gw/sender.ts | «стоп» пришёл, пока документ был в пути, а Telegram его принял до обрыва (`sent_after_stop`) |
 | `pending` → `failed` (`note` — причина) | `drop` gw/sender.ts | Telegram ответил 400 или 403; копии нет (`parcel_copy_missing`); третий таймаут загрузки («не успел загрузить»); внутренняя ошибка подготовки — строка владельцу `⚙ файл … не отправлен`, `parcel_failed` |
 | `timeouts` + 1 | `countTimeout` gw/sender.ts | загрузка документа кончилась таймаутом (предел — `documentTimeoutMs`); меньше трёх — повтор с паузой |
+| `send_as`: `photo` → `document` (`note` «Telegram не принял фото (…) — отправка документом»; статус `pending` не меняется) | `attempt` gw/sender.ts (#60, схема v14) | Telegram не принял фото (400, 413): та же строка `outbox` уходит документом; обратно не бывает |
 | `copy_ref` → NULL | `parcelCopies` gw/retention.ts | последняя доставка с этой копией старше `untrusted_days` и ни одна не `pending` |
 
 ```
@@ -3239,6 +3249,8 @@ INSERT, в той же транзакции, — `linkFollowup`: материа�
 
 - **Пауза.** Доставка `pending`, а её строка `outbox` — `held`; «продолжить» переводит строку в `pending`, доставка не
   меняется.
+- **Фото или документ (#60).** `send_as` ставит `ParcelService.send`: картинка в пределах фото Telegram, агент не просил
+  `as: "file"` — `photo`, иначе `document`; отправитель шлёт `sendPhoto` или `sendDocument` по нему.
 - **Версии.** `sha256` — версия; `updated = 1` — в тот же чат прежде уходила (или ждёт) другая версия того же файла
   (подпись «⚙ обновлено»). Повтор той же версии — новая строка доставки.
 - **Повтор с тем же ключом.** `ParcelService.repeated` отвечает по статусу доставки, а не строки `outbox`: `pending` —

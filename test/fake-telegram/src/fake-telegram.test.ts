@@ -212,6 +212,33 @@ describe('подделка Telegram: отправка и файлы', () => {
       assert.equal(missing.status, 404);
     }));
 
+  it('sendPhoto (#60): multipart, подпись; пределы фото — PHOTO_INVALID_DIMENSIONS, PHOTO_SAVE_FILE_INVALID; не картинка — IMAGE_PROCESS_FAILED', () =>
+    withFake(async (fake, api) => {
+      const png = (w: number, h: number, pad = 0): Buffer => {
+        const b = Buffer.alloc(33 + pad);
+        Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]).copy(b, 0);
+        b.writeUInt32BE(13, 8);
+        b.write('IHDR', 12, 'latin1');
+        b.writeUInt32BE(w, 16);
+        b.writeUInt32BE(h, 20);
+        return b;
+      };
+      const send = (data: Buffer, caption?: string): Promise<Message> =>
+        api.callMultipart<Message>('sendPhoto', { chat_id: owner.id, ...(caption ? { caption } : {}) }, { photo: { data, filename: 'plan.png', contentType: 'image/png' } });
+      const m = await send(png(1280, 720), 'схема');
+      assert.deepEqual(m.photo?.map((p) => [p.width, p.height]), [[1280, 720]]);
+      const sent = fake.sent.at(-1)!;
+      assert.deepEqual([sent.method, sent.caption, sent.photo?.filename, sent.photo?.contentType, sent.photo?.data.length], ['sendPhoto', 'схема', 'plan.png', 'image/png', 33]);
+      const refused = async (data: Buffer, why: RegExp): Promise<void> => {
+        await assert.rejects(send(data), (e: unknown) => e instanceof TelegramApiError && e.errorCode === 400 && why.test(e.description));
+      };
+      await refused(png(6000, 4001), /PHOTO_INVALID_DIMENSIONS/);
+      await refused(png(2001, 100), /PHOTO_INVALID_DIMENSIONS/);
+      await refused(png(100, 100, 10 * 1024 * 1024), /PHOTO_SAVE_FILE_INVALID/);
+      await refused(Buffer.from('<html>'), /IMAGE_PROCESS_FAILED/);
+      assert.equal(fake.sent.filter((x) => x.method === 'sendPhoto').length, 1, 'отказы не записаны отправленными');
+    }));
+
   it('реакция, «печатает…», ответ на нажатие, команды меню — записаны', () =>
     withFake(async (fake, api) => {
       const [cb] = fake.push(fake.builder.callback(owner, 'tok'));

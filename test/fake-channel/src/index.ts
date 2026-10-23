@@ -247,16 +247,16 @@ export class FakeChannel {
 
   /**
    * Файл из папки посылок (0.3.3): ack с SendFileResult или error. Поля — как у send_file переходника: path, seq, turn;
-   * caption, from, target, idem — когда заданы.
+   * caption, from, target, idem, as (#60) — когда заданы.
    */
   sendFile(
     path: string,
     seq: number | null,
     turn: number,
-    opts: { caption?: string; from?: string; target?: string; idem?: string } = {},
+    opts: { caption?: string; from?: string; target?: string; idem?: string; as?: string } = {},
   ): Promise<GatewayMessage> {
     const fields: Record<string, unknown> = { path, seq, turn };
-    for (const k of ['caption', 'from', 'target', 'idem'] as const) if (opts[k] !== undefined) fields[k] = opts[k];
+    for (const k of ['caption', 'from', 'target', 'idem', 'as'] as const) if (opts[k] !== undefined) fields[k] = opts[k];
     return this.request('send_file', fields);
   }
 

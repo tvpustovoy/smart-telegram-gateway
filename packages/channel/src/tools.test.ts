@@ -205,6 +205,35 @@ describe('канал: посылки (0.3.3) — send_file', () => {
     assert.equal(frames.length, 2, 'без запроса шлюзу');
   });
 
+  it('as (#60): photo или file — в кадре, когда задан; другое — отказ без запроса; исход — «как фото», почему не фото; шлюз до #60 — повтори без as', async () => {
+    const { client, frames } = stubClient([
+      ack({ status: 'queued', delivery: 10, parcel: 'схемы', file: 'plan.png', bytes: 2048, version: 'abcd1234', sent_before: 0, updated: false, where: 'в чате Telegram', as: 'photo' }),
+      ack({ status: 'queued', delivery: 11, parcel: 'схемы', file: 'plan.png', bytes: 2048, version: 'abcd1234', sent_before: 1, updated: false, where: 'в чате Telegram', as: 'file' }),
+      ack({ status: 'queued', delivery: 12, parcel: 'схемы', file: 'big.png', bytes: 12_582_912, version: 'ef015678', sent_before: 0, updated: false, as: 'file', as_note: '12,0 МБ — фото в Telegram до 10 МБ' }),
+      ack({ status: 'held_paused', delivery: 13, parcel: 'схемы', file: 'plan.png', bytes: 2048, version: 'abcd1234', sent_before: 2, updated: false, as: 'photo' }),
+      err('bad_request', '(кадр): Нераспознанный ключ: "as"'),
+    ]);
+    const ctx = { client, timezone: 'UTC', log: () => undefined };
+    assert.equal(textOf(await callTool(ctx, 'send_file', { path: 'схемы/plan.png', seq: 7 })), 'файл схемы/plan.png, 2 КБ, версия abcd1234 поставлен в отправку как фото (в чате Telegram)');
+    assert.ok(!('as' in frames[0]!.fields), 'без as — решает шлюз');
+    const asFile = await callTool(ctx, 'send_file', { path: 'схемы/plan.png', seq: 7, as: 'file' });
+    assert.match(textOf(asFile), /^файл схемы\/plan\.png, 2 КБ, версия abcd1234 поставлен в отправку \(в чате Telegram\); эту же версию уже отправлял 1 раз/);
+    assert.equal(frames[1]!.fields.as, 'file');
+    assert.notEqual(frames[1]!.fields.idem, frames[0]!.fields.idem);
+    assert.equal(
+      textOf(await callTool(ctx, 'send_file', { path: 'схемы/big.png', as: ' photo ' })),
+      'файл схемы/big.png, 12,0 МБ, версия ef015678 поставлен в отправку; фото не получится (12,0 МБ — фото в Telegram до 10 МБ) — уйдёт файлом',
+    );
+    assert.equal(frames[2]!.fields.as, 'photo');
+    assert.match(textOf(await callTool(ctx, 'send_file', { path: 'схемы/plan.png' })), /^пауза: файл схемы\/plan\.png, 2 КБ, версия abcd1234 придержан — уйдёт как фото, когда владелец скажет «продолжить»/);
+    assert.deepEqual(await callTool(ctx, 'send_file', { path: 'схемы/plan.png', as: 'file' }), { content: [{ type: 'text', text: OUTCOME.asUnsupported }], isError: true });
+    for (const as of ['document', 5, '']) {
+      const r = await callTool(ctx, 'send_file', { path: 'схемы/plan.png', as });
+      assert.deepEqual(r, { content: [{ type: 'text', text: 'send_file: as — "photo" (фото) или "file" (файлом)' }], isError: true }, String(as));
+    }
+    assert.equal(frames.length, 5, 'плохое as — без запроса шлюзу');
+  });
+
   it('обрыв после отправки — «файл мог уйти»; тот же send_file — с тем же ключом; другой путь — новый ключ', async () => {
     const { client, frames } = stubClient([lost(), ack({ status: 'queued', delivery: 1 }), ack({ status: 'queued', delivery: 2 })]);
     const ctx = { client, timezone: 'UTC', log: () => undefined };

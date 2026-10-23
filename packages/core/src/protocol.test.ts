@@ -288,6 +288,17 @@ describe('протокол: посылки (0.3.3) — send_file', () => {
     assert.ok(r.success && r.data.updated === true && r.data.delivery === 5);
     assert.ok(SendFileResultSchema.safeParse({ status: 'dropped_stopped' }).success);
   });
+
+  it('as (#60): photo или file — необязательное; другое — bad_request; в ответе as и as_note — строки', () => {
+    const m = ok(JSON.stringify({ type: 'send_file', req_id: 'f8', path: 'схемы/plan.png', seq: null, turn: 1, as: 'file' }));
+    assert.equal(m.type === 'send_file' && m.as, 'file');
+    assert.equal((ok(JSON.stringify({ type: 'send_file', req_id: 'f9', path: 'a/b.png', seq: null, turn: 1, as: 'photo' })) as { as?: string }).as, 'photo');
+    bad(JSON.stringify({ type: 'send_file', req_id: 'f10', path: 'a/b.png', seq: null, turn: 1, as: 'document' }));
+    bad(JSON.stringify({ type: 'send_file', req_id: 'f11', path: 'a/b.png', seq: null, turn: 1, as: '' }));
+    const r = SendFileResultSchema.safeParse({ status: 'queued', delivery: 6, as: 'file', as_note: '12,0 МБ — фото в Telegram до 10 МБ' });
+    assert.ok(r.success && r.data.as === 'file' && r.data.as_note?.startsWith('12,0 МБ'));
+    assert.ok(SendFileResultSchema.safeParse({ status: 'queued', as: 'video' }).success, 'новое значение не ломает прежний канал');
+  });
 });
 
 describe('протокол: реакция владельца (0.3.4) — кадр вида text с полем reaction', () => {

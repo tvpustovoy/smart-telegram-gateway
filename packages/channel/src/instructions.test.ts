@@ -1,6 +1,6 @@
-// Правила канала для двух сред (#55): текст для Claude Code не меняется ни на байт (иначе сменится INSTRUCTIONS_VERSION и
-// всем разговорам Claude придёт событие «правила канала»); текст для Codex — без пробы, без событий правил, без
-// терминала и атрибута trust. Описания инструментов для Codex — так же.
+// Правила канала для двух сред (#55): текст для Claude Code меняется только осознанно — хеш закреплён (с ним сменится
+// INSTRUCTIONS_VERSION, и всем разговорам Claude придёт событие «правила канала»); текст для Codex — без пробы, без
+// событий правил, без терминала и атрибута trust. Описания инструментов для Codex — так же.
 
 import assert from 'node:assert/strict';
 import crypto from 'node:crypto';
@@ -8,15 +8,19 @@ import { describe, it } from 'node:test';
 import { CODEX_EDITS, CODEX_INSTRUCTIONS, INSTRUCTIONS, INSTRUCTIONS_VERSION, instructionsFor, instructionsVersionOf } from './instructions.js';
 import { CODEX_TOOL_EDITS, TOOLS, toolsFor } from './tools.js';
 
-/** SHA-256 текста для Claude Code на 0.3.6 — при правке текста здесь меняется осознанно, вместе с версией. */
-const CLAUDE_SHA256 = '9470ccc980ca9f4675122eba83679210656340cd370ffd7e0d4173175a8b880a';
+/**
+ * SHA-256 текста для Claude Code — при правке текста здесь меняется осознанно, вместе с версией: разговорам, получившим
+ * прежнюю версию, шлюз один раз пришлёт событие «правила канала». 0.3.6 — 9470ccc980ca…; с #60 (картинка — фото,
+ * send_file as: "file") — эта.
+ */
+const CLAUDE_SHA256 = '24a2f2e38ccecf92f96ab86f1238e0362d03aca76c5c13ca8fbfbaaca5bc55d5';
 
 function occurrences(text: string, part: string): number {
   return text.split(part).length - 1;
 }
 
 describe('правила канала: Claude Code и Codex', () => {
-  it('для Claude Code — INSTRUCTIONS байт в байт; версия прежняя', () => {
+  it('для Claude Code — INSTRUCTIONS байт в байт; версия — от этого текста (с #60 — новая)', () => {
     assert.equal(instructionsFor('claude'), INSTRUCTIONS);
     assert.equal(crypto.createHash('sha256').update(INSTRUCTIONS).digest('hex'), CLAUDE_SHA256);
     assert.equal(INSTRUCTIONS_VERSION, CLAUDE_SHA256.slice(0, 12));

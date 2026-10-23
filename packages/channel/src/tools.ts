@@ -1,6 +1,6 @@
 // Инструменты агента (TECH-SPEC 5.11): reply(seq?, text, voice?, from?) · done(seqs) · episode(action, topic, reason?) ·
-// episode_summary(episode_id, text) · where() · rule(change) · media(seq) (0.3) · send_file(path, seq?, caption?, from?)
-// (0.3.3, посылки — 5.16). Каждый — запрос по протоколу шлюза
+// episode_summary(episode_id, text) · where() · rule(change) · media(seq) (0.3) · send_file(path, seq?, caption?, from?,
+// as?) (0.3.3, посылки — 5.16; as — фото или файлом, #60). Каждый — запрос по протоколу шлюза
 // (5.10); turn в reply канал ставит сам (последний из welcome и mode). Исход модель получает словами: «отправлено»,
 // «стоп — не отправлено», «очередь держит другая сессия», «шлюз недоступен — повтори позже»; media — ещё и самой
 // картинкой (содержимое MCP вида image: Claude Code показывает его модели).
@@ -127,7 +127,7 @@ export const TOOLS: ToolDef[] = [
   {
     name: 'send_file',
     description:
-      'Отправить владельцу файл из папки посылок (parcels/ в твоей рабочей папке): отчёт, html, таблицу, документ — когда он просит файл или когда файл и есть ответ. Сначала положи файл в папку посылки: parcels/<посылка>/<файл>; обновил файл — отправь снова, владелец увидит «обновлено». path — путь от папки посылок (<посылка>/<файл>) или полный путь внутри неё; из других мест, скрытые файлы и ссылки шлюз не отправит; предел — 50 МБ. seq — № события, на которое отвечаешь файлом (как у reply: событие обработано); без seq — по своей инициативе в личку владельца. caption — подпись (Markdown, до 1024 знаков; длиннее — придёт следом текстом). from — как у reply: если файл чужой. Секреты (ключи, пароли, токены) не отправляй.',
+      'Отправить владельцу файл из папки посылок (parcels/ в твоей рабочей папке): отчёт, html, таблицу, документ — когда он просит файл или когда файл и есть ответ. Сначала положи файл в папку посылки: parcels/<посылка>/<файл>; обновил файл — отправь снова, владелец увидит «обновлено». path — путь от папки посылок (<посылка>/<файл>) или полный путь внутри неё; из других мест, скрытые файлы и ссылки шлюз не отправит; предел — 50 МБ. Картинку (jpg, png, webp) шлюз пришлёт фото — Telegram её сожмёт; as: "file" — файлом, без сжатия (когда владелец просит файлом или оригинал); не годится в фото (больше 10 МБ, слишком вытянутая) — придёт файлом. seq — № события, на которое отвечаешь файлом (как у reply: событие обработано); без seq — по своей инициативе в личку владельца. caption — подпись (Markdown, до 1024 знаков; длиннее — придёт следом текстом). from — как у reply: если файл чужой. Секреты (ключи, пароли, токены) не отправляй.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -135,6 +135,11 @@ export const TOOLS: ToolDef[] = [
         seq: { type: 'integer', minimum: 1, description: '№ события, на которое отвечаешь файлом; не указывай, если по своей инициативе' },
         caption: { type: 'string', description: 'подпись к файлу (Markdown)' },
         from: { type: 'string', minLength: 1, maxLength: 64, description: 'чей это файл, если передаёшь чужой (как у reply); свой — без from' },
+        as: {
+          type: 'string',
+          enum: ['photo', 'file'],
+          description: 'как прислать: "photo" — фото (так и без as у картинки jpg, png, webp до 10 МБ), "file" — файлом, без сжатия',
+        },
       },
       required: ['path'],
       additionalProperties: false,
@@ -353,10 +358,21 @@ export async function callTool(ctx: CallContext, name: string, args: Record<stri
       const caption = typeof args.caption === 'string' && args.caption.trim() ? args.caption : null;
       if (args.from !== undefined && args.from !== null && typeof args.from !== 'string') return fail('send_file: from — имя строкой');
       const from = typeof args.from === 'string' && args.from.trim() ? args.from.trim() : null;
-      replyContent = JSON.stringify(['send_file', seq, p, caption, from]);
+      // as (#60): фото или файлом; без него — как решит шлюз (картинка — фото).
+      const as = args.as === undefined || args.as === null ? null : typeof args.as === 'string' ? args.as.trim() : '';
+      if (as !== null && as !== 'photo' && as !== 'file') return fail('send_file: as — "photo" (фото) или "file" (файлом)');
+      replyContent = JSON.stringify(['send_file', seq, p, caption, from, as]);
       frame = {
         type: 'send_file',
-        fields: { path: p, seq, turn: ctx.turn ?? ctx.client.turn, idem: replyKeyFor(replyContent), ...(caption !== null ? { caption } : {}), ...(from !== null ? { from } : {}) },
+        fields: {
+          path: p,
+          seq,
+          turn: ctx.turn ?? ctx.client.turn,
+          idem: replyKeyFor(replyContent),
+          ...(caption !== null ? { caption } : {}),
+          ...(from !== null ? { from } : {}),
+          ...(as !== null ? { as } : {}),
+        },
       };
       break;
     }
@@ -388,6 +404,10 @@ export async function callTool(ctx: CallContext, name: string, args: Record<stri
     if (name === 'media' && res.code === 'bad_request' && /неизвестный type/.test(res.text)) return fail(OUTCOME.mediaUnsupported);
     // Шлюз старше 0.3.3 send_file не знает — файл не отправлен.
     if (name === 'send_file' && res.code === 'bad_request' && /неизвестный type/.test(res.text)) return fail(OUTCOME.filesUnsupported);
+    // Шлюз до #60 поля as не знает: «нераспознанный ключ "as"» — файл не принят, повторить без as.
+    if (name === 'send_file' && res.code === 'bad_request' && frame.fields.as !== undefined && /нераспознанн/i.test(res.text) && /"as"/.test(res.text)) {
+      return fail(OUTCOME.asUnsupported);
+    }
     // Отказ по файлу (путь, размер, чат) — словами шлюза: что поправить.
     if (name === 'send_file' && res.code === 'bad_request') return fail(`файл не отправлен: ${res.text}`);
     // Шлюз старше 0.3.2 поля from не знает: «нераспознанный ключ "from"» — ответ не принят, повторить без from.
@@ -447,7 +467,8 @@ function outcomeOf(name: ToolName, result: unknown, fields: Record<string, unkno
 /**
  * Исход send_file словами (0.3.3): что за файл и версия, ушла ли эта версия раньше, увидит ли владелец «обновлено»;
  * стоп и пауза — как у reply. Повтор с тем же ключом (repeated) — что стало с прежним вызовом и какая версия ушла:
- * агент мог поправить файл до повтора (находка проверки 0.3.3).
+ * агент мог поправить файл до повтора (находка проверки 0.3.3). Картинка уходит фото — «как фото»; просил фото, а
+ * картинка не годится, — почему и что уйдёт файлом (#60).
  */
 function sendFileOutcome(r: SendFileResult): ToolOutcome {
   const what = `${r.parcel ?? '?'}/${r.file ?? '?'}${r.bytes !== undefined ? `, ${formatBytes(r.bytes)}` : ''}${r.version ? `, версия ${r.version}` : ''}`;
@@ -466,11 +487,13 @@ function sendFileOutcome(r: SendFileResult): ToolOutcome {
     return r.status === 'dropped_stopped' || r.status === 'failed' ? fail(text) : ok(text);
   }
   if (r.status === 'dropped_stopped' || r.status === 'dropped_stale_turn') return fail(OUTCOME.fileStopped);
+  const how = r.as === 'photo' ? ' как фото' : '';
   const notes: string[] = [];
+  if (r.as_note) notes.push(`фото не получится (${r.as_note}) — уйдёт файлом`);
   if (r.sent_before) notes.push(`эту же версию уже отправлял ${r.sent_before} раз — владелец получит её ещё раз`);
   if (r.updated) notes.push('владелец увидит пометку «обновлено»');
   const tail = notes.length ? `; ${notes.join('; ')}` : '';
-  if (r.status === 'held_paused') return ok(`пауза: файл ${what} придержан — уйдёт, когда владелец скажет «продолжить»${tail}`);
-  if (r.status === 'queued') return ok(`файл ${what} поставлен в отправку${r.where ? ` (${r.where})` : ''}${tail}`);
+  if (r.status === 'held_paused') return ok(`пауза: файл ${what} придержан — уйдёт${how}, когда владелец скажет «продолжить»${tail}`);
+  if (r.status === 'queued') return ok(`файл ${what} поставлен в отправку${how}${r.where ? ` (${r.where})` : ''}${tail}`);
   return ok(`${r.status}: ${what}${tail}`);
 }
