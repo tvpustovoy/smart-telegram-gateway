@@ -97,8 +97,10 @@ The chat interface and the design documents are in Russian; the entries below de
   off, the 15-minute limit and its extension, "stop", an adapter that drops off, foreign numbers, an unverified lease; 👀
   held through the turn and removed by its end, a new set, "stop", a dropped adapter, the limit and a gateway restart;
   `done` inside a turn; an answer without a turn as before; `working.action`, and "sending a file…" while a parcel
-  uploads during a turn), and "sending a photo…" while the fake Codex generates an image. `test/e2e/dist/drill-codex.js`
-  runs the same against the real `codex app-server` with one owner message.
+  uploads during a turn), "sending a photo…" while the fake Codex generates an image, and a turn longer than the
+  gateway's 15-minute limit: with signs of life from Codex the adapter repeats `working` and "typing…" stays, without
+  them the gateway drops it (the adapter's repeat interval is set under test with `STG_TEST_CODEX_WORKING_REPEAT_MS`).
+  `test/e2e/dist/drill-codex.js` runs the same against the real `codex app-server` with one owner message.
 - Pictures as photos (#60; the owner asked for a picture "not as a file, but as a picture"). `send_file` sends a picture
   — `jpg`, `jpeg`, `png` or `webp` within Telegram's photo limits (at most 10 MB, width plus height at most 10,000, the
   long side at most 20 times the short one) — as a photo (`sendPhoto`), so it shows in the chat as a picture; anything

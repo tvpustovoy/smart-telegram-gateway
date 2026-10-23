@@ -1,6 +1,8 @@
 // Сроки адаптера Codex (#55). Сроки связи со шлюзом — общие с каналом (stg-channel, timing.ts); здесь — свои: перезапуск
 // app-server с паузой 1…30 с, снять аренду, если Codex не поднялся за минуту, повтор хода после отказа и сбоя, проверка
-// входа, повтор «агент работает» шлюзу. Под тестом (STG_TEST=1) их можно ужать множителем STG_TEST_CODEX_TIME_SCALE (0 < k ≤ 1).
+// входа, повтор «агент работает» шлюзу. Под тестом (STG_TEST=1) их можно ужать множителем STG_TEST_CODEX_TIME_SCALE (0 < k ≤ 1),
+// а повтор «агент работает» задать прямо — STG_TEST_CODEX_WORKING_REPEAT_MS (целое > 0, мс): тест хода дольше срока
+// шлюза (15 минут по его поддельным часам) с признаками жизни Codex по настоящим.
 
 export interface CodexTiming {
   restartMinMs: number;
@@ -37,20 +39,25 @@ export const DEFAULT_CODEX_TIMING: CodexTiming = {
 };
 
 export function codexTimingFromEnv(env: NodeJS.ProcessEnv): CodexTiming {
-  const raw = env.STG_TEST === '1' ? env.STG_TEST_CODEX_TIME_SCALE : undefined;
+  const test = env.STG_TEST === '1';
+  const raw = test ? env.STG_TEST_CODEX_TIME_SCALE : undefined;
   const k = raw ? Number(raw) : 1;
-  if (!Number.isFinite(k) || k <= 0 || k > 1) return DEFAULT_CODEX_TIMING;
-  const scale = (ms: number): number => Math.max(1, Math.round(ms * k));
   const d = DEFAULT_CODEX_TIMING;
-  return {
-    restartMinMs: scale(d.restartMinMs),
-    restartMaxMs: scale(d.restartMaxMs),
-    giveUpMs: scale(d.giveUpMs),
-    turnRetryMs: scale(d.turnRetryMs),
-    failRetryMs: d.failRetryMs.map(scale),
-    limitRetryMs: scale(d.limitRetryMs),
-    accountRetryMs: scale(d.accountRetryMs),
-    requestTimeoutMs: d.requestTimeoutMs,
-    workingRepeatMs: scale(d.workingRepeatMs),
-  };
+  let t = d;
+  if (Number.isFinite(k) && k > 0 && k <= 1 && k !== 1) {
+    const scale = (ms: number): number => Math.max(1, Math.round(ms * k));
+    t = {
+      restartMinMs: scale(d.restartMinMs),
+      restartMaxMs: scale(d.restartMaxMs),
+      giveUpMs: scale(d.giveUpMs),
+      turnRetryMs: scale(d.turnRetryMs),
+      failRetryMs: d.failRetryMs.map(scale),
+      limitRetryMs: scale(d.limitRetryMs),
+      accountRetryMs: scale(d.accountRetryMs),
+      requestTimeoutMs: d.requestTimeoutMs,
+      workingRepeatMs: scale(d.workingRepeatMs),
+    };
+  }
+  const repeat = test && env.STG_TEST_CODEX_WORKING_REPEAT_MS ? Number(env.STG_TEST_CODEX_WORKING_REPEAT_MS) : NaN;
+  return Number.isInteger(repeat) && repeat > 0 ? { ...t, workingRepeatMs: repeat } : t;
 }

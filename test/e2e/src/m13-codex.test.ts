@@ -9,7 +9,8 @@
 // поздний вызов отклонён, [продолжить] → строки режима первыми · ход без ответа → одно напоминание · картинка — data URL ·
 // send_file из папки посылок · лимит → строка владельцу и повтор · падение app-server → resume того же треда, повтор с
 // пометкой · перезапуск адаптера → тот же тред, проба без хода · инструменты шлюза изменились (хеш схемы в state.json) →
-// новый тред, прежний — previousThreadId · Codex лежит дольше минуты → аренда снята; поднялся →
+// новый тред, прежний — previousThreadId · ход дольше срока шлюза с признаками жизни Codex → working повторяется,
+// «печатает…» держится; без них — шлюз снимает через 15 минут · Codex лежит дольше минуты → аренда снята; поднялся →
 // новая аренда, событие упавшего хода уходит в Codex без нового сообщения и один раз.
 
 import assert from 'node:assert/strict';
@@ -424,6 +425,73 @@ describe('M13 · адаптер Codex: Codex лежит дольше минут�
     assert.ok(adapter.log.includes(`№ ${b} уже ждёт в очереди — повтор шлюза не дублирую; отдан новой аренде`), 'повтор шлюза перевесил событие на новую аренду');
     const lease2 = verified()[1]!.lease;
     assert.ok(readJournal(s.home).some((l) => l.ev === 'delivered' && l.seq === b && l.lease === lease2), 'delivered — от новой аренды');
+  });
+});
+
+describe('M13 · адаптер Codex: ход дольше срока шлюза (15 минут) — working повторяется на признаки жизни Codex', () => {
+  let s: Setup;
+  let gw: GatewayProcess;
+  let adapter: CodexAdapter;
+  after(async () => {
+    if (process.env.STG_TEST_CODEX_FEED === '1') process.stderr.write(`\n— лента stg-codex —\n${adapter?.feed ?? ''}\n`);
+    if (adapter?.alive) await adapter.kill9();
+    if (gw?.alive) await gw.stop();
+    await s.close();
+  });
+
+  it('Codex подаёт признаки жизни — «печатает…» и 👀 держатся 20 минут по часам шлюза (working повторяется не чаще workingRepeatMs); Codex молчит — шлюз снимает через 15 минут', async () => {
+    s = await setup();
+    gw = await s.start();
+    const agentDir = fs.realpathSync(makeTempDir('stg-agent-'));
+    const fakeDir = makeTempDir('stg-fcx-');
+    // Повтор working — 50 мс настоящего времени (по умолчанию 30 с): часы шлюза идут шагами по минуте, между шагами —
+    // 150 мс, за них Codex «работает» (признак жизни каждые 30 мс), и адаптер повторяет working.
+    adapter = CodexAdapter.start({ home: s.home.dir, agentDir, codex: FAKE_CODEX_ENTRY, env: { FAKE_CODEX_DIR: fakeDir, STG_TEST_CODEX_WORKING_REPEAT_MS: '50' } });
+    await adapter.waitFeed((l) => /проверка канала № \d+ — закрыта адаптером/.test(l), 15_000, 'закрытия пробы');
+    const sayU = async (text: string): Promise<{ u: Update; seq: number }> => {
+      const u = s.fake.push(s.fake.builder.text(OWNER, text))[0]!;
+      return { u, seq: await waitUntil(() => q1<{ seq: number }>(s.home, 'SELECT seq FROM events WHERE update_id = ?', u.update_id)?.seq, 5000, 'приёма') };
+    };
+    const typing = (): number => s.fake.chatActions.filter((a) => a.chat_id === OWNER.id && a.action === 'typing').length;
+    const expired = (): number => readJournal(s.home).filter((l) => l.ev === 'working_expired').length;
+    const minutes = async (n: number): Promise<void> => {
+      for (let i = 0; i < n; i++) {
+        await gw.advance('60s');
+        await sleep(150);
+      }
+    };
+    const typedDuring = async (steps: number): Promise<number> => {
+      const n = typing();
+      for (let i = 0; i < steps; i++) {
+        await gw.advance('4s');
+        await sleep(20);
+      }
+      await sleep(250);
+      return typing() - n;
+    };
+
+    // С признаками жизни: 20 минут — больше срока шлюза, а срок не вышел.
+    const live = await sayU('промежуточно, пульс: долгая работа');
+    await waitSent(s, gw, (m) => m.text === `смотрю, № ${live.seq}`, 'промежуточного ответа');
+    await waitUntil(() => readJournal(s.home).find((l) => l.ev === 'working' && l.on === true && (l.seqs as number[]).includes(live.seq)), 5000, 'working');
+    await minutes(20);
+    assert.equal(expired(), 0, 'Codex работает — working повторялся, срок шлюза не вышел');
+    assert.ok((await typedDuring(5)) >= 4, 'на 20-й минуте — ещё «печатает…»');
+    assert.equal(reactionOf(s.fake, live.u), '👀', 'и 👀 держится');
+    fs.writeFileSync(path.join(fakeDir, `go-${live.seq}`), '1');
+    await waitSent(s, gw, (m) => m.text === `ответ на № ${live.seq}`, 'ответа');
+    await pump(gw, () => receiptCleared(s.fake, live.u) || null, { what: '👀 снят по turn/completed' });
+
+    // Молча: признаков жизни нет — адаптер не повторяет, шлюз снимает через 15 минут.
+    const quiet = await sayU('промежуточно: молча');
+    await waitSent(s, gw, (m) => m.text === `смотрю, № ${quiet.seq}`, 'промежуточного ответа');
+    await waitUntil(() => readJournal(s.home).find((l) => l.ev === 'working' && l.on === true && (l.seqs as number[]).includes(quiet.seq)), 5000, 'working');
+    await minutes(16);
+    await waitUntil(() => expired() > 0 || null, 5000, 'working_expired');
+    assert.equal(await typedDuring(5), 0, 'срок вышел — тишина');
+    await pump(gw, () => receiptCleared(s.fake, quiet.u) || null, { what: '👀 снят по сроку' });
+    fs.writeFileSync(path.join(fakeDir, `go-${quiet.seq}`), '1');
+    await waitSent(s, gw, (m) => m.text === `ответ на № ${quiet.seq}`, 'ответа');
   });
 });
 

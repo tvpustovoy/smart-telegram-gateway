@@ -14,6 +14,7 @@ import { codexCommand, versionFromUserAgent } from './codex-bin.js';
 import { codexEnvOf, parcelsLayout } from './index.js';
 import { errorKind, eventText } from './runner.js';
 import { emptyState, loadState, saveState } from './state.js';
+import { DEFAULT_CODEX_TIMING, codexTimingFromEnv } from './timing.js';
 import { answeredBy, dynamicTools, toToolResponse, toolsHashOf } from './tools-bridge.js';
 
 const dirs: string[] = [];
@@ -121,6 +122,19 @@ describe('stg-codex · клиент JSON-RPC к app-server', () => {
     const second = echo();
     await second.srv.close();
     assert.deepEqual(second.exits, [{ code: 0, expected: true }]);
+  });
+});
+
+describe('stg-codex · сроки', () => {
+  it('под тестом: множитель ужимает сроки; повтор working — STG_TEST_CODEX_WORKING_REPEAT_MS прямо (целое > 0); без STG_TEST — по умолчанию', () => {
+    assert.equal(codexTimingFromEnv({}), DEFAULT_CODEX_TIMING);
+    assert.equal(codexTimingFromEnv({ STG_TEST_CODEX_WORKING_REPEAT_MS: '50' }).workingRepeatMs, 30_000, 'без STG_TEST — не действует');
+    assert.equal(codexTimingFromEnv({ STG_TEST: '1', STG_TEST_CODEX_TIME_SCALE: '0.01' }).workingRepeatMs, 300);
+    const t = codexTimingFromEnv({ STG_TEST: '1', STG_TEST_CODEX_TIME_SCALE: '0.01', STG_TEST_CODEX_WORKING_REPEAT_MS: '50' });
+    assert.deepEqual([t.workingRepeatMs, t.giveUpMs], [50, 600]);
+    assert.equal(codexTimingFromEnv({ STG_TEST: '1', STG_TEST_CODEX_WORKING_REPEAT_MS: '75' }).workingRepeatMs, 75);
+    for (const bad of ['0', '-5', '1.5', 'x']) assert.equal(codexTimingFromEnv({ STG_TEST: '1', STG_TEST_CODEX_WORKING_REPEAT_MS: bad }).workingRepeatMs, 30_000, bad);
+    assert.equal(DEFAULT_CODEX_TIMING.workingRepeatMs, 30_000, 'по умолчанию нетронуто');
   });
 });
 

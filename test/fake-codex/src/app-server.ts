@@ -20,7 +20,8 @@
 //   «картинка»          media(seq: N) и reply о том, что пришло (текст и картинка)
 //   «медленно»          ответ на turn/start — через 0,8 с (проверка: delivered — только после ответа)
 //   «промежуточно»      сразу reply «смотрю, № N», затем ход идёт молча, пока в каталоге подделки нет файла go-<N>
-//                       (или до turn/interrupt, не дольше 60 с), — и reply «ответ на № N»
+//                       (или до turn/interrupt, не дольше 60 с), — и reply «ответ на № N»; с «пульс» — не молча:
+//                       пока ждёт, каждые 30 мс признак жизни (item/reasoning/summaryTextDelta), как Codex за работой
 //   «нарисуй»           сразу reply «Нарисую, № N»; затем картинка, как у Codex 0.163: item/started imageGeneration
 //                       (status in_progress), пока нет файла img-<N> — item/completed (completed, savedPath); затем ждёт
 //                       go-<N> — и reply «ответ на № N» (оба ожидания — до turn/interrupt, не дольше 60 с)
@@ -142,11 +143,15 @@ function threadRoots(): string[] {
   return threadId ? (loadThreads()[threadId]?.writableRoots ?? []) : [];
 }
 
-/** Ход ждёт файла name в каталоге подделки (или turn/interrupt, не дольше 60 с). */
-async function waitGate(turn: FakeTurn, name: string): Promise<void> {
+/** Ход ждёт файла name в каталоге подделки (или turn/interrupt, не дольше 60 с); pulse — с признаками жизни каждые 30 мс. */
+async function waitGate(turn: FakeTurn, name: string, pulse = false): Promise<void> {
   const gate = path.join(DIR, name);
   const until = Date.now() + 60_000;
-  while (!turn.interrupted && !fs.existsSync(gate) && Date.now() < until) await sleep(20);
+  const itemId = newId('rs');
+  while (!turn.interrupted && !fs.existsSync(gate) && Date.now() < until) {
+    if (pulse) notify('item/reasoning/summaryTextDelta', { threadId: turn.threadId, turnId: turn.id, itemId, delta: '…', summaryIndex: 0 });
+    await sleep(pulse ? 30 : 20);
+  }
 }
 
 async function handleInput(turn: FakeTurn, text: string): Promise<'crash' | 'fail' | null> {
@@ -178,7 +183,7 @@ async function handleInput(turn: FakeTurn, text: string): Promise<'crash' | 'fai
     }
     if (!repeat && body.includes('промежуточно')) {
       await toolCall(turn, 'reply', { seq: ev.seq, text: `смотрю, № ${ev.seq}` });
-      await waitGate(turn, `go-${ev.seq}`);
+      await waitGate(turn, `go-${ev.seq}`, body.includes('пульс'));
       if (turn.interrupted) return null;
     }
     if (!repeat && body.includes('нарисуй')) {
