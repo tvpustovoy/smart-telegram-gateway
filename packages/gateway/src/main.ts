@@ -260,8 +260,9 @@ class Gateway {
     // Посылки (0.3.3, 5.16): send_file — копия в raw/parcels и доставка в очередь отправителя.
     adapter.setParcels(new ParcelService(ctx, hooks));
     agentState.bindLive({ online: () => adapter.hasLease, leaseCwd: () => adapter.leaseInfo()?.cwd ?? null });
-    // Закреплённая строка (5.7): на связи ли агент — знает только аренда; значки агента — agent-state.json.
-    sender.statusLine.bindLive({ online: () => adapter.hasLease, agent: (now) => agentState.view(now) });
+    // Закреплённая строка (5.7): на связи ли агент — знает только аренда; идёт ли ход (working, #55) — «печатает…»;
+    // значки агента — agent-state.json.
+    sender.statusLine.bindLive({ online: () => adapter.hasLease, working: () => adapter.typing.isWorking, agent: (now) => agentState.view(now) });
     // Расшифровка или отказ записаны: ответ владельцу (расшифровка или причина) — отправителю, событие (и ждавшие за
     // ним) — переходнику.
     // Распознанный материал без слов владельца в окне снова удерживается (0.3.6, material.ts) — таймер окна сверяется.

@@ -19,6 +19,8 @@
 //   «файл»              пишет файл в первую writable root треда (папку посылок) и send_file(<посылка>/<файл>, seq)
 //   «картинка»          media(seq: N) и reply о том, что пришло (текст и картинка)
 //   «медленно»          ответ на turn/start — через 0,8 с (проверка: delivered — только после ответа)
+//   «промежуточно»      сразу reply «смотрю, № N», затем ход идёт молча, пока в каталоге подделки нет файла go-<N>
+//                       (или до turn/interrupt, не дольше 60 с), — и reply «ответ на № N»
 // Повтор шлюза («повтор: проверь, не сделано ли уже») — всегда reply сразу, без «жди» и «молчи».
 
 import fs from 'node:fs';
@@ -163,6 +165,13 @@ async function handleInput(turn: FakeTurn, text: string): Promise<'crash' | 'fai
       // Вызов, который был «в пути», когда пришёл стоп: адаптер должен отказать сам.
       await toolCall(turn, 'reply', { seq: ev.seq, text: `поздно: ответ на № ${ev.seq}` });
       return null;
+    }
+    if (!repeat && body.includes('промежуточно')) {
+      await toolCall(turn, 'reply', { seq: ev.seq, text: `смотрю, № ${ev.seq}` });
+      const gate = path.join(DIR, `go-${ev.seq}`);
+      const until = Date.now() + 60_000;
+      while (!turn.interrupted && !fs.existsSync(gate) && Date.now() < until) await sleep(20);
+      if (turn.interrupted) return null;
     }
     if (!repeat && body.includes('долго')) await sleep(1500);
     if (turn.interrupted) return null;

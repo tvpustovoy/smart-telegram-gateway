@@ -4,7 +4,8 @@
 // ownerRoleName). Открытого эпизода нет — последний с пометкой «закрыт» (`📍 #5 · Отпуск в мае · закрыт`; прежнее
 // «Эпизода нет» рядом с «Эп. 5» в чате читалось как противоречие); эпизодов не было — `📍 Тем ещё не было` ⟨предл.⟩.
 // Значками — режим (если не «работает»), агент (🟢 свободен · 🟡 думает · ⚪ не на связи — только кружок, без слов), сколько
-// сообщений ждут. «Думает» — агенту отдано (delivered), ответа или done ещё нет. Значки агента (5.14; J-4, P-1, D-6) —
+// сообщений ждут. «Думает» — агенту отдано (delivered), ответа или done ещё нет, или ход агента ещё идёт (`working`,
+// #55: адаптер Codex — и после промежуточного ответа) ⟨предл.⟩. Значки агента (5.14; J-4, P-1, D-6) —
 // из файла agent-state.json, который пишет сессия агента (agent-state.ts): `🧠 16%` (или `🌀` — идёт сжатие),
 // `🕐 31% · 📅 64%` (5 часов · неделя, выше 80% — `⚠85% до 14:00`), отказ модели — кружок 🔴 вместо 🟢 / 🟡 / ⚪. Нет
 // данных, они от другой сессии или старые — значка нет.
@@ -98,6 +99,8 @@ export function statusLinePinFailed(ctx: Ctx): boolean {
 export interface StatusLineLive {
   /** Агент на связи — проверенная аренда (adapter.ts). */
   online(): boolean;
+  /** Ход агента идёт (working, #55; typing.ts) — «думает», даже если на события хода уже есть ответ. */
+  working?(): boolean;
   /** Значки агента: контекст, сжатие, лимиты, отказ модели (agent-state.ts); нет — без значков. */
   agent?(now: number): AgentView | null;
 }
@@ -147,10 +150,14 @@ export class StatusLine {
     return { chatId: owner, text, base, ind: parts.join(' · '), urgent: view ? agentUrgentSignature(view) : '' };
   }
 
-  /** 🔴 модель не отвечает (отказ модели) · 🟢 свободен · 🟡 думает (отдано, ответа или done ещё нет) · ⚪ не на связи. */
+  /**
+   * 🔴 модель не отвечает (отказ модели) · 🟢 свободен · 🟡 думает (отдано, ответа или done ещё нет; или ход агента идёт —
+   * working) · ⚪ не на связи.
+   */
   private agentState(view: AgentView | null): AgentState {
     if (view?.failure) return 'failed';
     if (!this.live.online()) return 'offline';
+    if (this.live.working?.() === true) return 'busy';
     const busy = sql(this.ctx.db, `SELECT 1 FROM events WHERE status = 'delivered' AND kind IN (${MSG_KINDS_SQL}) LIMIT 1`).get();
     return busy ? 'busy' : 'free';
   }

@@ -1,6 +1,6 @@
 // Сроки адаптера Codex (#55). Сроки связи со шлюзом — общие с каналом (stg-channel, timing.ts); здесь — свои: перезапуск
 // app-server с паузой 1…30 с, снять аренду, если Codex не поднялся за минуту, повтор хода после отказа и сбоя, проверка
-// входа. Под тестом (STG_TEST=1) их можно ужать множителем STG_TEST_CODEX_TIME_SCALE (0 < k ≤ 1).
+// входа, повтор «агент работает» шлюзу. Под тестом (STG_TEST=1) их можно ужать множителем STG_TEST_CODEX_TIME_SCALE (0 < k ≤ 1).
 
 export interface CodexTiming {
   restartMinMs: number;
@@ -17,6 +17,11 @@ export interface CodexTiming {
   accountRetryMs: number;
   /** Срок ответа app-server на запрос (initialize, thread/start …). */
   requestTimeoutMs: number;
+  /**
+   * Ход идёт — `working` шлюзу повторяется на признаки жизни Codex (уведомления треда, вызовы инструментов), не чаще
+   * этого (#55). Шлюз держит «печатает…» WORKING_HOLD_MS (15 мин) после последнего.
+   */
+  workingRepeatMs: number;
 }
 
 export const DEFAULT_CODEX_TIMING: CodexTiming = {
@@ -28,6 +33,7 @@ export const DEFAULT_CODEX_TIMING: CodexTiming = {
   limitRetryMs: 300_000,
   accountRetryMs: 60_000,
   requestTimeoutMs: 120_000,
+  workingRepeatMs: 30_000,
 };
 
 export function codexTimingFromEnv(env: NodeJS.ProcessEnv): CodexTiming {
@@ -45,5 +51,6 @@ export function codexTimingFromEnv(env: NodeJS.ProcessEnv): CodexTiming {
     limitRetryMs: scale(d.limitRetryMs),
     accountRetryMs: scale(d.accountRetryMs),
     requestTimeoutMs: d.requestTimeoutMs,
+    workingRepeatMs: scale(d.workingRepeatMs),
   };
 }

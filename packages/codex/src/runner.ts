@@ -20,6 +20,11 @@
 //   идущий ход или первой строкой следующего. Пауза событий не держит: ответы на слова владельца в паузе уходят, а
 //   сообщения агента по своей инициативе придерживает шлюз.
 // - Ход закончился, а на событие из него нет ни reply, ни done, ни send_file, ни итога — одно напоминание тем же тредом.
+// - «Печатает…» на весь ход: пока ход Codex идёт (ответ на turn/start … turn/completed), шлюзу — working {on: true, seqs}
+//   с № событий хода: шлюз держит «печатает…» в их чатах и после промежуточного reply, в закреплённой строке — 🟡.
+//   Набор сменился (ход начат, ввод добавлен) или новая аренда — сразу; дальше — на признаки жизни Codex (уведомления
+//   треда, вызовы инструментов), не чаще workingRepeatMs (30 с): Codex замолчал — шлюз снимет «печатает…» сам через
+//   WORKING_HOLD_MS (15 мин). Ход кончился или прерван «стопом» — working {on: false}. Шлюз без working — больше не шлём.
 // - Ход упал: слетел вход, лимит тарифа, предел запросов — строка владельцу (одна на беду) и повтор через 5 минут;
 //   прочее — повтор через 1, 5, 15 минут. app-server упал — перезапуск с паузой 1…30 с и thread/resume; события
 //   незаконченного хода — снова, с пометкой «повтор после сбоя Codex». Не поднялся за минуту — аренда снимается.
@@ -174,6 +179,10 @@ export class Runner {
   private readonly restartPending: Set<number>;
   private readonly instanceId: string;
   private lastUsage: TokenUsageNotification['tokenUsage'] | null = null;
+  /** Последний working {on: true} шлюзу: № событий хода через запятую и когда (Date.now); null — хода нет (или off ушёл). */
+  private workingSent: { sig: string; at: number } | null = null;
+  /** Шлюз не знает working (старая версия): до новой аренды не шлём. */
+  private workingUnsupported = false;
   private codexVersion: string | null = null;
   /** Папка посылок — настоящий путь (песочница Codex сверяет пути без ссылок: /var → /private/var). */
   private parcelsDir: string;
@@ -381,6 +390,7 @@ export class Runner {
     for (const t of this.openTurns.values()) this.requeue(t, 'crash');
     this.openTurns.clear();
     this.active = null;
+    this.syncWorking();
     this.downSince ??= Date.now();
     const wait = this.restartDelay;
     this.restartDelay = Math.min(this.opts.timing.restartMaxMs, this.restartDelay * 2);
@@ -481,8 +491,11 @@ export class Runner {
     if (!client) return;
     try {
       const r = await client.request('done', { seqs: [ev.seq], ...(ev.code !== undefined ? { code: ev.code } : {}) });
-      if (r.type === 'ack') this.opts.feed.line('sys', `проверка канала № ${ev.seq} — закрыта адаптером (ход модели не нужен)`);
-      else this.opts.feed.line('warn', `проверка канала № ${ev.seq}: ${r.type === 'error' ? `${r.code} — ${r.text}` : r.type}`);
+      if (r.type === 'ack') {
+        this.opts.feed.line('sys', `проверка канала № ${ev.seq} — закрыта адаптером (ход модели не нужен)`);
+        // Аренда проверена: working до проверки шлюз отклонил (unverified) — ход идёт, «печатает…» — сейчас.
+        this.syncWorking();
+      } else this.opts.feed.line('warn', `проверка канала № ${ev.seq}: ${r.type === 'error' ? `${r.code} — ${r.text}` : r.type}`);
     } catch (err) {
       this.opts.log(`done на пробу № ${ev.seq}: ${(err as Error).message}`);
     }
@@ -495,6 +508,9 @@ export class Runner {
     const lease = this.leaseNow();
     if (lease !== null && lease !== this.leaseSeen) {
       this.leaseSeen = lease;
+      // Снятая аренда унесла «печатает…» хода: новой — сразу заново; старый шлюз мог обновиться.
+      this.workingSent = null;
+      this.workingUnsupported = false;
       const waiting = this.queue.filter((q) => q.lease !== lease).map((q) => q.ev.seq);
       if (waiting.length) this.opts.log(`новая аренда: ${seqList(waiting)} в очереди — Codex получит, когда шлюз отдаст их этой аренде`);
     }
@@ -504,12 +520,14 @@ export class Runner {
       if (state === 'stopped') {
         this.opts.feed.line('sys', '⛔ владелец сказал «стоп»');
         this.interruptActive();
+        this.syncWorking();
         return;
       }
       this.opts.feed.line('sys', state === 'paused' ? '⏸ пауза' : prev === 'stopped' ? '▶ стоп снят' : '▶ пауза снята');
     }
     // welcome новой аренды приходит сюда же, обычно без смены режима: что ждало связи со шлюзом (напоминания, отданное этой
-    // аренде), — дальше.
+    // аренде), — дальше; ход идёт — «печатает…» новой аренде.
+    this.syncWorking();
     this.schedulePump();
   }
 
@@ -640,7 +658,9 @@ export class Runner {
         // «Стоп» пришёл, пока ждали ответа на turn/start: ход только что начат — прервать.
         if ((this.mode as Mode) === 'stopped') this.interruptActive();
         const early = this.completedEarly.get(turnId);
+        // Ход идёт — «печатает…» на весь ход (после delivered: шлюз берёт № уже отданных агенту).
         if (early) this.onTurnCompleted(early);
+        else this.syncWorking();
       }
     } finally {
       this.pumping = false;
@@ -649,6 +669,53 @@ export class Runner {
         this.schedulePump();
       }
     }
+  }
+
+  /** № событий идущих ходов (не прерванных «стопом»): в их чатах шлюз держит «печатает…». */
+  private workingSeqs(): number[] | null {
+    const live = [...this.openTurns.values()].filter((t) => !this.interrupted.has(t.id));
+    if (!live.length) return null;
+    return [...new Set(live.flatMap((t) => [...t.seqs]))].sort((a, b) => a - b);
+  }
+
+  /**
+   * «Агент работает» шлюзу (#55): ход идёт — working {on: true, seqs}, набор сменился — сразу, тот же — не чаще
+   * workingRepeatMs (вызывается на признаки жизни Codex); хода нет — working {on: false}, один раз.
+   */
+  private syncWorking(): void {
+    const client = this.client;
+    if (!client || client.state.kind !== 'leased' || this.workingUnsupported) return;
+    const seqs = this.ready && this.mode !== 'stopped' ? this.workingSeqs() : null;
+    if (seqs === null) {
+      if (this.workingSent === null) return;
+      this.workingSent = null;
+      this.sendWorking(client, false, []);
+      return;
+    }
+    const sig = seqs.join(',');
+    const now = Date.now();
+    const prev = this.workingSent;
+    if (prev && prev.sig === sig && now - prev.at < this.opts.timing.workingRepeatMs) return;
+    this.workingSent = { sig, at: now };
+    this.sendWorking(client, true, seqs);
+  }
+
+  private sendWorking(client: GatewayClient, on: boolean, seqs: number[]): void {
+    client.request('working', on ? { on, seqs } : { on }).then(
+      (r) => {
+        if (r.type !== 'error') return;
+        if (r.code === 'bad_request' && /неизвестный type/.test(r.text)) {
+          if (!this.workingUnsupported) this.opts.log('шлюз не знает working (старая версия): «печатает…» гаснет после промежуточного ответа, как раньше');
+          this.workingUnsupported = true;
+          this.workingSent = null;
+          return;
+        }
+        // Аренда ещё не проверена (проба в пути): после проверки — снова (closeProbe), не дожидаясь признаков жизни Codex.
+        if (r.code === 'unverified') this.workingSent = null;
+        this.opts.log(`working: ${r.code} — ${r.text}`);
+      },
+      (err: unknown) => this.opts.log(`working: ${(err as Error).message}`),
+    );
   }
 
   private markDelivered(seq: number): void {
@@ -667,6 +734,8 @@ export class Runner {
   private onNotification(method: string, params: unknown): void {
     const p = (params ?? {}) as Record<string, unknown>;
     if (typeof p.threadId === 'string' && this.threadId !== null && p.threadId !== this.threadId) return;
+    // Признак жизни Codex в ходе — «печатает…» продлить (не чаще workingRepeatMs); конец хода — ниже.
+    if (method !== 'turn/completed' && p.threadId === this.threadId) this.syncWorking();
     switch (method) {
       case 'turn/completed':
         this.onTurnCompleted(p as unknown as TurnCompletedNotification);
@@ -760,6 +829,7 @@ export class Runner {
     this.completedEarly.delete(turn.id);
     this.openTurns.delete(turn.id);
     if (this.active?.id === turn.id) this.active = null;
+    this.syncWorking();
     const dur = typeof turn.durationMs === 'number' ? turn.durationMs : Date.now() - t.startedAt;
     if (turn.status === 'completed') {
       this.opts.feed.line('turn', `ход ${shortId(t.id)} закончен за ${seconds(dur)}${this.usageLine()}`);
@@ -814,7 +884,10 @@ export class Runner {
   // ——— запросы app-server ———
 
   private async onServerRequest(method: string, params: unknown): Promise<unknown> {
-    if (method === 'item/tool/call') return this.onToolCall(params as ToolCallParams);
+    if (method === 'item/tool/call') {
+      this.syncWorking();
+      return this.onToolCall(params as ToolCallParams);
+    }
     if (APPROVAL_REQUESTS.has(method)) {
       this.opts.feed.line('warn', `Codex просит разрешения (${method}) — отказано: владелец в Telegram`);
       return { decision: 'decline' };

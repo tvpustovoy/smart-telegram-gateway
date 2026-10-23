@@ -3,7 +3,8 @@
 // запускается. Папка агента — временный каталог с AGENTS.md: адаптер в неё не пишет.
 // Подъём: initialize с experimentalApi, тред с правилами Codex (developer instructions), песочница workspace-write без
 // сети, папка посылок — writable root вне папки агента, 8 инструментов; проба закрыта адаптером без хода модели ·
-// слово владельца → ход → delivered → reply в Telegram · два сообщения во время хода — один ход · стоп → turn/interrupt,
+// слово владельца → ход → delivered → reply в Telegram · два сообщения во время хода — один ход · промежуточный ответ,
+// а ход идёт → «печатает…» и 🟡 до turn/completed (working), «стоп» снимает сразу · стоп → turn/interrupt,
 // поздний вызов отклонён, [продолжить] → строки режима первыми · ход без ответа → одно напоминание · картинка — data URL ·
 // send_file из папки посылок · лимит → строка владельцу и повтор · падение app-server → resume того же треда, повтор с
 // пометкой · перезапуск адаптера → тот же тред, проба без хода · Codex лежит дольше минуты → аренда снята; поднялся →
@@ -16,8 +17,8 @@ import { after, before, describe, it } from 'node:test';
 import { STOPPED_TEXT, type Update } from 'stg-core';
 import { FAKE_CODEX_ENTRY, inputOf, readFakeCodexLog, requestsOf } from 'stg-fake-codex';
 import { CodexAdapter } from './codex-adapter.js';
-import { makeTempDir, pump, q1, readJournal, waitUntil, type GatewayProcess } from './harness.js';
-import { OWNER, setup, type Setup } from './m1-common.js';
+import { makeTempDir, pump, q1, readJournal, sleep, waitUntil, type GatewayProcess } from './harness.js';
+import { OWNER, setup, statusLineOf, type Setup } from './m1-common.js';
 import { press, waitSent } from './m2-common.js';
 import { jpegBytes } from './m7-common.js';
 
@@ -39,6 +40,25 @@ describe('M13 · адаптер Codex (stg-codex) против поддельн�
   const turnStarts = (): string[] => requestsOf(fakeDir, 'turn/start').map(inputOf);
   const waitReply = (text: string, what = `ответа «${text}»`) => waitSent(s, gw, (m) => m.text === text, what);
   const statusOf = (seq: number): string | undefined => q1<{ status: string }>(s.home, 'SELECT status FROM events WHERE seq = ?', seq)?.status;
+  const typing = (): number => s.fake.chatActions.filter((a) => a.chat_id === OWNER.id && a.action === 'typing').length;
+  /** Сдвинуть часы шлюза шагами по 4 с; сколько «печатает…» ушло за это время. */
+  const typedDuring = async (steps: number): Promise<number> => {
+    const n = typing();
+    for (let i = 0; i < steps; i++) {
+      await gw.advance('4s');
+      await sleep(20);
+    }
+    await sleep(250);
+    return typing() - n;
+  };
+  const waitStatus = (pred: (text: string) => boolean, what: string): Promise<string> =>
+    pump(gw, () => {
+      const st = statusLineOf(s.fake);
+      return st && pred(st.text) ? st.text : null;
+    }, { what });
+  /** Строки журнала шлюза working (#55): включён (с этим № в наборе хода) или выключен. */
+  const working = (on: boolean, seq?: number): Array<Record<string, unknown>> =>
+    readJournal(s.home).filter((l) => l.ev === 'working' && l.on === on && (seq === undefined || (l.seqs as number[]).includes(seq)));
 
   before(async () => {
     s = await setup();
@@ -122,6 +142,23 @@ describe('M13 · адаптер Codex (stg-codex) против поддельн�
     await adapter.waitFeed((l) => l.includes(`ввод добавлен в идущий ход: № ${b}`), 5000, 'строки «ввод добавлен»');
   });
 
+  it('промежуточный ответ, а ход идёт (#55): «печатает…» держится до turn/completed, дольше 2 минут, в строке 🟡; ход кончился — тишина и 🟢', async () => {
+    const seq = await say('промежуточно: что у нас записано?');
+    await waitReply(`смотрю, № ${seq}`);
+    await waitUntil(() => working(true, seq)[0], 5000, 'working от адаптера');
+    assert.equal(statusOf(seq), 'processed', 'промежуточный ответ — обработано');
+    // Ход Codex идёт молча (подделка ждёт go-N): 160 с по часам шлюза — «печатает…» каждые 4 с.
+    const during = await typedDuring(40);
+    assert.ok(during >= 35, `typing за 160 с хода: ${during}`);
+    await waitStatus((t) => /\n🟡($| · )/u.test(t), '🟡 — ход идёт');
+    const offBefore = working(false).length;
+    fs.writeFileSync(path.join(fakeDir, `go-${seq}`), '1');
+    await waitReply(`ответ на № ${seq}`);
+    await waitUntil(() => working(false).length > offBefore || null, 5000, 'working off по turn/completed');
+    assert.equal(await typedDuring(5), 0, 'ход кончился — тишина');
+    await waitStatus((t) => /\n🟢($| · )/u.test(t), '🟢 — ход кончился');
+  });
+
   it('стоп во время хода → turn/interrupt; поздний вызов из прерванного хода отклонён адаптером; [продолжить] → «стоп» и «стоп снят» первыми в следующем вводе', async () => {
     const seq = await say('жди меня');
     await waitUntil(() => turnStarts().find((t) => t.includes('жди меня')), 5000, 'turn/start');
@@ -141,6 +178,25 @@ describe('M13 · адаптер Codex (stg-codex) против поддельн�
     // Прерванное событие адаптер заново не отдаёт: решает повтор шлюза. Закрыть его — повтором по сроку.
     assert.equal(turnStarts().filter((t) => t.includes('жди меня')).length, 1);
     await pump(gw, () => s.fake.sentTo(OWNER.id).some((m) => m.text === `ответ на № ${seq}`) || null, { step: '30s', timeoutMs: 30_000, what: 'ответа на повтор шлюза' });
+  });
+
+  it('«стоп» во время хода после промежуточного ответа (#55): «печатает…» снят сразу и не возвращается; адаптер — working off', async () => {
+    const seq = await say('промежуточно и не спеши');
+    await waitReply(`смотрю, № ${seq}`);
+    await waitUntil(() => working(true, seq)[0], 5000, 'working от адаптера');
+    assert.ok((await typedDuring(3)) >= 2);
+    const offBefore = working(false).length;
+    const interruptedBefore = readFakeCodexLog(fakeDir).filter((l) => l.dir === 'turn-completed' && l.status === 'interrupted').length;
+    // Строка «остановлен» прежнего теста — уже нажата: ждать новую.
+    const oldStops = new Set(s.fake.sentTo(OWNER.id).filter((m) => m.text === STOPPED_TEXT).map((m) => m.message_id));
+    s.fake.push(s.fake.builder.text(OWNER, 'стоп'));
+    const stopLine = await waitSent(s, gw, (m) => m.text === STOPPED_TEXT && !oldStops.has(m.message_id), 'строки «остановлен»');
+    await waitUntil(() => working(false).length > offBefore || null, 5000, 'working off от адаптера');
+    await waitUntil(() => readFakeCodexLog(fakeDir).filter((l) => l.dir === 'turn-completed' && l.status === 'interrupted').length > interruptedBefore || null, 5000, 'хода interrupted');
+    assert.equal(await typedDuring(5), 0, '«стоп» — тишина');
+    assert.equal(await press(s, stopLine, 'продолжить'), null);
+    await sleep(300);
+    assert.equal(await typedDuring(3), 0, 'хода нет — и после «продолжить» тишина');
   });
 
   it('ход без ответа → одно напоминание тем же тредом → ответ доходит', async () => {

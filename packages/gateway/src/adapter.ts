@@ -49,7 +49,11 @@
 // остальное — held. done(seqs) — только события этой аренды. reply с ключом повтора (idem), который уже принят, второй
 // строки не даёт: обрыв связи посреди reply не удваивает ответ.
 //
-// «Печатает…» (5.5) — typing.ts: от delivered до ответа, не дольше 2 минут.
+// «Печатает…» (5.5) — typing.ts: от delivered до ответа, не дольше 2 минут. Ход агента идёт (`working`, #55; шлёт
+// переходник, который видит начало и конец хода, — адаптер Codex): «печатает…» в чатах событий хода держится до конца
+// хода, и после промежуточного ответа; в закреплённой строке — 🟡 «думает». Конец — working {on: false}, «стоп», снятие
+// аренды или WORKING_HOLD_MS без нового working. Только проверенной аренде; № — сообщения, уже отданные агенту (этой
+// аренде или прежней, как у media); в «стопе» working не действует.
 //
 // Реакции на сообщении владельца (reactions.ts): delivered — 👀 «агент увидел» (и при повторной отдаче правки), reply на
 // событие или done — 👌 «агент ответил». Агент не на связи — реакции нет. С 0.3.6 (issue #52; ui.clear_receipts, по
@@ -208,6 +212,8 @@ interface Lease {
   sessions: Set<string>;
   /** Версия instructions канала из hello (0.3.5, issue #47); null — канал до 0.3.5: событий правил нет. */
   instructions: string | null;
+  /** № событий хода из последнего working (#55), через запятую; null — хода нет: в журнал — только смены. */
+  working: string | null;
 }
 
 /**
@@ -416,7 +422,10 @@ export class AdapterService {
     private readonly control: Control,
     private readonly hooks: AdapterHooks,
   ) {
-    this.typing = new Typing(ctx);
+    // Ход агента начался или кончился (working, #55): кружок закреплённой строки — 🟡 или 🟢.
+    this.typing = new Typing(ctx, () => {
+      if (!this.closed) this.hooks.onReplyQueued();
+    });
     this.lastTick = ctx.clock.now();
   }
 
@@ -579,6 +588,9 @@ export class AdapterService {
         return true;
       case 'send_file':
         this.onSendFile(msg, conn);
+        return true;
+      case 'working':
+        this.onWorking(msg, conn);
         return true;
       default:
         return false;
@@ -858,6 +870,7 @@ export class AdapterService {
       session: null,
       sessions: new Set(),
       instructions,
+      working: null,
     };
   }
 
@@ -1708,6 +1721,38 @@ export class AdapterService {
     conn.send({ type: 'ack', req_id: msg.req_id, result: r });
     this.hooks.onAgentActivity?.();
     this.hooks.onReplyQueued();
+  }
+
+  /**
+   * working (#55): ход агента идёт — «печатает…» в чатах событий хода до его конца, и после промежуточного ответа (5.5).
+   * № — сообщения, которые уже отдавались агенту (этой аренде или прежней, как у media): после переподключения ход тот
+   * же, а событие с промежуточным ответом осталось за прежней арендой. Прочие № пропускаются молча: «печатает…» —
+   * подсказка, а не доставка. В «стопе» — ни одного (ход прерывается). Не вызов инструмента модели: срок повтора (К-5)
+   * он не откладывает.
+   */
+  private onWorking(msg: Extract<AdapterMessage, { type: 'working' }>, conn: GatewayConnection): void {
+    const lease = this.verifiedLease(conn, msg.req_id);
+    if (!lease) return;
+    const stopped = this.mode() === 'stopped';
+    const seqs: number[] = [];
+    const chats: Array<{ chatId: number; threadId: number | null }> = [];
+    if (msg.on && !stopped) {
+      for (const seq of new Set(msg.seqs ?? [])) {
+        const ev = this.event(seq);
+        if (!ev || ev.chat_id === null || !(MESSAGE_EVENT_KINDS as readonly string[]).includes(ev.kind)) continue;
+        if (!this.ownsEvent(lease, ev) && (ev.delivered_at ?? null) === null) continue;
+        seqs.push(seq);
+        chats.push({ chatId: ev.chat_id, threadId: ev.thread_id });
+      }
+      seqs.sort((a, b) => a - b);
+    }
+    const n = this.typing.working(chats);
+    const sig = msg.on && !stopped ? seqs.join(',') : null;
+    if (sig !== lease.working) {
+      lease.working = sig;
+      this.ctx.journal.write('working', { lease: lease.id, on: msg.on, seqs, chats: n, ...(msg.on && stopped ? { stopped: true } : {}) });
+    }
+    conn.send({ type: 'ack', req_id: msg.req_id, result: { chats: n, seqs } });
   }
 
   private onDone(msg: Extract<AdapterMessage, { type: 'done' }>, conn: GatewayConnection): void {

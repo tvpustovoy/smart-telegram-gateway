@@ -11,6 +11,8 @@ import {
   PROTOCOL_VERSION,
   RuleChangeSchema,
   SendFileResultSchema,
+  WORKING_HOLD_MS,
+  WorkingResultSchema,
   encodeFrame,
   parseAdapterLine,
   parseGatewayLine,
@@ -413,5 +415,25 @@ describe('протокол: материал без слов владельца 
     assert.ok(parseGatewayLine(JSON.stringify(base)).ok);
     const withHeld = parseGatewayLine(JSON.stringify({ ...base, data: { ...base.data, held_material: [21, 22] } }));
     assert.ok(withHeld.ok && withHeld.message.type === 'where_result' && withHeld.message.data?.held_material?.length === 2);
+  });
+});
+
+describe('протокол: ход агента идёт (#55) — working', () => {
+  it('working {req_id, on, seqs?}: on — да или нет, seqs — № (до 1000), необязательное; лишнее поле, не № и без on — bad_request', () => {
+    assert.deepEqual(ok(JSON.stringify({ type: 'working', req_id: 'w1', on: true, seqs: [5, 7] })), { type: 'working', req_id: 'w1', on: true, seqs: [5, 7] });
+    assert.deepEqual(ok(JSON.stringify({ type: 'working', req_id: 'w2', on: false })), { type: 'working', req_id: 'w2', on: false });
+    assert.equal(ok(JSON.stringify({ type: 'working', req_id: 'w3', on: true, seqs: [] })).type, 'working');
+    bad(JSON.stringify({ type: 'working', req_id: 'w4', seqs: [5] }));
+    bad(JSON.stringify({ type: 'working', req_id: 'w5', on: 'yes' }));
+    bad(JSON.stringify({ type: 'working', req_id: 'w6', on: true, seqs: [0] }));
+    bad(JSON.stringify({ type: 'working', req_id: 'w7', on: true, seqs: [1.5] }));
+    bad(JSON.stringify({ type: 'working', req_id: 'w8', on: true, seqs: Array.from({ length: 1001 }, (_, i) => i + 1) }));
+    assert.equal(bad(JSON.stringify({ type: 'working', req_id: 'w9', on: true, chat: 111 })).req_id, 'w9');
+  });
+
+  it('ответ на working терпим (новое поле не ломает прежний переходник); предел без повтора — 15 минут', () => {
+    const r = WorkingResultSchema.safeParse({ chats: 1, seqs: [5], extra: 'x' });
+    assert.ok(r.success && r.data.chats === 1 && r.data.seqs[0] === 5);
+    assert.equal(WORKING_HOLD_MS, 15 * 60_000);
   });
 });

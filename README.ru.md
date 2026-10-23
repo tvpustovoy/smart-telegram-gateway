@@ -96,7 +96,9 @@ scripts/codex-agent-start.sh --agent-dir ~/Agents/my-codex-agent [--stg-home ~/.
 в папку агента адаптер не пишет. Права базовые: песочница `workspace-write` (запись — только в папку агента и папку
 посылок шлюза, сеть у команд закрыта, запросов разрешения нет). Посылки — вне папки агента: `parcels.dir` из
 `config.yaml` или `<каталог бота>/parcels`. Тред один на разговор, его id — в `<каталог бота>/codex/state.json`, журнал
-— `<каталог бота>/codex/adapter.log`. Подробнее — в [README.md](README.md#codex--connect-an-existing-agent).
+— `<каталог бота>/codex/adapter.log`. Пока ход Codex идёт — «печатает…» в чате и 🟡 в закреплённой строке, и после
+промежуточного ответа агента; конец хода или «стоп» — снимается, Codex 15 минут не подаёт признаков жизни — шлюз
+снимает сам. Подробнее — в [README.md](README.md#codex--connect-an-existing-agent).
 
 ## Настройки
 

@@ -196,6 +196,31 @@ export const SendFileSchema = z.strictObject({
 });
 
 /**
+ * Ход агента идёт (#55; в пределах v1, необязательное): «печатает…» держится в чатах событий хода всё время хода, и после
+ * промежуточного ответа на них (5.5). on: true — seqs: № событий хода (отданных агенту — этой аренде или прежней;
+ * прочие пропускаются); кадр заменяет прежний набор. Повторять, пока ход идёт: без нового working за WORKING_HOLD_MS
+ * шлюз снимает «печатает…» сам. on: false — ход кончился. «Стоп» и снятие аренды снимают сразу; в «стопе» working
+ * не действует. `ack.result` — WorkingResult. Только проверенной аренде. Канал Claude Code его не шлёт (конца хода он не
+ * видит) — у него всё как раньше. Шлюз без working отвечает bad_request «неизвестный type» — переходник больше не шлёт.
+ */
+export const WorkingSchema = z.strictObject({
+  type: z.literal('working'),
+  req_id: reqId,
+  on: z.boolean(),
+  seqs: z.array(seq).max(1000).optional(),
+});
+
+/** Без нового working столько — шлюз снимает «печатает…» хода сам (переходник замолчал, ход завис) ⟨предл.⟩. */
+export const WORKING_HOLD_MS = 15 * 60_000;
+
+/**
+ * Ответ на working: chats — в скольких чатах «печатает…» держится ходом; seqs — какие № приняты (прочие — не
+ * сообщения, не отданы агенту, нет чата; в «стопе» — ни одного). Терпимо: новые поля не ломают прежний переходник.
+ */
+export const WorkingResultSchema = z.object({ chats: z.int().nonnegative(), seqs: z.array(seq) });
+export type WorkingResult = z.infer<typeof WorkingResultSchema>;
+
+/**
  * Повтор отложенного обновления (5.3, `stg deferred retry <update_id>`): только соединение CLI (`hello role cli`). В
  * базу пишет только шлюз — поэтому повтор идёт через его сокет. `ack.result`: `{update_id, status, seq}`.
  */
@@ -216,6 +241,7 @@ export const AdapterMessageSchema = z.discriminatedUnion('type', [
   DeferredRetrySchema,
   MediaSchema,
   SendFileSchema,
+  WorkingSchema,
   PingSchema,
   PongSchema,
 ]);
@@ -233,6 +259,7 @@ export const ADAPTER_MESSAGE_TYPES: readonly AdapterMessageType[] = [
   'deferred_retry',
   'media',
   'send_file',
+  'working',
   'ping',
   'pong',
 ];

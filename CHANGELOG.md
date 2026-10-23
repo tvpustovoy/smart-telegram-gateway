@@ -38,6 +38,20 @@ The chat interface and the design documents are in Russian; the entries below de
 - Codex gets only events the gateway handed to the current lease. After a new lease (a reconnect, or the lease given
   up and taken again) a waiting event goes to Codex when the gateway hands it to that lease again — once, without
   waiting for the owner's next message; the gateway's repeat of an event already waiting is not queued twice.
+- "typing…" for the whole Codex turn (#55). Found on the live check: the agent answered at once with an interim reply
+  ("Посмотрю, что у нас записано…, и дам пример") and kept working for about a minute in the same turn; the reply ended
+  "typing…" and the pinned line showed 🟢, so the owner could not tell whether the agent was thinking or stuck. A new,
+  optional adapter message `working {on, seqs?}`: while a turn runs, the adapter tells the gateway the event numbers of
+  the turn, and the gateway keeps sending "typing…" every 4 s to their chats (and topics) — after an interim reply too,
+  and past the 2-minute limit per event — and the pinned line shows 🟡. It ends on `working {on: false}`, on "stop" (in
+  "stop" `working` has no effect), when the lease is lost (an adapter that drops off — at once), or after 15 minutes
+  without a new `working` (the adapter went silent or the turn hung; journal `working_expired`). The Codex adapter sends
+  it when Codex accepts `turn/start` (a new turn or input added to the running one — at once), repeats it on signs of
+  life from Codex (thread notifications, tool calls) at most every 30 s, and sends `on: false` on `turn/completed` and on
+  "stop". Only a verified lease; only messages already handed to the agent (this lease or an earlier one); others are
+  skipped. It is not a tool call, so it does not postpone redelivery. The Claude Code channel does not send it, and its
+  "typing…" is unchanged; 👀 and its removal by the answer (#52) are unchanged. A gateway without `working` answers
+  `bad_request`, and the adapter stops sending it.
 - The adapter's own lines in a Codex input start with `[адаптер · …]`. Text in an event that looks like one is
   written with a full-width bracket («［адаптер»), as the channel already does for `[№` and `[шлюз`, so forwarded
   text cannot pass as an adapter line; the channel rules for Codex say so.
@@ -51,7 +65,9 @@ The chat interface and the design documents are in Russian; the entries below de
 - Tests: a fake `codex app-server` (`test/fake-codex`) with a scripted model, unit tests of the adapter and an
   integration suite with the real gateway and the fake Telegram (boot, turn and reply, steering, stop and continue,
   reminder, media, parcels, usage limit, app-server crash, adapter restart, vanished thread, Codex down for longer
-  than a minute and the lease taken again, no login).
+  than a minute and the lease taken again, no login, "typing…" through a long turn with an interim reply and on
+  "stop"), and `working` against the gateway with a fake adapter (past an interim reply and 2 minutes, 🟡, off, the
+  15-minute limit and its extension, "stop", an adapter that drops off, foreign numbers, an unverified lease).
   `test/e2e/dist/drill-codex.js` runs the same against the real `codex app-server` with one owner message.
 
 ### Changed
