@@ -101,17 +101,17 @@ The chat interface and the design documents are in Russian; the entries below de
   `material_held` (a transcribed forwarded voice message back in its window).
 - Role rules (channel instructions and the agent folder template): "Material (link, forward, file, picture) comes
   together with the owner's words — answer the words. If it comes marked that there were no words from the owner — the
-  gist in 3–5 lines and one question"; for episodes: "When in doubt, stay in the current episode. A new one — when the
-  owner changed the topic or an unrelated matter came up; material along the way (a link, a forward) stays in the same
-  episode." The line about `done` is narrowed so it does not contradict the material rule: `done` is for material that
-  came together with the owner's words (the answer goes to the words), "just note it", the channel check and the episode
-  summary — no longer "only material: a forward, a file", which would let the agent close wordless material silently.
-  For words to material after the window: "The owner's reply to material is their words to that material, at any time:
-  answer them with the material in mind" and "Words after material No. N are the owner's words to that material: answer
-  them with the material in mind; the short gist has already gone out, do not repeat it." Among the labels: "`ссылка
-  владельца` (`ссылки владельца`) — the owner's link without their words: material"; the agent folder template also
-  lists it among the labels of a note. The instructions have a new version, so a resumed conversation gets them as a
-  "channel rules" event (0.3.5).
+  gist in 3–5 lines and one question"; for episodes: "An unrelated matter came up — open a new episode yourself, without
+  asking; the owner will correct it with [не то]. Stay only if the new thing may belong to the current topic; material
+  along the way (a link, a forward) stays in the same episode." The line about `done` is narrowed so it does not
+  contradict the material rule: `done` is for material that came together with the owner's words (done on the material,
+  reply to the words), "just note it", the channel check and the episode summary — no longer "only material: a forward,
+  a file", which would let the agent close wordless material silently. For words to material after the window: "The
+  owner's reply to material is their words to that material, at any time: answer them with the material in mind" and
+  "Words after material No. N are the owner's words to that material: answer them with the material in mind; the short
+  gist has already gone out, do not repeat it." Among the labels: "`ссылка владельца` (`ссылки владельца`) — the owner's
+  link without their words: material"; the agent folder template also lists it among the labels of a note. The
+  instructions have a new version, so a resumed conversation gets them as a "channel rules" event (0.3.5).
 - `scripts/agent-folder/README.md`: what to change by hand in an agent folder deployed before 0.3.6 (the `done` line,
   the material rule, the two lines on words to material after the window, the episode rule, the `ссылка владельца`
   label, the reactions line and the `чужое (№ N)` rule below).
