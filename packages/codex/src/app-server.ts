@@ -85,7 +85,8 @@ export class AppServer {
   }
 
   static spawn(opts: AppServerOptions): AppServer {
-    const child = spawn(opts.command, opts.args, { cwd: opts.cwd, env: opts.env, stdio: ['pipe', 'pipe', 'pipe'] });
+    // Своя группа процессов: Ctrl-C в окне адаптера не убивает app-server посреди хода — адаптер сам закрывает его stdin.
+    const child = spawn(opts.command, opts.args, { cwd: opts.cwd, env: opts.env, stdio: ['pipe', 'pipe', 'pipe'], detached: true });
     return new AppServer(child, opts);
   }
 
