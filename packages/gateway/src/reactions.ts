@@ -2,6 +2,20 @@
 // (развилка R-1 б). Порядок на сообщении владельца:
 // - 👀 «агент увидел» — событие отдано агенту (delivered от переходника: канал толкнул его в сессию), adapter.ts;
 // - 👌 «агент ответил» — reply на событие или done (processed), adapter.ts.
+// С 0.3.6 (issue #52; ui.clear_receipts, по умолчанию да) квитанция живёт, пока владелец ждёт ответа:
+// - агент ответил на событие (reply или send_file с его seq) — реакция бота снимается (requestAnswered), а не сменяется
+//   на 👌: знак ответа — сам ответ в чате. Снимается, когда ответ ушёл в Telegram (sender.ts, отметка sent), не раньше;
+//   до того на сообщении 👀;
+// - ответ не ушёл («стоп» бросил его, Telegram не принял, копии посылки нет) — 👌, как у done (requestAnswerLost)
+//   ⟨предл.⟩: событие закрыто, ответа в чате нет, а 👀 висел бы на нём всегда;
+// - событие закрыто без ответа (done) — 👌, как раньше; эти 👌 снимает следующее сообщение владельца в этом чате
+//   (requestClosedCleared, admission.ts: любое новое сообщение — текст, голосовое, фото, команда словом; не нажатие, не
+//   реакция и не правка ⟨предл.⟩) — все 👌 бота на его сообщениях здесь, поставленные за неделю (REACTIONS_KEEP_MS)
+//   ⟨предл.⟩; старую историю шлюз не обходит, при старте ничего не снимает;
+// - снятие — та же строка и та же очередь с повторами: want пуст (REACTION_CLEARED), setMessageReaction с пустым
+//   списком; схема та же (v13). Текстовой квитанции нет с 0.3.2 (fallback_at, fallback_sent не заполняются): удалять
+//   нечего.
+// ui.clear_receipts: false — как до 0.3.6: reply и send_file с seq ставят 👌 сразу, 👌 остаётся.
 // Агент не на связи — на сообщении ничего (видно по ⚪ и 📥 N в закреплённой строке, а через 10 мин — по строке «агент
 // не на связи»). Команды и нажатия реакций не получают (сообщение с командой удаляется); закрытая тема — тоже: агенту
 // она не уходит.
@@ -35,7 +49,10 @@ export const REACTION_SPACING_MS = 250;
 export const REACTION_ATTEMPTS = 3;
 /** Предел запроса — по настоящему времени (как у отправки). */
 const REACTION_TIMEOUT_MS = 10_000;
-/** Сколько помнить строки реакций, которые больше не меняются: 👌 после недели — уже не квитанция. */
+/**
+ * Сколько помнить строки реакций, которые больше не меняются: 👌 после недели — уже не квитанция. Тот же срок — у снятия
+ * 👌 следующим сообщением владельца (0.3.6, #52): старше недели строк нет, обходить нечего.
+ */
 export const REACTIONS_KEEP_MS = 7 * 24 * 3600_000;
 
 const kindsSql = (kinds: readonly string[]): string => kinds.map((k) => `'${k}'`).join(',');
@@ -99,14 +116,80 @@ export function requestCleared(ctx: Ctx, seqs: readonly number[]): number {
   return n;
 }
 
+/**
+ * Квитанция снимается, когда своё сделала (0.3.6, issue #52): ui.clear_receipts, по умолчанию да. Без настроек (модульный
+ * тест полосы) — да.
+ */
+export function clearReceipts(ctx: Pick<Ctx, 'config'>): boolean {
+  return ctx.config?.ui?.clear_receipts !== false;
+}
+
+/**
+ * Ответ на события seqs ушёл в Telegram (0.3.6, issue #52) — реакцию бота на их сообщениях снять: знак ответа — сам
+ * ответ в чате. Только у обработанного события (reply или send_file с его seq, done раньше) и только если строку
+ * сообщения не держит более позднее событие (правка, которую агент ещё не видел, — у неё своя реакция). Строки нет
+ * (реакции не было) или реакция уже снята — ничего. Внутри транзакции отметки отправки (sender.ts).
+ */
+export function requestAnswered(ctx: Ctx, seqs: readonly number[]): number {
+  let n = 0;
+  for (const seq of seqs) {
+    const r = sql(ctx.db,
+      `UPDATE reactions SET event_seq = e.seq, want = ?, status = 'pending', attempts = 0, next_try_at = NULL, created_at = ?
+       FROM (SELECT seq, chat_id, message_id FROM events
+             WHERE seq = ? AND status = 'processed' AND message_id IS NOT NULL AND update_id IS NOT NULL AND kind IN (${MSG_KINDS_SQL})) e
+       WHERE reactions.chat_id = e.chat_id AND reactions.message_id = e.message_id AND reactions.event_seq <= e.seq AND reactions.want <> ?`,
+    ).run(REACTION_CLEARED, ctx.clock.now(), seq, REACTION_CLEARED);
+    n += Number(r.changes);
+  }
+  return n;
+}
+
+/**
+ * Ответ на события seqs не ушёл (0.3.6, issue #52): «стоп» бросил его, Telegram не принял, копии посылки нет. Событие
+ * обработано, а ответа в чате нет — 👌, как у done ⟨предл.⟩: иначе 👀 «агент увидел» висел бы на нём всегда. Только
+ * если ни один ответ агента на это событие не ушёл и на сообщении ещё 👀 этого события (или реакции не было): снятая
+ * реакция (ответ уже был, владелец написал дальше) не возвращается. Внутри транзакции.
+ */
+export function requestAnswerLost(ctx: Ctx, seqs: readonly number[]): number {
+  if (!seqs.length) return 0;
+  const r = sql(ctx.db,
+    `INSERT INTO reactions(chat_id, message_id, event_seq, want, shown, status, attempts, next_try_at, created_at, fallback_at, fallback_sent)
+     SELECT chat_id, message_id, seq, ?, NULL, 'pending', 0, NULL, ?, NULL, 0 FROM events e
+     WHERE seq IN (SELECT value FROM json_each(?)) AND status = 'processed' AND message_id IS NOT NULL AND update_id IS NOT NULL
+       AND kind IN (${MSG_KINDS_SQL})
+       AND NOT EXISTS (SELECT 1 FROM outbox o WHERE o.event_seq = e.seq AND o.origin = 'agent' AND o.status = 'sent')
+     ORDER BY seq
+     ON CONFLICT(chat_id, message_id) DO UPDATE SET event_seq = excluded.event_seq, want = excluded.want, status = 'pending',
+       attempts = 0, next_try_at = NULL, created_at = excluded.created_at
+     WHERE excluded.event_seq > reactions.event_seq OR (excluded.event_seq = reactions.event_seq AND reactions.want = ?)`,
+  ).run(REACTIONS.processed, ctx.clock.now(), JSON.stringify(seqs), REACTIONS.seen);
+  return Number(r.changes);
+}
+
+/**
+ * Владелец написал следующее сообщение в этом чате (0.3.6, issue #52): 👌 бота на его сообщениях здесь (событие закрыто
+ * без ответа) своё сделали — снять. Только поставленные за REACTIONS_KEEP_MS (неделя ⟨предл.⟩; строки старше и так
+ * чистит ticker): старую историю шлюз не обходит. 👀 (агент ещё не ответил) не трогается. Внутри транзакции записи
+ * сообщения (admission.ts).
+ */
+export function requestClosedCleared(ctx: Ctx, chatId: number, subjectId: string): number {
+  const now = ctx.clock.now();
+  const r = sql(ctx.db,
+    `UPDATE reactions SET want = ?, status = 'pending', attempts = 0, next_try_at = NULL, created_at = ?
+     WHERE chat_id = ? AND want = ? AND created_at >= ?
+       AND EXISTS (SELECT 1 FROM events e WHERE e.seq = reactions.event_seq AND e.subject_id = ?)`,
+  ).run(REACTION_CLEARED, now, chatId, REACTIONS.processed, now - REACTIONS_KEEP_MS, subjectId);
+  return Number(r.changes);
+}
+
 /** 👀 «агент увидел» — событие отдано агенту (delivered). Внутри транзакции. */
 export function requestSeen(ctx: Ctx, seqs: readonly number[]): number {
   return request(ctx, seqs, REACTIONS.seen);
 }
 
 /**
- * 👌 «агент ответил» — reply на событие или done. Только если оно — последнее событие своего сообщения: правка, ещё не
- * обработанная, держит свою реакцию. Внутри транзакции.
+ * 👌 «агент ответил» — done (и reply или send_file с seq при ui.clear_receipts: false). Только если оно — последнее
+ * событие своего сообщения: правка, ещё не обработанная, держит свою реакцию. Внутри транзакции.
  */
 export function requestProcessed(ctx: Ctx, seqs: readonly number[]): number {
   return request(ctx, seqs, REACTIONS.processed);

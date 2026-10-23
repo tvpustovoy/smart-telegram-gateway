@@ -1,30 +1,32 @@
 // Квитанции реакциями (J-1; TECH-SPEC 5.5) — 0.3.2, развилка R-1 «б» (решение после проверки на реальном боте):
-// 👀 — агент увидел (delivered), 👌 — агент ответил или done; ✍ шлюз не ставит. Здесь:
+// 👀 — агент увидел (delivered), 👌 — агент ответил или done; ✍ шлюз не ставит. С 0.3.6 (#52; ui.clear_receipts по
+// умолчанию) ответ (reply) реакцию снимает, когда ушёл, — 👌 только у done; подробно — m12-receipts-clear. Здесь:
 // - агент не на связи — на сообщениях ничего (видно по ⚪ и 📥 N); текстовой квитанции нет; агент пришёл — 👀 на каждом
-//   по порядку, затем 👌 после reply и done; «записал» (L-2) — по записи (t_admit), t_eyes — когда встал 👀;
+//   по порядку, затем ответ снимает 👀, done — 👌; «записал» (L-2) — по записи (t_admit), t_eyes — когда встал 👀;
 // - повторная отдача того же события (аренда снята и взята снова) — второго 👀 нет;
 // - 50 пересланных после простоя: ничего, затем одной пачкой агенту — 👀 на каждом; предел реакций 4 в секунду в
 //   подделке, шаг в чат не меньше 250 мс; 429 — общая пауза чата, текстовых квитанций нет; повтор той же реакции
 //   подряд — только при неудачной попытке в журнале («как минимум один раз»);
 // - реакция не встала (400) — только журнал (reaction_failed final), на сообщении ничего, текстовой квитанции нет;
-// - 👀 в пути, агент ответил, 👀 отказал — 👌 встаёт (порядок в базе — модульно, packages/gateway reactions.test);
-// - правка: реакция к прежнему тексту снимается ⟨предл.⟩, затем 👀 и 👌; вторая правка, пока агента нет, — снимать
-//   нечего: запроса нет (reaction_kept);
+// - 👀 в пути, агент закрыл событие (done), 👀 отказал — 👌 встаёт (порядок в базе — модульно, packages/gateway
+//   reactions.test);
+// - правка: реакция к прежнему тексту (👌 после done) снимается ⟨предл.⟩, затем 👀 и ответ его снимает; вторая правка,
+//   пока агента нет, — снимать нечего: запроса нет (reaction_kept);
 // - первый старт 0.3.2 на базе 0.3.1: стоящий ✍ не трогается и сменяется 👀 своим ходом; ✍, ждавший отправки, не
 //   ставится (reaction_retired); на обработанном ✍ так и остаётся ⟨предл.⟩;
-// - убийство в точке in_send на 👀 (Telegram ответил, отметки нет) — после старта 👀 ставится ещё раз, затем 👌.
+// - убийство в точке in_send на 👀 (Telegram ответил, отметки нет) — после старта 👀 ставится ещё раз, ответ его снимает.
 
 import assert from 'node:assert/strict';
 import { DatabaseSync } from 'node:sqlite';
 import { describe, it } from 'node:test';
 import { errors, reply } from 'stg-fake-telegram';
 import { count, pump, q1, readJournal, shiftClockFile, sleep, waitUntil } from './harness.js';
-import { OTHER, OWNER, botTexts, chatMessages, isEyes, isPen, reactionOf, reactionsOf, receiptCounts, seeingAgent, setup, waitRecorded } from './m1-common.js';
+import { OTHER, OWNER, botTexts, chatMessages, isEyes, isPen, reactionOf, reactionsOf, receiptCleared, receiptCounts, seeingAgent, setup, waitRecorded } from './m1-common.js';
 
 const NO_TEXT_RECEIPT = (t: string): boolean => /^№ \d/.test(t);
 
 describe('M1 · реакции 👀 → 👌 (0.3.2, без ✍): агент не на связи — ничего; пачка; отказ — только журнал; правка; первый старт', () => {
-  it('агент не на связи — на каждом ничего, текстовой квитанции нет; пришёл — 👀 на каждом, затем 👌 после reply и done', async () => {
+  it('агент не на связи — на каждом ничего, текстовой квитанции нет; пришёл — 👀 на каждом, затем ответ снимает 👀 (0.3.6, #52), done — 👌', async () => {
     const s = await setup();
     try {
       const gw = await s.start();
@@ -51,11 +53,12 @@ describe('M1 · реакции 👀 → 👌 (0.3.2, без ✍): агент н�
           5000,
           't_eyes — после отдачи',
         );
-        // reply на первое и done на второе и третье — 👌.
+        // reply на первое — 👀 снят, когда ответ ушёл (0.3.6, #52); done на второе и третье — 👌.
         assert.equal((await ag.ch.reply(seqs[0]!, 'принял', ag.turn)).type, 'ack');
         assert.equal((await ag.ch.request('done', { seqs: [seqs[1], seqs[2]] })).type, 'ack');
-        await pump(gw, () => ups.every((u) => reactionOf(s.fake, u) === '👌') || null, { what: '👌 на всех трёх' });
-        for (const u of ups) assert.deepEqual(reactionsOf(s.fake, u), ['👀', '👌'], `${u.update_id}`);
+        await pump(gw, () => (receiptCleared(s.fake, ups[0]!) && ups.slice(1).every((u) => reactionOf(s.fake, u) === '👌')) || null, { what: 'снятия на первом и 👌 на двух' });
+        assert.deepEqual(reactionsOf(s.fake, ups[0]!), ['👀', ''], 'ответ — снятие, без 👌');
+        for (const u of ups.slice(1)) assert.deepEqual(reactionsOf(s.fake, u), ['👀', '👌'], `${u.update_id}`);
         assert.ok(!readJournal(s.home).some((l) => l.ev === 'receipt_fallback'), 'receipt_fallback');
       } finally {
         ag.close();
@@ -66,7 +69,7 @@ describe('M1 · реакции 👀 → 👌 (0.3.2, без ✍): агент н�
     }
   });
 
-  it('повторная отдача (аренда снята и взята снова) — второго 👀 нет; агент ответил — 👌', async () => {
+  it('повторная отдача (аренда снята и взята снова) — второго 👀 нет; агент ответил — 👀 снят (0.3.6, #52)', async () => {
     const s = await setup();
     try {
       const gw = await s.start();
@@ -86,8 +89,8 @@ describe('M1 · реакции 👀 → 👌 (0.3.2, без ✍): агент н�
         await sleep(50);
         assert.deepEqual(reactionsOf(s.fake, u), ['👀'], 'второго 👀 нет');
         assert.equal((await a2.ch.reply(seq, 'готово', a2.turn)).type, 'ack');
-        await pump(gw, () => reactionOf(s.fake, u) === '👌' || null, { what: '👌' });
-        assert.deepEqual(reactionsOf(s.fake, u), ['👀', '👌']);
+        await pump(gw, () => receiptCleared(s.fake, u) || null, { what: 'снятия 👀' });
+        assert.deepEqual(reactionsOf(s.fake, u), ['👀', '']);
       } finally {
         a2.close();
       }
@@ -193,7 +196,7 @@ describe('M1 · реакции 👀 → 👌 (0.3.2, без ✍): агент н�
     }
   });
 
-  it('👀 в пути, агент уже ответил, а 👀 отказ (400) — 👌 всё равно встаёт: отказ прежней реакции не гасит новую', async () => {
+  it('👀 в пути, агент уже закрыл событие (done), а 👀 отказ (400) — 👌 всё равно встаёт: отказ прежней реакции не гасит новую', async () => {
     const s = await setup();
     try {
       const gw = await s.start();
@@ -211,7 +214,7 @@ describe('M1 · реакции 👀 → 👌 (0.3.2, без ✍): агент н�
       const ag = await seeingAgent(s);
       try {
         await pump(gw, () => s.fake.callsOf('setMessageReaction').some((c) => isEyes(c.params)) || null, { step: '100ms', what: 'запроса 👀' });
-        assert.equal((await ag.ch.reply(seq, 'готово', ag.turn)).type, 'ack');
+        assert.equal((await ag.ch.request('done', { seqs: [seq] })).type, 'ack');
         await pump(gw, () => reactionOf(s.fake, u) === '👌' || null, { what: '👌 после отказа 👀' });
         const j = readJournal(s.home);
         assert.ok(j.some((l) => l.ev === 'reaction_failed' && l.seq === seq && l.emoji === '👀' && l.final === true), 'отказ 👀 — в журнале');
@@ -227,7 +230,7 @@ describe('M1 · реакции 👀 → 👌 (0.3.2, без ✍): агент н�
     }
   });
 
-  it('правка: реакция к прежнему тексту снимается, затем 👀 при отдаче и 👌 после ответа; вторая правка, пока агента нет, — снимать нечего: запроса нет', async () => {
+  it('правка: реакция к прежнему тексту (👌 после done) снимается, затем 👀 при отдаче, ответ его снимает; вторая правка, пока агента нет, — снимать нечего: запроса нет', async () => {
     const s = await setup();
     try {
       const gw = await s.start();
@@ -238,7 +241,8 @@ describe('M1 · реакции 👀 → 👌 (0.3.2, без ✍): агент н�
       try {
         const seq = q1<{ seq: number }>(s.home, 'SELECT seq FROM events WHERE update_id = ?', u.update_id)!.seq;
         await pump(gw, () => reactionOf(s.fake, u) === '👀' || null, { what: '👀' });
-        assert.equal((await ag.ch.reply(seq, 'принял', ag.turn)).type, 'ack');
+        // done — 👌 (закрыто без ответа); ответ сам снял бы реакцию (0.3.6, #52) — правке снимать было бы нечего.
+        assert.equal((await ag.ch.request('done', { seqs: [seq] })).type, 'ack');
         await pump(gw, () => reactionOf(s.fake, u) === '👌' || null, { what: '👌' });
         // Агент на время уходит: правка записана — 👌 к прежнему тексту снимается ⟨предл.⟩, на сообщении ничего.
         ag.close();
@@ -262,8 +266,8 @@ describe('M1 · реакции 👀 → 👌 (0.3.2, без ✍): агент н�
         try {
           await pump(gw, () => reactionOf(s.fake, u) === '👀' || null, { what: '👀 на правке' });
           assert.equal((await ag2.ch.reply(edit, 'учёл правку', ag2.turn)).type, 'ack');
-          await pump(gw, () => reactionOf(s.fake, u) === '👌' || null, { what: '👌 на правке' });
-          assert.deepEqual(reactionsOf(s.fake, u), ['👀', '👌', '', '👀', '👌']);
+          await pump(gw, () => (reactionsOf(s.fake, u).length === 5 && reactionOf(s.fake, u) === null) || null, { what: 'снятия 👀 правки ответом' });
+          assert.deepEqual(reactionsOf(s.fake, u), ['👀', '👌', '', '👀', '']);
           assert.ok(!s.fake.callsOf('setMessageReaction').some((c) => isPen(c.params)), '✍ нет');
         } finally {
           ag2.close();
@@ -322,7 +326,7 @@ describe('M1 · реакции 👀 → 👌 (0.3.2, без ✍): агент н�
     }
   });
 
-  it('убийство в in_send на 👀 (Telegram ответил, отметки нет) — после старта 👀 ставится ещё раз; ответ — 👌; отметки done', async () => {
+  it('убийство в in_send на 👀 (Telegram ответил, отметки нет) — после старта 👀 ставится ещё раз; ответ его снимает (0.3.6, #52); отметки done', async () => {
     const s = await setup();
     try {
       const u = s.fake.builder.text(OWNER, 'под убийством');
@@ -354,9 +358,9 @@ describe('M1 · реакции 👀 → 👌 (0.3.2, без ✍): агент н�
       try {
         await a2.ch.waitEvent(seq);
         assert.equal((await a2.ch.reply(seq, 'принял', a2.turn)).type, 'ack');
-        await pump(gw, () => reactionOf(s.fake, u) === '👌' || null, { what: '👌' });
-        assert.deepEqual(reactionsOf(s.fake, u), ['👀', '👀', '👌']);
-        await waitUntil(() => q1(s.home, "SELECT 1 FROM reactions WHERE event_seq = ? AND want = '👌' AND status = 'done'", seq) || null, 5000, '👌 отмечена');
+        await pump(gw, () => receiptCleared(s.fake, u) || null, { what: 'снятия 👀' });
+        assert.deepEqual(reactionsOf(s.fake, u), ['👀', '👀', '']);
+        await waitUntil(() => q1(s.home, "SELECT 1 FROM reactions WHERE event_seq = ? AND want = '' AND shown = '' AND status = 'done'", seq) || null, 5000, 'снятие отмечено');
       } finally {
         a2.close();
       }

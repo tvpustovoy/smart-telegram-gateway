@@ -172,7 +172,7 @@ export interface SendFileInput {
   leaseCwd: string | null;
   req: DeliveryRequest;
   idem: string | null;
-  /** Ещё в той же транзакции: событие обработано, 👌 (adapter.ts). */
+  /** Ещё в той же транзакции: событие обработано (adapter.ts; 👌 — только при ui.clear_receipts: false, 0.3.6). */
   inTx?: () => void;
 }
 

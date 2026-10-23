@@ -35,6 +35,10 @@
 //   reply_markup {remove_keyboard: true}: клавиатура прежних версий у клиента держится, пока бот её не снимет
 //   (upgradeTo031OnStart). Строка не удаляется ⟨предл.⟩.
 // - Реакции 👀 и 👌 — своя полоса (reactions.ts): не ждут шага сообщений; 429 — общая пауза чата.
+// - Квитанция своё сделала (0.3.6, issue #52; ui.clear_receipts): ответ агента на событие ушёл в Telegram целиком (все
+//   части; и когда «стоп» пришёл, пока последняя была в пути) — в той же записи, что отметка, реакция на сообщении
+//   события снимается (requestAnswered); строка ответа брошена (Telegram не принял, копии посылки нет) — 👌 вместо 👀
+//   (requestAnswerLost; «стоп» — то же, control.ts).
 // - Закреплённая строка состояния (statusline.ts) — правка на месте не чаще раза в 3 с; нет сообщения — новое и
 //   закрепить; служебное сообщение о закреплении — удалить. Его номер Telegram боту не сообщает: это первый номер после
 //   закреплённого, которого нет ни у сообщений владельца, ни у сообщений бота. Владелец мог написать между отправкой
@@ -68,6 +72,7 @@ import {
   AGENT_SIDE_MARKS,
   KEYBOARD_REMOVED_TEXT,
   META_KEYS,
+  REACTIONS,
   SERVICE_MARK,
   TELEGRAM_TEXT_LIMIT,
   TelegramApiError,
@@ -105,7 +110,7 @@ import {
   type Timer,
 } from 'stg-core';
 import { enqueueDeletion, enqueueEdit, enqueueServiceLine, type Ctx } from './context.js';
-import { ReactionLane } from './reactions.js';
+import { ReactionLane, clearReceipts, requestAnswerLost, requestAnswered } from './reactions.js';
 import { STATUS_LINE_MIN_INTERVAL_MS, StatusLine, type StatusLineSaved } from './statusline.js';
 import { type VoiceKey, VoiceSynth } from './voice.js';
 
@@ -839,6 +844,7 @@ export class Sender {
     }
     const now = ctx.clock.now();
     let afterStop = false;
+    let receiptsCleared = 0;
     this.record(group, () => {
       // Только из pending: «стоп», пришедший, пока последняя часть была в пути, оставляет строку dropped — решение владельца
       // в базе не перетирается; что часть всё же ушла, видно в журнале (sent_after_stop) и в messages_out.
@@ -854,8 +860,14 @@ export class Sender {
           sql(ctx.db, 'UPDATE latency SET t_reply_sent = COALESCE(t_reply_sent, ?) WHERE event_seq = ?').run(now, g.event_seq);
         }
       }
+      // Ответ агента на событие ушёл целиком (0.3.6, #52) — реакция на сообщении события своё сделала: снять. Строка,
+      // брошенная «стопом», пока последняя часть была в пути, — тоже: ответ в чате.
+      if (isAgent && clearReceipts(ctx)) {
+        receiptsCleared = requestAnswered(ctx, group.map((g) => g.event_seq).filter((x): x is number => x !== null));
+      }
     });
     this.synth?.forget(r0.id);
+    if (receiptsCleared) this.reactions.kick();
     if (afterStop) ctx.journal.write('sent_after_stop', { outbox_id: r0.id, tg_message_ids: sent });
     ctx.journal.write('out', {
       kind: r0.kind,
@@ -870,6 +882,7 @@ export class Sender {
       ...(plainUsed ? { plain_fallback: true } : {}),
       ...(parcel ? { delivery: parcel.id, parcel: parcel.parcel, file: parcel.file } : {}),
       ...(r0.quote && !isAgent ? { quote: true } : {}),
+      ...(receiptsCleared ? { receipt_cleared: true } : {}),
     });
     if (isAgent) this.hooks.onAgentSent?.(r0);
   }
@@ -1037,8 +1050,13 @@ export class Sender {
     const ids = group.map((g) => g.id);
     const why = this.ctx.api?.redact(reason) ?? reason;
     let failed: Array<{ id: number; parcel: string; file: string; chat_id: number | null }> = [];
+    let lost = 0;
     this.record(group, () => {
       sql(this.ctx.db, "UPDATE outbox SET status = 'dropped', attempts = attempts + 1 WHERE id IN (SELECT value FROM json_each(?))").run(JSON.stringify(ids));
+      // Ответ агента на событие не ушёл (0.3.6, #52): событие закрыто, а ответа в чате нет — 👌 вместо 👀 ⟨предл.⟩.
+      if (clearReceipts(this.ctx)) {
+        lost = requestAnswerLost(this.ctx, group.filter((g) => g.origin === 'agent' && g.event_seq !== null).map((g) => g.event_seq!));
+      }
       // Посылка (0.3.3): Telegram не принял, копии нет, загрузка не успела — доставка не удалась, с причиной; владельцу —
       // строка шлюза: он просил файл и видит 👌, без неё не узнал бы, что файла не будет ⟨предл.⟩.
       failed = sql(this.ctx.db, "SELECT id, parcel, file, chat_id FROM deliveries WHERE status = 'pending' AND outbox_id IN (SELECT value FROM json_each(?))")
@@ -1052,7 +1070,8 @@ export class Sender {
     });
     if (failed.length) this.ctx.journal.write('parcel_failed', { outbox_ids: ids, deliveries: failed.map((d) => d.id), reason: why });
     for (const id of ids) this.synth?.forget(id);
-    this.ctx.journal.write('send_dropped', { outbox_ids: ids, reason: this.ctx.api?.redact(reason) ?? reason });
+    this.ctx.journal.write('send_dropped', { outbox_ids: ids, reason: this.ctx.api?.redact(reason) ?? reason, ...(lost ? { receipt: REACTIONS.processed } : {}) });
+    if (lost) this.reactions.kick();
   }
 
   // ——— удаление сообщений ———

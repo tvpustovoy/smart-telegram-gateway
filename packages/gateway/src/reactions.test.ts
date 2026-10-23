@@ -4,15 +4,19 @@
 // 👀 и 👌 правки, и старое событие её уже не трогает; команды и закрытая тема реакций не получают. Гонки в пути —
 // интеграционно, test/e2e m1-reactions-order. Полоса на поддельном клиенте: правка, пока 👀 в пути, — снятие следом;
 // снимать нечего — без запроса; ✍ прежней версии, ждавший отправки, — не ставится (reaction_retired), стоящий ✍ сменяет 👀.
+// Квитанция своё сделала (0.3.6, #52; A12.9): ответ ушёл — снять (только у обработанного события; правка, которую агент ещё
+// не видел, строку держит); ответ не ушёл — 👌 вместо 👀 (снятая не возвращается, ответ уже был — нет); следующее сообщение
+// владельца — снять его 👌 в этом чате за неделю (👀, чужие сообщения, другой чат, старше недели — не трогаются); ошибка
+// Telegram на снятии — повтор.
 
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { after, describe, it } from 'node:test';
-import { openForGateway, sql } from 'stg-core';
+import { TelegramApiError, openForGateway, sql } from 'stg-core';
 import type { Ctx } from './context.js';
-import { ReactionLane, requestCleared, requestProcessed, requestSeen } from './reactions.js';
+import { REACTIONS_KEEP_MS, ReactionLane, clearReceipts, requestAnswerLost, requestAnswered, requestCleared, requestClosedCleared, requestProcessed, requestSeen } from './reactions.js';
 
 const dirs: string[] = [];
 after(() => {
@@ -26,17 +30,37 @@ function fresh() {
   let now = 1_000;
   const ctx = { db, clock: { now: () => now } } as unknown as Ctx;
   let update = 100;
-  /** Событие из сообщения message_id чата 1. */
-  const event = (kind: string, messageId: number): number => {
-    const r = sql(db, "INSERT INTO events(kind, status, chat_id, message_id, update_id, created_at) VALUES (?, 'new', 1, ?, ?, ?)").run(kind, messageId, ++update, now);
+  /** Событие из сообщения message_id чата (по умолчанию 1) от участника subject (по умолчанию владелец). */
+  const event = (kind: string, messageId: number, o: { chat?: number; subject?: string } = {}): number => {
+    const r = sql(db, "INSERT INTO events(kind, status, chat_id, message_id, update_id, subject_id, created_at) VALUES (?, 'new', ?, ?, ?, ?, ?)").run(
+      kind,
+      o.chat ?? 1,
+      messageId,
+      ++update,
+      o.subject ?? 'owner',
+      now,
+    );
     return Number(r.lastInsertRowid);
   };
-  const row = (messageId: number) =>
-    (sql(db, 'SELECT event_seq, want, status FROM reactions WHERE chat_id = 1 AND message_id = ?').get(messageId) as { event_seq: number; want: string; status: string } | undefined) ?? null;
-  const tick = (): void => {
-    now += 10;
+  const row = (messageId: number, chat = 1) =>
+    (sql(db, 'SELECT event_seq, want, status FROM reactions WHERE chat_id = ? AND message_id = ?').get(chat, messageId) as { event_seq: number; want: string; status: string } | undefined) ??
+    null;
+  const tick = (ms = 10): void => {
+    now += ms;
   };
-  return { db, ctx, event, row, tick };
+  /** Событие обработано (reply или done). */
+  const processed = (seq: number): void => {
+    sql(db, "UPDATE events SET status = 'processed', processed_at = ? WHERE seq = ?").run(now, seq);
+  };
+  /** Реакция встала (отметка полосы). */
+  const shown = (messageId: number, chat = 1): void => {
+    sql(db, "UPDATE reactions SET shown = want, status = 'done' WHERE chat_id = ? AND message_id = ?").run(chat, messageId);
+  };
+  /** Ответ агента на событие в outbox (status — его итог). */
+  const answer = (seq: number, status: string): void => {
+    sql(db, "INSERT INTO outbox(event_seq, chat_id, kind, text, origin, status, created_at) VALUES (?, 1, 'agent', 'ответ', 'agent', ?, ?)").run(seq, status, now);
+  };
+  return { db, ctx, event, row, tick, processed, shown, answer };
 }
 
 describe('реакции: порядок 👀 → 👌 и правка (0.3.2, без ✍)', () => {
@@ -228,6 +252,192 @@ describe('полоса реакций: правка в пути, снимать 
       assert.equal(calls[0]!.emoji, '👀');
       calls[0]!.answer();
       await until('👀 встал', () => row(100)?.status === 'done' && row(100)?.want === '👀');
+    } finally {
+      await lane.stop();
+      db.close();
+    }
+  });
+});
+
+describe('квитанция своё сделала (0.3.6, #52; A12.9): ответ снимает реакцию, done — 👌 до следующего сообщения владельца', () => {
+  it('ответ ушёл — снять: только у обработанного события; правка, которую агент ещё не видел, строку держит; реакции не было — строки нет', () => {
+    const { db, ctx, event, row, tick, processed, shown } = fresh();
+    try {
+      const seq = event('text', 200);
+      requestSeen(ctx, [seq]);
+      shown(200);
+      // Событие ещё не обработано (ответ на событие, отданное не этой аренде) — реакцию не трогать: оно придёт агенту.
+      assert.equal(requestAnswered(ctx, [seq]), 0);
+      assert.equal(row(200)?.want, '👀');
+      processed(seq);
+      tick();
+      assert.equal(requestAnswered(ctx, [seq]), 1, 'ответ ушёл — снять');
+      assert.deepEqual({ ...row(200) }, { event_seq: seq, want: '', status: 'pending' });
+      assert.equal(requestAnswered(ctx, [seq]), 0, 'уже снята — без изменений');
+      // Запоздалого 👀 на обработанное событие не бывает (delivered его не трогает), а 👌 после done — только у необработанного.
+      // Правка записана, пока ответ на прежний текст был в пути: строку держит правка — ответ на старое её не снимает.
+      const seq2 = event('text', 201);
+      requestSeen(ctx, [seq2]);
+      processed(seq2);
+      tick();
+      const edit = event('edit', 201);
+      assert.equal(requestCleared(ctx, [edit]), 1);
+      tick();
+      requestSeen(ctx, [edit]);
+      assert.equal(requestAnswered(ctx, [seq2]), 0, 'строку держит правка');
+      assert.deepEqual({ ...row(201) }, { event_seq: edit, want: '👀', status: 'pending' });
+      // Ответ на правку — снимает её 👀.
+      processed(edit);
+      assert.equal(requestAnswered(ctx, [edit]), 1);
+      assert.equal(row(201)?.want, '');
+      // Реакции не было (ответ раньше, чем событие отдано) — строки нет и не появляется; не сообщение — тоже.
+      const quick = event('text', 202);
+      processed(quick);
+      assert.equal(requestAnswered(ctx, [quick]), 0);
+      assert.equal(row(202), null);
+      // Ответ ушёл после done (👌) — снять и 👌: знак ответа — сам ответ.
+      const closed = event('text', 203);
+      requestSeen(ctx, [closed]);
+      processed(closed);
+      requestProcessed(ctx, [closed]);
+      shown(203);
+      assert.equal(requestAnswered(ctx, [closed]), 1);
+      assert.equal(row(203)?.want, '');
+    } finally {
+      db.close();
+    }
+  });
+
+  it('ответ не ушёл («стоп», Telegram не принял) — 👌 вместо 👀; реакции не было — 👌; ответ уже был или 👌 снят — не возвращается', () => {
+    const { db, ctx, event, row, tick, processed, shown, answer } = fresh();
+    try {
+      const seq = event('text', 210);
+      requestSeen(ctx, [seq]);
+      shown(210);
+      // Не обработано — не трогать.
+      assert.equal(requestAnswerLost(ctx, [seq]), 0);
+      processed(seq);
+      answer(seq, 'dropped');
+      tick();
+      assert.equal(requestAnswerLost(ctx, [seq]), 1);
+      assert.deepEqual({ ...row(210) }, { event_seq: seq, want: '👌', status: 'pending' });
+      // Реакции не было — 👌, как у done.
+      const none = event('text', 211);
+      processed(none);
+      assert.equal(requestAnswerLost(ctx, [none]), 1);
+      assert.equal(row(211)?.want, '👌');
+      // Ответ на это событие уже ушёл (снят) — второй брошенный ответ 👌 не ставит.
+      const twice = event('text', 212);
+      requestSeen(ctx, [twice]);
+      processed(twice);
+      answer(twice, 'sent');
+      requestAnswered(ctx, [twice]);
+      answer(twice, 'dropped');
+      assert.equal(requestAnswerLost(ctx, [twice]), 0);
+      assert.equal(row(212)?.want, '');
+      // done → 👌 → следующее сообщение владельца сняло его → брошенный ответ по своей инициативе к № не возвращает 👌.
+      const gone = event('text', 213);
+      requestSeen(ctx, [gone]);
+      processed(gone);
+      requestProcessed(ctx, [gone]);
+      shown(213);
+      tick();
+      // Снимаются все 👌 владельца в чате: и от брошенных ответов выше (№ 210, 211), и от done (№ 213).
+      assert.equal(requestClosedCleared(ctx, 1, 'owner'), 3);
+      assert.equal(requestAnswerLost(ctx, [gone]), 0);
+      assert.equal(row(213)?.want, '');
+    } finally {
+      db.close();
+    }
+  });
+
+  it('следующее сообщение владельца — снять его 👌 в этом чате за неделю; 👀, чужие сообщения, другой чат и старше недели — не трогаются', () => {
+    const { db, ctx, event, row, tick, processed, shown } = fresh();
+    try {
+      const mk = (messageId: number, o: { chat?: number; subject?: string; done?: boolean } = {}): number => {
+        const seq = event('text', messageId, o);
+        requestSeen(ctx, [seq]);
+        if (o.done !== false) {
+          processed(seq);
+          requestProcessed(ctx, [seq]);
+        }
+        shown(messageId, o.chat ?? 1);
+        return seq;
+      };
+      const old = mk(220);
+      tick(REACTIONS_KEEP_MS + 1000);
+      const a = mk(221);
+      const b = mk(222);
+      mk(223, { done: false });
+      mk(224, { subject: 'anya' });
+      mk(225, { chat: 2 });
+      tick();
+      assert.equal(requestClosedCleared(ctx, 1, 'owner'), 2, 'оба 👌 владельца в этом чате за неделю');
+      assert.deepEqual([row(221)?.want, row(222)?.want], ['', '']);
+      assert.deepEqual([row(221)?.event_seq, row(222)?.event_seq], [a, b], 'строка — того же события');
+      assert.equal(row(220)?.want, '👌', 'старше недели — не трогается');
+      assert.equal(row(220)?.event_seq, old);
+      assert.equal(row(223)?.want, '👀', '👀 — агент ещё не ответил');
+      assert.equal(row(224)?.want, '👌', 'сообщение другого участника');
+      assert.equal(row(225, 2)?.want, '👌', 'другой чат');
+      assert.equal(requestClosedCleared(ctx, 1, 'owner'), 0, 'снимать больше нечего');
+    } finally {
+      db.close();
+    }
+  });
+
+  it('ui.clear_receipts — по умолчанию да; false — нет; без настроек — да', () => {
+    assert.equal(clearReceipts({ config: { ui: { clear_receipts: true } } } as unknown as Ctx), true);
+    assert.equal(clearReceipts({ config: { ui: { clear_receipts: false } } } as unknown as Ctx), false);
+    assert.equal(clearReceipts({} as unknown as Ctx), true);
+  });
+});
+
+describe('полоса реакций: снятие квитанции (0.3.6, #52)', () => {
+  it('ответ ушёл — пустой список; ошибка Telegram на снятии (502) — повтор, затем снято; 👀 в пути, ответ ушёл — 👀 встаёт, следом снятие', async () => {
+    const { db, event, row, processed } = fresh();
+    const { ctx, lane, calls, journal, until, tick } = laneOn(db);
+    try {
+      const seq = event('text', 230);
+      requestSeen(ctx, [seq]);
+      lane.kick();
+      await until('запроса 👀', () => calls.length === 1);
+      // Пока 👀 в пути, агент ответил и ответ ушёл — снять.
+      processed(seq);
+      assert.equal(requestAnswered(ctx, [seq]), 1);
+      calls[0]!.answer();
+      await until('запроса «снять»', () => calls.length === 2);
+      assert.equal(calls[1]!.emoji, '');
+      calls[1]!.answer();
+      await until('снятие отмечено', () => row(230)?.status === 'done');
+      assert.deepEqual({ ...row(230) }, { event_seq: seq, want: '', status: 'done' });
+      assert.ok(journal.some((l) => l.ev === 'reaction' && l.seq === seq && l.cleared === true));
+      // Снятие с ошибкой Telegram (502) — повтор (как у любой реакции).
+      const seq2 = event('text', 231);
+      sql(db, "INSERT INTO reactions(chat_id, message_id, event_seq, want, shown, status, created_at) VALUES (1, 231, ?, '👌', '👌', 'done', 0)").run(seq2);
+      processed(seq2);
+      assert.equal(requestClosedCleared(ctx, 1, 'owner'), 1);
+      type Call = (method: string, params: unknown) => Promise<void>;
+      const api = ctx.api as unknown as { call: Call };
+      const ok = api.call;
+      let first = true;
+      api.call = (method, params) => {
+        if (first) {
+          first = false;
+          return Promise.reject(new TelegramApiError(method, 502, 'Bad Gateway', null));
+        }
+        return ok(method, params);
+      };
+      lane.kick();
+      await until('отказа 502', () => journal.some((l) => l.ev === 'reaction_failed' && l.seq === seq2 && l.final === false));
+      assert.equal(row(231)?.status, 'pending', 'ждёт повтора');
+      tick();
+      sql(db, 'UPDATE reactions SET next_try_at = 0 WHERE message_id = 231').run();
+      lane.kick();
+      await until('повтора «снять»', () => calls.length === 3);
+      assert.equal(calls[2]!.emoji, '');
+      calls[2]!.answer();
+      await until('снятие отмечено', () => row(231)?.status === 'done' && row(231)?.want === '');
     } finally {
       await lane.stop();
       db.close();

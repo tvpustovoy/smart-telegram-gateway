@@ -106,6 +106,10 @@ describe('A11.11 · окно материала (0.3.6, #51): слова вла�
     }
     assert.deepEqual([linksOnly('https://a.example'), linksOnly('https://a.example, https://b.example'), linksOnly('https://a.example\nwww.b.example\nt.me/c')], [1, 2, 3]);
     assert.equal(linksOnly('https://a.example,https://b.example'), 2, 'запятая за доменом — конец ссылки');
+    // Внутри пути запятая — часть ссылки, как у Telegram: одна ссылка, материал.
+    assert.equal(linksOnly('https://example.com/a,b'), 1, 'запятая внутри пути — часть ссылки');
+    assert.equal(linksOnly('https://example.com/a,b, https://example.com/c'), 2, 'запятая с пробелом после пути — разделитель');
+    assert.equal(classOf({ text: 'https://example.com/a,b' }), 'material');
     // Слово рядом со ссылкой — слова: «посмотри …», заголовок страницы над ссылкой (от слов владельца не отличить), вопрос,
     // эмодзи, номер в списке, хэштег; ссылка на словах (text_link) — в тексте видны слова, адреса нет.
     for (const text of [

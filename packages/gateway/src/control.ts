@@ -4,7 +4,8 @@
 // повтор обновления её не повторит). Что сказать переходнику и отправителю после COMMIT — Effects.
 //
 // Режимы (meta.mode) и ход (meta.turn):
-// - «стоп» — stopped, turn + 1: события не отдаются; ответы агента из outbox (pending, held) — dropped; строка и кнопка
+// - «стоп» — stopped, turn + 1: события не отдаются; ответы агента из outbox (pending, held) — dropped (их события
+//   обработаны, а ответа в чате нет — 👌 вместо 👀, 0.3.6, #52; reactions.ts requestAnswerLost); строка и кнопка
 //   [продолжить] (остаётся в чате — важное). Снять стоп — только кнопкой: «продолжить» и «пауза» текстом в stopped
 //   отвечают «Стоп снимается кнопкой [продолжить]» и присылают кнопку ещё раз;
 // - [продолжить] — running, turn + 1; события, накопленные в stopped, отдаются по порядку; все кнопки [продолжить] гаснут;
@@ -89,6 +90,7 @@ import { enqueueDeletion, enqueueEdit, enqueueServiceLine, type Ctx, type Inline
 import type { Resolved } from './directory.js';
 import type { EpisodeRow, Episodes } from './episodes.js';
 import type { RulesService } from './rules.js';
+import { clearReceipts, requestAnswerLost } from './reactions.js';
 import { statusLinePinFailed } from './statusline.js';
 import { VOICE_LANE_SQL, enqueueSttReply } from './voice.js';
 
@@ -239,7 +241,13 @@ export class Control {
       case 'stop': {
         // Ход + 1 и при повторном «стоп»: ответ, начатый до любого из них, не уйдёт.
         const turn = this.setMode('stopped', 1, 'command');
+        const lostSeqs = (sql(this.ctx.db, "SELECT DISTINCT event_seq FROM outbox WHERE origin = 'agent' AND status IN ('pending', 'held') AND event_seq IS NOT NULL").all() as Array<{
+          event_seq: number;
+        }>).map((x) => x.event_seq);
         const r = sql(this.ctx.db, "UPDATE outbox SET status = 'dropped' WHERE origin = 'agent' AND status IN ('pending', 'held')").run();
+        // Ответы брошены (0.3.6, #52): событие обработано, а ответа в чате нет — 👌 вместо 👀 (снимет следующее сообщение
+        // владельца) ⟨предл.⟩; 👀 «агент увидел» висел бы иначе всегда.
+        if (clearReceipts(this.ctx)) requestAnswerLost(this.ctx, lostSeqs);
         // Посылки (0.3.3): недоставленные — тоже брошены (dropped), с причиной. Все ждущие, а не только связанные со
         // строкой outbox: у будущей веб-цели строки outbox нет, а «стоп» — «прекрати текущее дело» для всех целей
         // (находка проверки). Документ, который сейчас загружается, отправитель прервёт сам (sender.kick).
@@ -304,7 +312,13 @@ export class Control {
         return {};
       }
       case 'help': {
-        line(helpText({ whereTtlMinutes: this.ctx.config.ui.where_ttl_minutes, audioMaxMinutes: this.ctx.config.stt.audio_max_minutes }));
+        line(
+          helpText({
+            whereTtlMinutes: this.ctx.config.ui.where_ttl_minutes,
+            audioMaxMinutes: this.ctx.config.stt.audio_max_minutes,
+            clearReceipts: clearReceipts(this.ctx),
+          }),
+        );
         return {};
       }
     }

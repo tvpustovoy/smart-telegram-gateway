@@ -151,6 +151,14 @@ describe('config.yaml', () => {
     assert.match(problems(() => parseConfig({ bot: 'b', timezone: 'UTC', reactions: { hold: 3 } }, { test: false })).join(), /hold/);
   });
 
+  it('A12.5 · ui.clear_receipts (0.3.6, issue #52): по умолчанию true; false — как раньше; не да/нет — ошибка', () => {
+    assert.equal(parseConfig({ bot: 'b_bot', timezone: 'UTC' }, { test: false }).ui.clear_receipts, true);
+    const c = loadConfig(tmpFile('config.yaml', 'bot: b_bot\ntimezone: UTC\nui: { clear_receipts: false }\n'), { test: false });
+    assert.equal(c.ui.clear_receipts, false);
+    assert.equal(c.ui.material_hold_seconds, 60, 'прочие поля ui — по умолчанию');
+    assert.match(problems(() => parseConfig({ bot: 'b', timezone: 'UTC', ui: { clear_receipts: 'да' } }, { test: false })).join(), /ui\.clear_receipts/);
+  });
+
   it('A11.12 · окно для материала без слов владельца (0.3.6, issue #51): по умолчанию 60 с; 0 — без окна; дробное и 600 — можно; больше 600 и меньше 0 — ошибка словами', () => {
     assert.equal(parseConfig({ bot: 'b_bot', timezone: 'UTC' }, { test: false }).ui.material_hold_seconds, 60);
     const c = loadConfig(tmpFile('config.yaml', 'bot: b_bot\ntimezone: UTC\nui: { material_hold_seconds: 0 }\n'), { test: false });

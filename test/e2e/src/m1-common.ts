@@ -118,6 +118,16 @@ export function reactionsOf(fake: FakeTelegram, u: Update): string[] {
   return fake.reactionHistory(chatId, messageId);
 }
 
+/**
+ * Квитанция своё сделала (0.3.6, issue #52; ui.clear_receipts по умолчанию): реакция бота на сообщении была и снята —
+ * последний setMessageReaction с пустым списком (в истории — ''), сейчас на сообщении ничего. Так выглядит сообщение,
+ * на которое агент ответил (ответ ушёл), и 👌 после следующего сообщения владельца.
+ */
+export function receiptCleared(fake: FakeTelegram, u: Update): boolean {
+  const h = reactionsOf(fake, u);
+  return h.length > 1 && h.at(-1) === '' && reactionOf(fake, u) === null;
+}
+
 /** Дождаться записи (COMMIT) каждого из сообщений — двигая поддельные часы. */
 export function waitRecorded(s: Setup, gw: GatewayProcess, us: Update | Update[], what = 'записи (COMMIT)'): Promise<true> {
   const list = Array.isArray(us) ? us : [us];

@@ -1,6 +1,7 @@
 // M8 · посылки (0.3.3; P-23, #29; TECH-SPEC 5.16): агент отвечает файлами из промежуточной папки — владелец просит файл,
 // агент присылает его в чат; файлы в папке агент обновляет, позже из неё можно будет публиковать в веб-сервис.
-// A8.1 send_file(seq) — документ ответом, 👌, доставка sent с message_id, копия в raw/parcels · A8.2 без seq — в личку
+// A8.1 send_file(seq) — документ ответом, 👀 снят, когда документ ушёл (0.3.6, #52), доставка sent с message_id, копия в
+// raw/parcels · A8.2 без seq — в личку
 // владельца; полный путь внутри папки · A8.3 новая версия — «⚙ обновлено»; та же — снова, «уже отправлял» · A8.4 подпись
 // длиннее 1024 — документ без неё и следом текст · A8.5 отказы: > 50 МБ, папка, скрытое, «..», чужой полный путь,
 // симлинк и жёсткая ссылка наружу, нет файла, пустой, прямо в папке посылок — ничего не ушло · A8.6 другой чат — только
@@ -29,7 +30,7 @@ import { AGENT_MARK, PARCEL_NOTE_STOP_UPLOAD, STOPPED_TEXT, ownerReactionText, t
 import { FakeChannel } from 'stg-fake-channel';
 import { errors, reply, type SentMessage } from 'stg-fake-telegram';
 import { connectAdapter, count, makeTempDir, meta, pump, q, q1, readJournal, sleep, waitUntil, type GatewayProcess } from './harness.js';
-import { OTHER, OWNER, reactionOf, setup, type Setup } from './m1-common.js';
+import { OTHER, OWNER, reactionOf, reactionsOf, receiptCleared, setup, type Setup } from './m1-common.js';
 import { press } from './m2-common.js';
 
 const RULES = `subjects:
@@ -126,7 +127,7 @@ describe('M8 · посылки: агент отвечает файлами (0.3.
     await s.close();
   });
 
-  it('A8.1: send_file(seq) — документ ответом на просьбу, подпись, 👌; доставка sent с message_id; копия в raw/parcels; журнал send_file', async () => {
+  it('A8.1: send_file(seq) — документ ответом на просьбу, подпись; 👀 снят, когда документ ушёл (0.3.6, #52); доставка sent с message_id; копия в raw/parcels; журнал send_file', async () => {
     const html = '<!doctype html><title>Отчёт</title><h1>Итоги недели</h1>';
     put('отчёт/report.html', html);
     const msg = s.fake.push(s.fake.builder.text(OWNER, 'пришли этот файл'))[0]!;
@@ -152,7 +153,9 @@ describe('M8 · посылки: агент отвечает файлами (0.3.
     );
     assert.equal(fs.readFileSync(path.join(s.home.dir, d.copy_ref!), 'utf8'), html, 'копия в хранилище шлюза');
     assert.equal(q1<{ status: string }>(s.home, 'SELECT status FROM events WHERE seq = ?', seq)?.status, 'processed');
-    await pump(gw, () => reactionOf(s.fake, msg) === '👌' || null, { what: '👌' });
+    // Документ ушёл — квитанция своё сделала: 👀 снят (0.3.6, #52), 👌 нет.
+    await pump(gw, () => receiptCleared(s.fake, msg) || null, { what: 'снятия 👀' });
+    assert.deepEqual(reactionsOf(s.fake, msg), ['👀', '']);
     assert.equal(q1<{ kind: string }>(s.home, 'SELECT kind FROM messages_out WHERE tg_message_id = ?', m.message_id)?.kind, 'agent');
     // Владелец ответил реплаем на документ — агенту видно, на какой файл (⟨предл.⟩).
     const re = s.fake.push(s.fake.builder.replyTo(OWNER, 'спасибо, гляну', m.message))[0]!;

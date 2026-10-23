@@ -34,9 +34,10 @@ The chat interface and the design documents are in Russian; the entries below de
   inline bot, so the window used to miss it. A link is `http(s)://…`, `www.…` or `t.me/…`. It ends the way Telegram ends
   it: a trailing `.` `,` `;` `:` `?` `!` `)` `»` `"` `'` is not part of it; an emoji, `«`, `»`, `<`, `>`, a space or an
   invisible character cuts it; after the domain (and port) only `/`, `?` or `#` continue it, so
-  `https://a.com,посмотри`, `https://a.com🔥` and `https://a.com?` are words; Cyrillic in the address (`…/wiki/Сон`) is
-  part of the link. Spaces, line breaks, invisible characters (zero-width, LRM and RLM, U+FFFC) and separating
-  punctuation around the links (commas, periods, brackets, quotes, dashes, list bullets) do not count. Such a message is
+  `https://a.com,посмотри`, `https://a.com🔥` and `https://a.com?` are words; inside the path a comma is part of the
+  link, as in Telegram (`https://a.com/a,b`); Cyrillic in the address (`…/wiki/Сон`) is part of the link. Spaces, line
+  breaks, invisible characters (zero-width, LRM and RLM, U+FFFC) and separating punctuation around the links (commas,
+  periods, brackets, quotes, dashes, list bullets) do not count. Such a message is
   held like any material: it goes with the owner's next words (`слова владельца — следом, № M`) or after the window
   (`слов владельца не было за 1 мин`); it does not release the window and is not "words after material"; several link
   messages share one window; words sent just before it make it go at once (`слова владельца — раньше, № K`); a reply to
@@ -113,7 +114,31 @@ The chat interface and the design documents are in Russian; the entries below de
   "channel rules" event (0.3.5).
 - `scripts/agent-folder/README.md`: what to change by hand in an agent folder deployed before 0.3.6 (the `done` line,
   the material rule, the two lines on words to material after the window, the episode rule, the `ссылка владельца`
-  label).
+  label, the reactions line and the `чужое (№ N)` rule below).
+- The bot's receipt goes away once it has served (#52; `ui.clear_receipts`, default `true`). A reaction on the owner's
+  message now lives while the owner waits for an answer:
+  - When the agent answers an event — `reply(seq)` or `send_file(seq)` — the gateway no longer sets 👌: it removes its
+    reaction (`setMessageReaction` with an empty list) once the answer has reached Telegram — every part of a long
+    answer, the document of a parcel — and not before; until then the message keeps 👀. The answer itself is the sign.
+    Removing the bot's reaction also clears the owner's unread-reaction mark in the chat list (checked on a live chat).
+  - `done` (closed without an answer) still sets 👌. The owner's next message in that chat — any new message: text,
+    voice, photo, forward, a command word too; not a button tap, a reaction or an edit — removes every 👌 the bot set on
+    the owner's messages there within the last 7 days, in the same transaction that stores the message. Older history
+    is not walked, and nothing is removed when the gateway starts; a restart between `done` and the next message does
+    not lose the removal (the state is in the `reactions` table).
+  - An answer that never reached the chat (dropped by `стоп`, refused by Telegram, a parcel copy gone) leaves the event
+    closed with no answer in the chat: the message gets 👌 instead of a 👀 that would otherwise stay forever, and the next
+    message removes it. `стоп` is itself the owner's next message: it removes the earlier 👌 first, then drops the
+    answers; [продолжить] is a button tap and removes nothing.
+  - Done with the existing `reactions` row and its retry queue: removing is an empty `want`, as for an edit since
+    0.3.2, so a Telegram error on removal is retried like any reaction. No schema change (still v13). The text receipt
+    of early builds is long gone (`fallback_at`, `fallback_sent` are not written), so there is nothing to delete.
+  - `ui.clear_receipts: false` keeps the previous behavior: `reply` and `send_file(seq)` set 👌 at once, and 👌 stays.
+  - `/help`, the channel instructions and the agent folder template say what the reactions mean now ("you answered —
+    the gateway removes the reaction: the answer itself is the sign; 👌 — you marked it `done` without an answer"); the
+    instructions have a new version, so a resumed conversation gets them as a "channel rules" event (0.3.5).
+  - Journal: `out.receipt_cleared` (an answer removed the reaction), `in.receipts_cleared` (how many 👌 the owner's
+    message removed), `send_dropped.receipt: 👌` (an answer that did not go out).
 
 ### Changed
 
@@ -123,11 +148,17 @@ The chat interface and the design documents are in Russian; the entries below de
   reactions, `cancelled` stays reaction-only. Going back to 0.3.5 is possible only from a backup taken before the
   upgrade.
 - `packages/gateway/src/reaction-hold.ts` is now `hold.ts` (`Hold`): one timer for both windows.
+- Agent folder template, the `чужое (№ N)` rule: a note made from the content of a page behind a link gets
+  `чужое (№ N)` too; the owner's link itself needs no mark.
 - Tests: test homes write `ui.material_hold_seconds: 0` unless a test asks for the window, so tests written before
   0.3.6 keep sending captionless photos and forwards straight to the agent; the window has its own suite
-  (`m11-material-hold`), which also runs a picture scenario of the earlier suites (`media(seq)`, 👀 then 👌) and a new
-  topic during the window with the default window, and covers replies to material and words after material (A11.23,
-  A11.24), messages of only links (A11.25) and a link sent as a reply to the agent (A11.26).
+  (`m11-material-hold`), which also runs a picture scenario of the earlier suites (`media(seq)`, 👀, then 👌 on the
+  photo closed with `done` and the reaction removed from the words the agent answered) and a new topic during the
+  window with the default window, and covers replies to material and words after material (A11.23, A11.24), messages of
+  only links (A11.25) and a link sent as a reply to the agent (A11.26). Receipts have their own suite
+  (`m12-receipts-clear`, A12.1–A12.9); suites that waited for 👌 after a reply now wait for the reaction to be removed;
+  the latency test A1.6 runs with `ui.clear_receipts: false` (in a stream of one message a second every next message
+  would remove the previous 👌).
 
 ## 0.3.5 - 2026-10-22
 

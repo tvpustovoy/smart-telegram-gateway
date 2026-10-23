@@ -278,7 +278,9 @@ export const ConfigSchema = z.strictObject({
   // владельца (пересылка, файл, фото без подписи) ждёт его слов в том же чате столько секунд от последнего материала;
   // слова пришли — материал уходит агенту вместе с ними, не пришли — с пометкой «слов владельца не было».
   // material_followup_minutes (0.3.6, issue #51): первые слова владельца после такого материала в пределах стольких минут
-  // от его выпуска — с пометкой «слова после материала № N»; 0 — выключено.
+  // от его выпуска — с пометкой «слова после материала № N»; 0 — выключено. clear_receipts (0.3.6, issue #52): реакция
+  // бота живёт, пока владелец ждёт ответа — ответ агента ушёл в чат, 👀 снимается (знак ответа — сам ответ); 👌 (done,
+  // закрыто без ответа) снимается следующим сообщением владельца в этом чате; false — как раньше: 👌 остаётся.
   ui: z
     .strictObject({
       where_ttl_minutes: positiveMinutes.default(5),
@@ -286,6 +288,7 @@ export const ConfigSchema = z.strictObject({
       delete_confirmed_topic: z.boolean().default(true),
       material_hold_seconds: materialHoldSeconds,
       material_followup_minutes: materialFollowupMinutes,
+      clear_receipts: z.boolean().default(true),
     })
     .prefault({}),
   // Посылки (5.16; 0.3.3, P-23): dir — папка посылок, единственное место, откуда агент отдаёт файлы (send_file);

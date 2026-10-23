@@ -12,6 +12,8 @@
 //                                                                                      точка after_commit
 //       Квитанции при записи с 0.3.2 нет (развилка R-1 б): на сообщении —
 //       👀 и 👌, когда агент увидел и ответил (reactions.ts); правка снимает реакцию к прежнему тексту ⟨предл.⟩.
+//       Новое сообщение владельца (0.3.6, issue #52; ui.clear_receipts) снимает 👌 бота на его прежних сообщениях в
+//       этом чате (за неделю): событие закрыто, владелец пошёл дальше; нажатие, реакция и правка — нет ⟨предл.⟩.
 //       Текстовой квитанции нет ни у чего (P-19): голосовое и звук файлом получают ответом расшифровку, когда она готова
 //       (voice.ts); звук файлом больше 20 МБ по метаданным и видео не в mp4 — сразу короткий ответ («слишком большой»,
 //       «видео не в mp4»).
@@ -114,7 +116,7 @@ import {
 
 // Набор реакций без учёта порядка: у Premium их несколько, Telegram может вернуть их в другом порядке.
 const sameEmoji = (a: readonly string[], b: readonly string[]): boolean => [...a].sort().join(' ') === [...b].sort().join(' ');
-import { requestCleared } from './reactions.js';
+import { clearReceipts, requestCleared, requestClosedCleared } from './reactions.js';
 import { retryingUpdates } from './recovery.js';
 import type { Sender } from './sender.js';
 import type { TestHooks } from './testhooks.js';
@@ -369,15 +371,16 @@ export class Admission {
     let seq: number;
     let effects: Effects;
     let material: MaterialOutcome;
+    let receiptsCleared: number;
     try {
-      ({ seq, effects, material } = this.commit(draft, tUpdate, retry));
+      ({ seq, effects, material, receiptsCleared } = this.commit(draft, tUpdate, retry));
     } catch (err) {
       if (this.ctx.disk.check(err, 'admission', { update_id: id, step: 'commit' })) return 'disk_full';
       throw err;
     }
     faultPoint('after_commit', id);
     this.ctx.disk.admitted(id);
-    this.afterCommit(draft, seq, effects, material);
+    this.afterCommit(draft, seq, effects, material, receiptsCleared);
     return 'ok';
   }
 
@@ -909,7 +912,7 @@ export class Admission {
     });
   }
 
-  private commit(d: Draft, tUpdate: number, retry = false): { seq: number; effects: Effects; material: MaterialOutcome } {
+  private commit(d: Draft, tUpdate: number, retry = false): { seq: number; effects: Effects; material: MaterialOutcome; receiptsCleared: number } {
     const { db } = this.ctx;
     const now = this.ctx.clock.now();
     return transaction(db, () => {
@@ -974,6 +977,12 @@ export class Admission {
         if (d.kind !== 'edit' && !d.replyTo?.material) material.followup = linkFollowup(this.ctx, place, seq, episodeId, now);
       }
       sql(db, "UPDATE updates SET status = 'admitted', raw_json = NULL WHERE update_id = ?").run(d.updateId);
+      // Следующее сообщение владельца в этом чате (0.3.6, #52): 👌 на его прежних сообщениях (закрыто без ответа) своё
+      // сделали — снять. Любое новое сообщение — текст, голосовое, фото, пересылка, команда словом, закрытая тема; не
+      // нажатие (callback), не реакция (handleReaction) и не правка ⟨предл.⟩. До команды: 👌, которые поставит «стоп»
+      // (брошенные ответы, control.ts), живут до следующего сообщения.
+      const receiptsCleared =
+        d.who.isOwner && d.update.message !== undefined && d.kind !== 'callback' && clearReceipts(this.ctx) ? requestClosedCleared(this.ctx, d.chatId, subjectId) : 0;
       if (d.receipt) {
         // ✍ при записи с 0.3.2 нет (развилка R-1 б): 👀 и 👌 — когда агент увидел и ответил
         // (reactions.ts). Правка — реакция к прежнему тексту снимается в той же транзакции, что и запись ⟨предл.⟩: агент
@@ -1004,15 +1013,21 @@ export class Admission {
         setMeta(db, META_KEYS.offset, String(d.updateId + 1));
         setMeta(db, META_KEYS.lastUpdateAt, String(now));
       }
-      return { seq, effects, material };
+      return { seq, effects, material, receiptsCleared };
     });
   }
 
-  private afterCommit(d: Draft, seq: number, effects: Effects, material: MaterialOutcome): void {
+  private afterCommit(d: Draft, seq: number, effects: Effects, material: MaterialOutcome, receiptsCleared = 0): void {
     const { journal } = this.ctx;
     if (d.kind === 'closed_topic') {
       // Закрытая тема — в журнал только №, дата, длительность (Ш-16).
-      journal.write('in', { seq, kind: 'closed_topic', date: new Date(d.messageDate).toISOString(), duration: d.voice?.duration ?? null });
+      journal.write('in', {
+        seq,
+        kind: 'closed_topic',
+        date: new Date(d.messageDate).toISOString(),
+        duration: d.voice?.duration ?? null,
+        ...(receiptsCleared ? { receipts_cleared: receiptsCleared } : {}),
+      });
     } else {
       journal.write('in', {
         seq,
@@ -1040,6 +1055,8 @@ export class Admission {
             : {}),
         // Слова после материала, ушедшего без слов (0.3.6): № того материала.
         ...(material.followup.length ? { after_material: material.followup } : {}),
+        // Сколько 👌 на прежних сообщениях владельца в этом чате снимает это сообщение (0.3.6, #52).
+        ...(receiptsCleared ? { receipts_cleared: receiptsCleared } : {}),
       });
     }
     // Слова владельца отпустили удерживаемый материал (0.3.6): отдан с ними — или ждёт, пока слова распознаются.

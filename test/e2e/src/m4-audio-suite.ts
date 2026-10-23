@@ -6,7 +6,8 @@
 // пока распознаётся — строки нет и на файле ничего (0.3.2: ✍ нет).
 // - m4a 12:34 (message.audio; Telegram отдал mime audio/mpeg) — ответом расшифровка; файл в raw/ с расширением из
 //   имени; провайдеру — имя .m4a и audio/mp4; агенту — свой аудиофайл без пересылки — слово владельца (0.3, R-2 а;
-//   до 0.3 — «чужое»), подпись — тоже его; агент увидел 👀 → ответил 👌 (0.3.2: ✍ нет), ответ на файл не правится;
+//   до 0.3 — «чужое»), подпись — тоже его; агент увидел 👀 → ответил — 👀 снят (0.3.2: ✍ нет; 0.3.6, #52: 👌 нет), ответ
+//   на файл не правится;
 // - документ .opus без длительности — распознаётся, провайдеру — .ogg; следующий текст агенту — после аудио;
 // - длиннее 15 минут — файл скачан и сохранён, провайдеру ни одного вызова, ответом «Длиннее 15 минут — не распознаю,
 //   файл сохранён», агенту — «не распознан: длиннее»;
@@ -26,7 +27,7 @@ import type { Update } from 'stg-core';
 import type { FakeChannel } from 'stg-fake-channel';
 import type { SentMessage } from 'stg-fake-telegram';
 import { connectAdapter, pump, q1, readJournal, sleep, waitUntil, type GatewayProcess } from './harness.js';
-import { OWNER, reactionsOf, waitRecorded } from './m1-common.js';
+import { OWNER, reactionsOf, receiptCleared, waitRecorded } from './m1-common.js';
 import { isQuote, pushVoice, replyTo, sttRepliesOf, sttText, voiceSetup, waitSttReply, type VoiceDialect, type VoiceSetup } from './m4-common.js';
 
 const FULL = 'итак коллеги начнём с итогов квартала по продажам затем обсудим найм и планы на осень';
@@ -97,7 +98,7 @@ export function audioSuite(dialect: VoiceDialect): void {
       await s.close();
     });
 
-    it('m4a 12:34 (mime от Telegram — audio/mpeg): ответом — расшифровка целиком; 👀 → 👌; провайдеру — .m4a; агенту — слово владельца и подпись', async () => {
+    it('m4a 12:34 (mime от Telegram — audio/mpeg): ответом — расшифровка целиком; 👀, ответ его снимает (#52); провайдеру — .m4a; агенту — слово владельца и подпись', async () => {
       const data = Buffer.from('ftypM4A fake m4a audio '.repeat(50));
       const fileId = file(data);
       const u = s.fake.push(
@@ -132,13 +133,13 @@ export function audioSuite(dialect: VoiceDialect): void {
         { kind: 'document', trust: 'owner', mixed: false, text: 'запиши итоги', transcript: FULL, audio: { name: 'встреча.m4a', seconds: 754, state: 'transcribed', max_minutes: 15, source: 'audio' } },
       );
       assert.deepEqual(n.attachments, [{ kind: 'document', trust: 'owner' }]);
-      // Агент увидел — 👀; ответил — 👌. Ответ на файл не правится, «→ ответил» нет.
+      // Агент увидел — 👀; ответил — 👀 снят, когда ответ ушёл (0.3.6, #52). Ответ на файл не правится, «→ ответил» нет.
       await ch.delivered(seq);
       await pump(gw, () => reactionsOf(s.fake, u).at(-1) === '👀' || null, { what: '👀' });
       const a = await ch.reply(seq, 'Записал итоги встречи', turn);
       assert.ok(a.type === 'ack' && a.result === 'queued', JSON.stringify(a));
-      await pump(gw, () => reactionsOf(s.fake, u).at(-1) === '👌' || null, { what: '👌' });
-      assert.deepEqual(reactionsOf(s.fake, u), ['👀', '👌']);
+      await pump(gw, () => receiptCleared(s.fake, u) || null, { what: 'снятия 👀' });
+      assert.deepEqual(reactionsOf(s.fake, u), ['👀', '']);
       assert.equal(r.edits.length, 0, 'ответ на файл не правится');
       assert.equal(sttRepliesOf(s, u).length, 1);
     });

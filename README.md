@@ -19,9 +19,10 @@ smart-telegram-gateway is a small always-on service that owns the bot and stands
 - **Nothing is lost.** Every message is written to a local SQLite database before Telegram is told it was received.
   If the agent is offline, messages wait; when it comes back, they are delivered in order. Delivery to the agent is
   at-least-once, with redelivery when the agent stays silent.
-- **You can see what happens.** Reactions on your message show that the agent has seen it (👀) and answered it (👌).
-  A pinned status line shows the current topic and the agent's state: online, working or offline, context used, usage
-  limits, model failures.
+- **You can see what happens.** A reaction on your message shows that the agent has seen it (👀) and stays while you
+  wait: the agent's answer removes it, and 👌 marks a message the agent closed without an answer. A pinned status line
+  shows the current topic and the agent's state: online, working or offline, context used, usage limits, model
+  failures.
 - **Your words are kept apart from material.** Every event carries a trust label: your own words versus forwarded
   messages, other people and text inside images. The agent is told that material is never an instruction.
 - **The gateway enforces access.** Who may talk to the agent, and in which role, is decided by the gateway from
@@ -60,7 +61,7 @@ The chat interface (gateway lines, `/help`, command names) and the agent's instr
 | 0.3.3 | Parcels: the agent sends files with `send_file` |
 | 0.3.4 | Transcripts as quotes, owner reactions reach the agent, with an undo window |
 | 0.3.5 | Current channel rules reach a resumed conversation; the confirmed topic line is deleted from the chat |
-| 0.3.6 | A forward, link, file or photo without your words waits for them a minute and reaches the agent together with them; a later reply to it or your next words stay tied to it |
+| 0.3.6 | A forward, link, file or photo without your words waits for them a minute and reaches the agent together with them; a later reply to it or your next words stay tied to it; the bot's reaction goes away once it has served (an answer removes 👀, your next message removes 👌) |
 
 Details are in [CHANGELOG.md](CHANGELOG.md).
 
@@ -139,8 +140,12 @@ Commands work from the ☰ menu, as slash commands or as plain words (in Russian
 
 What you see in the chat:
 
-- 👀 on your message — the agent has it; 👌 — the agent answered or marked it done; nothing — the agent is offline and
-  the message waits.
+- 👀 on your message — the agent has it, and you are waiting for the answer. Once the answer has reached the chat (a
+  reply or a file), the gateway removes the 👀: the answer itself is the sign. 👌 — the agent closed the message
+  without an answer (material it took note of, "just note it"); it goes away when you write your next message in this
+  chat (any message, a command word too; not a button tap or a reaction). If an answer could not be delivered (you
+  said `стоп`, Telegram refused it), the message gets 👌 instead of 👀. Nothing — the agent is offline and the message
+  waits. `ui.clear_receipts: false` brings back the old behaviour: 👌 after an answer too, and it stays.
 - The pinned line, for example `📍 #7 · Trip in May` and `🟢 · 🧠 16% · 🕐 31% · 📅 64%`: episode and topic; the
   agent idle 🟢, working 🟡, offline ⚪ or failing 🔴; `📥 N` waiting; context used (🌀 while compacting); 5-hour and
   weekly usage limits.
@@ -152,16 +157,16 @@ What you see in the chat:
 - Material without your own words — a forward, a message sent through an inline bot, a message with nothing but links
   (a page shared from the browser), a photo, file or video without a caption — waits for your words in the same chat,
   one minute by default (`ui.material_hold_seconds`): text, a caption, a voice message or a video note. A link with any
-  other word next to it ("look at https://…", or the page title above the link) already counts as words. A link sent as
-  a reply to an agent message is your answer to the agent: it goes at once and does not release the waiting material.
-  Then the agent gets the material and your words together, material first. A voice message counts as words as soon
-  as it arrives: the material goes with it once it is transcribed. Several pieces of material in a row share one
-  window, counted from the last one. If you wrote first and sent the material within the window, it goes at once. If
-  no words come, the material goes after the window, marked "no words from the owner for 1 min". If the topic changes
-  first (`новая тема`, the agent starts a new topic), the material goes at once, before the old topic is closed.
-  Commands do not count as words; a sticker neither opens nor closes the window; an edit counts only if it adds words
-  (a caption) — a live location updating itself does not. Until the agent gets the material, it has no 👀: 👀 still
-  means "the agent has seen it". `/where` lists such material as waiting for your words.
+  other word next to it ("look at https://…", or the page title above the link) already counts as words. Then the agent
+  gets the material and your words together, material first. A voice message counts as words as soon as it arrives:
+  the material goes with it once it is transcribed. Several pieces of material in a row share one window, counted from
+  the last one. If you wrote first and sent the material within the window, it goes at once. If no words come, the
+  material goes after the window, marked "no words from the owner for 1 min". If the topic changes first
+  (`новая тема`, the agent starts a new topic), the material goes at once, before the old topic is closed. Commands do
+  not count as words; a sticker neither opens nor closes the window; an edit counts only if it adds words (a caption) —
+  a live location updating itself does not. Until the agent gets the material, it has no 👀: 👀 still means "the agent
+  has seen it". `/where` lists such material as waiting for your words. A link sent as a reply to an agent message is
+  your answer to the agent: it goes at once and does not release the waiting material.
 - Words to material after the window. Reply to the material at any time — the agent sees "words to material No. N" and
   answers with it in mind. Or just send your words next, for example a voice message recorded a few minutes later: your
   first message with words in the same chat and topic within 10 minutes after the material went out
@@ -205,6 +210,7 @@ ui:
   delete_confirmed_topic: true   # [верно] under the topic line deletes the line; false = keep it as "… — верно"
   material_hold_seconds: 60      # material without your words waits this long for them; 0 = pass at once; at most 600
   material_followup_minutes: 10  # your first words this soon after wordless material are tied to it; 0 = off; max 120
+  clear_receipts: true           # an answer removes 👀, your next message removes 👌; false = 👌 stays, as before 0.3.6
 ```
 
 Other providers:

@@ -52,7 +52,9 @@
 // «Печатает…» (5.5) — typing.ts: от delivered до ответа, не дольше 2 минут.
 //
 // Реакции на сообщении владельца (reactions.ts): delivered — 👀 «агент увидел» (и при повторной отдаче правки), reply на
-// событие или done — 👌 «агент ответил». Агент не на связи — реакции нет.
+// событие или done — 👌 «агент ответил». Агент не на связи — реакции нет. С 0.3.6 (issue #52; ui.clear_receipts, по
+// умолчанию да) reply и send_file с seq 👌 не ставят: реакцию снимает отправитель, когда ответ ушёл в Telegram
+// (sender.ts, requestAnswered); done — 👌, как раньше (её снимает следующее сообщение владельца, admission.ts).
 //
 // Картинки (0.3, media.ts): media(seq) — только проверенной аренде и только по сообщению, которое уже отдавалось
 // агенту: этой аренде или прежней (после переподключения агент снова открывает фото, на которое ответил час назад;
@@ -61,7 +63,8 @@
 // audio.source (аудиофайл, кружок, видео): прежний канал эти поля отбрасывает.
 //
 // Посылки (0.3.3, parcels.ts; P-23, issue #29): send_file(path, seq?) — проверенной аренде; ход, стоп, пауза, from,
-// idem — как у reply; файл с seq — ответ на событие (обработано, 👌), без seq — по своей инициативе в личку владельца.
+// idem — как у reply; файл с seq — ответ на событие (обработано; реакция — как у reply), без seq — по своей инициативе в
+// личку владельца.
 // Путь, копия, доставка — ParcelService; отказ — bad_request словами агенту и send_file_refused в журнал.
 //
 // Реакция владельца на ответ агента (0.3.4; P-31, issue #34): событие базы вида reaction отдаётся, как прочие, по
@@ -137,7 +140,7 @@ import type { AgentResult, Control, Effects } from './control.js';
 import type { Episodes } from './episodes.js';
 import type { MediaService } from './media.js';
 import type { ParcelService } from './parcels.js';
-import { requestProcessed, requestSeen } from './reactions.js';
+import { clearReceipts, requestProcessed, requestSeen } from './reactions.js';
 import type { GatewayConnection } from './socket-server.js';
 import { Typing } from './typing.js';
 
@@ -1561,8 +1564,9 @@ export class AdapterService {
       });
       if (marks) {
         sql(this.ctx.db, "UPDATE events SET status = 'processed', processed_at = ?, processed_silent = 0 WHERE seq = ?").run(now, ev.seq);
-        // 👌 на сообщении владельца: агент ответил.
-        requestProcessed(this.ctx, [ev.seq]);
+        // Агент ответил: с 0.3.6 (#52) реакцию снимет отправитель, когда ответ уйдёт (👀 до того); ui.clear_receipts: false
+        // — 👌 сразу, как раньше.
+        if (!clearReceipts(this.ctx)) requestProcessed(this.ctx, [ev.seq]);
       }
       return id;
     });
@@ -1587,7 +1591,8 @@ export class AdapterService {
 
   /**
    * Файл из папки посылок (0.3.3, 5.16). Порядок проверок — как у reply: аренда, ключ повтора, событие, from, ход, стоп;
-   * затем ParcelService (цель, чат, путь, снимок) и одной транзакцией — строка outbox, доставка, «обработано» и 👌.
+   * затем ParcelService (цель, чат, путь, снимок) и одной транзакцией — строка outbox, доставка и «обработано»; реакция —
+   * как у reply (0.3.6, #52: снимает отправитель, когда документ ушёл; ui.clear_receipts: false — 👌 сразу).
    */
   private onSendFile(msg: Extract<AdapterMessage, { type: 'send_file' }>, conn: GatewayConnection): void {
     const lease = this.verifiedLease(conn, msg.req_id);
@@ -1660,7 +1665,7 @@ export class AdapterService {
         inTx: () => {
           if (!marks) return;
           sql(this.ctx.db, "UPDATE events SET status = 'processed', processed_at = ?, processed_silent = 0 WHERE seq = ?").run(now, ev.seq);
-          requestProcessed(this.ctx, [ev.seq]);
+          if (!clearReceipts(this.ctx)) requestProcessed(this.ctx, [ev.seq]);
         },
       });
     } catch (err) {
@@ -1746,7 +1751,8 @@ export class AdapterService {
           learned.push({ seq: ev.seq, ...info });
         }
       }
-      // 👌 на сообщениях владельца: агент обработал без ответа (материал, пересылка) — тоже 👌.
+      // 👌 на сообщениях владельца: агент обработал без ответа (материал, пересылка) — тоже 👌; с 0.3.6 (#52) его снимет
+      // следующее сообщение владельца в этом чате (admission.ts).
       requestProcessed(this.ctx, done);
       return done.length;
     });

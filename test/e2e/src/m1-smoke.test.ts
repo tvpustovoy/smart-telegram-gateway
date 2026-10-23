@@ -1,5 +1,6 @@
 // M1 · основной путь: владелец пишет → событие → offset; на сообщении ничего, пока агент не увидел (0.3.2: ✍ нет);
-// переходник берёт аренду, получает событие — 👀 «агент увидел», отвечает — 👌 (A1.20); ответ
+// переходник берёт аренду, получает событие — 👀 «агент увидел», отвечает — 👀 снят, когда ответ ушёл (A1.20; 0.3.6,
+// #52), done — 👌; ответ
 // агента — чистым текстом, без 💬 (P-26), с 💬 — только начатый со знака шлюза (П-4); незнакомый —
 // молчание (A1.4); до старта лежат 5
 // обновлений (A1.2); повтор и номер ниже offset (A1.3); команда и нажатие владельца — события handled мимо агента,
@@ -159,9 +160,9 @@ describe('M1 · приём: основной путь', () => {
       // На давнее сообщение (после него были другие) — реплаем (5.5а).
       assert.deepEqual(sent.reply_parameters, { message_id: q1<{ message_id: number }>(s.home, 'SELECT message_id FROM events WHERE seq = 1')!.message_id, allow_sending_without_reply: true });
       assert.equal(q1<{ status: string }>(s.home, 'SELECT status FROM events WHERE seq = 1')?.status, 'processed');
-      // Ответ = обработано: на сообщении владельца 👌 — агент ответил.
-      await pump(gw, () => reactionsOf(s.fake, firstUpdate).at(-1) === '👌' || null, { what: '👌 после ответа' });
-      assert.deepEqual(reactionsOf(s.fake, firstUpdate), ['👀', '👌']);
+      // Ответ = обработано; ответ ушёл — 👀 снят (0.3.6, #52: знак ответа — сам ответ, 👌 нет).
+      await pump(gw, () => (reactionsOf(s.fake, firstUpdate).length === 2 && reactionsOf(s.fake, firstUpdate).at(-1) === '') || null, { what: 'снятия 👀 после ответа' });
+      assert.deepEqual(reactionsOf(s.fake, firstUpdate), ['👀', '']);
       // Отметка об отправке пишется после ответа Telegram.
       await waitUntil(() => q1(s.home, 'SELECT 1 FROM messages_out WHERE tg_message_id = ?', sent.message_id), 5000, 'messages_out');
       assert.equal(q1<{ kind: string }>(s.home, 'SELECT kind FROM messages_out WHERE tg_message_id = ?', sent.message_id)?.kind, 'agent');

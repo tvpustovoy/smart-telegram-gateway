@@ -1,6 +1,7 @@
 // A1.13 (Ш-10) — правка принятого; правка текста на «стоп»; правка из закрытой темы; правка от незнакомого:
 // событие edit с edit_of; реакции — как у сообщения (0.3.2: ✍ нет): правка записана — реакция
-// к прежнему тексту снимается ⟨предл.⟩, отдана агенту — 👀, обработана — 👌; текстовой квитанции правки нет; «стоп» не
+// к прежнему тексту снимается ⟨предл.⟩, отдана агенту — 👀, ответ на неё 👀 снимает (0.3.6, #52); текстовой квитанции
+// правки нет; «стоп» не
 // исполнен; закрытая — мимо агента, реакций нет; незнакомое — ignored.
 // П-3 — агенту не уходит ничего от незнакомых и из закрытой темы (журнал поддельного переходника). Переходник подключён
 // с самого начала: проверяется живая отдача (шаг 7 «уведомить переходник»), а не только то, что лежит в очереди.
@@ -32,7 +33,7 @@ describe('A1.13 · правки', () => {
   const admittedEvent = (updateId: number): { seq: number; kind: string; edit_of: number | null; status: string; text: string | null } | undefined =>
     q1(s.home, 'SELECT seq, kind, edit_of, status, text FROM events WHERE update_id = ?', updateId);
 
-  it('правка принятого — событие edit с edit_of; правка записана — реакция снята, отдана агенту — 👀, обработана — 👌; ✍ и текстовой квитанции нет', async () => {
+  it('правка принятого — событие edit с edit_of; правка записана — реакция снята, отдана агенту — 👀, ответ на неё — снят (0.3.6, #52); ✍ и текстовой квитанции нет', async () => {
     const orig = s.fake.builder.text(OWNER, 'купить молоко');
     s.fake.push(orig);
     const o = await waitUntil(() => admittedEvent(orig.update_id), 5000, 'приёма');
@@ -56,8 +57,8 @@ describe('A1.13 · правки', () => {
     await ch.delivered(ev.seq);
     await pump(gw, () => reactionOf(s.fake, orig) === '👀' || null, { what: '👀 на правке' });
     assert.equal((await ch.reply(ev.seq, 'понял: кефир', turn)).type, 'ack');
-    await pump(gw, () => reactionOf(s.fake, orig) === '👌' || null, { what: '👌 на правке' });
-    assert.deepEqual(reactionsOf(s.fake, orig), ['👀', '👌', '', '👀', '👌']);
+    await pump(gw, () => (reactionsOf(s.fake, orig).length === 5 && reactionOf(s.fake, orig) === null) || null, { what: 'снятия 👀 правки ответом' });
+    assert.deepEqual(reactionsOf(s.fake, orig), ['👀', '👌', '', '👀', '']);
     assert.ok(!botTexts(s.fake).some((t) => t.includes('правка к')), 'текстовой квитанции правки нет');
   });
 

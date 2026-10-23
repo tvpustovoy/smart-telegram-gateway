@@ -13,7 +13,8 @@
 // распознаётся) · A11.17 правка удерживаемого материала (дописал подпись) — слова · A11.19 участник по правилам — окна
 // нет · A11.20 правка удерживаемого материала без слов (живое место, фото заменено без подписи) — не слова: ждёт с
 // исходным, окно не сдвигает · A11.21 «новая тема» в окне — материал агенту раньше «эпизод закрыт», с пометкой «слов не
-// было» · A11.22 прежний сценарий картинки (media(seq), 👀 → 👌) с окном по умолчанию · A11.23 реплай на материал — «слова к
+// было» · A11.22 прежний сценарий картинки (media(seq), 👀; done на фото — 👌, ответ на слова снимает 👀 — 0.3.6, #52) с
+// окном по умолчанию · A11.23 реплай на материал — «слова к
 // материалу № N» (после окна, в окне, окно 0 — по классификации) · A11.24 слова после материала — первые слова владельца
 // после материала без слов в пределах 10 мин (голосовое — по приходу; перезапуск; 0 — выключено) · A11.25 текст владельца
 // из одних ссылок (поделился страницей из браузера) — материал без слов: окно, «следом», «не было», одно окно на
@@ -27,7 +28,7 @@ import { after, before, describe, it } from 'node:test';
 import type { FakeChannel } from 'stg-fake-channel';
 import type { Update } from 'stg-core';
 import { connectAdapter, pump, q1, readJournal, sleep, waitUntil, type GatewayProcess } from './harness.js';
-import { OTHER, OWNER, reactionsOf, setup, type Setup } from './m1-common.js';
+import { OTHER, OWNER, reactionsOf, receiptCleared, setup, type Setup } from './m1-common.js';
 import { buttonsOf, press, waitSent } from './m2-common.js';
 import { pushVoice, voiceSetup, waitSttReply, type VoiceSetup } from './m4-common.js';
 import { imageBytes, jpegBytes, mediaOf } from './m7-common.js';
@@ -361,7 +362,7 @@ describe('M11 · окно для материала без слов владел
     await h.finish([w]);
   });
 
-  it('A11.22: прежний сценарий картинки (A7.1, A7.4) с окном по умолчанию — фото без подписи в окне: media(seq) «агенту ещё не отдавался», 👀 нет; слова — фото и слова подряд; media(seq) — картинка; 👀, затем 👌 на фото и словах', async () => {
+  it('A11.22: прежний сценарий картинки (A7.1, A7.4) с окном по умолчанию — фото без подписи в окне: media(seq) «агенту ещё не отдавался», 👀 нет; слова — фото и слова подряд; media(seq) — картинка; 👀, затем 👌 на фото (done) и снятие на словах (ответ ушёл, #52)', async () => {
     await h.quiet();
     const data = jpegBytes(800, 600, 5000, 3);
     b.s.fake.addFile(data, { fileId: 'm11ph', path: 'photos/m11ph.jpg' });
@@ -385,7 +386,8 @@ describe('M11 · окно для материала без слов владел
     await pump(b.gw, () => (reactionsOf(b.s.fake, pu).at(-1) === '👀' && reactionsOf(b.s.fake, wu).at(-1) === '👀') || null, { what: '👀 на фото и словах' });
     assert.equal((await b.ch.done([p])).type, 'ack');
     assert.equal((await b.ch.reply(w, 'На фото — чек из магазина.', b.ch.currentTurn() ?? b.turn)).type, 'ack');
-    await pump(b.gw, () => (reactionsOf(b.s.fake, pu).at(-1) === '👌' && reactionsOf(b.s.fake, wu).at(-1) === '👌') || null, { what: '👌 на фото и словах' });
+    await pump(b.gw, () => (reactionsOf(b.s.fake, pu).at(-1) === '👌' && receiptCleared(b.s.fake, wu)) || null, { what: '👌 на фото и снятия на словах' });
+    assert.deepEqual([reactionsOf(b.s.fake, pu), reactionsOf(b.s.fake, wu)], [['👀', '👌'], ['👀', '']]);
   });
 
   it('A11.19: участник по правилам: его пересылка и фото без подписи — агенту сразу, без окна и пометки (окно — только у владельца)', async () => {

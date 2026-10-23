@@ -3,9 +3,11 @@
 // для провайдеров: их запускают m7-sound-openai.test.ts и m7-sound-elevenlabs.test.ts.
 // Сведение 0.3 и 0.3.1: владельцу кружок и видео — в виде тихого чата, как голосовое и аудиофайл (P-11, P-19;
 // 0.3.2 — без ✍): на приёме ничего (строки «распознаю…» нет), распознано — ответом на кружок (видео) сама расшифровка,
-// только текст; нет расшифровки — ответом короткая причина; агент увидел — 👀, ответил — 👌; ответ на
+// только текст; нет расшифровки — ответом короткая причина; агент увидел — 👀, ответил — 👀 снят (0.3.6, #52), done —
+// 👌; ответ на
 // кружок не правится, «→ ответил» нет.
-// - A7.7 свой кружок 0:42: ответ-расшифровка реплаем на кружок → 👀 → 👌; провайдеру — <update_id>.mp4,
+// - A7.7 свой кружок 0:42: ответ-расшифровка реплаем на кружок → 👀 → ответ агента его снимает; провайдеру —
+//   <update_id>.mp4,
 //   video/mp4; в raw/ — .mp4; агенту — слово владельца (метка owner), расшифровка, кадр (media); голосовая очередь;
 // - A7.8 пересланный кружок — «чужое» (метка вложения и события), итог эпизода — «чужое»; ответ-расшифровка — так же;
 // - A7.9 свой аудиофайл без пересылки — слово владельца, итог эпизода — своё; пересланный — чужое, итог — «чужое»;
@@ -30,7 +32,7 @@ import type { Update } from 'stg-core';
 import type { FakeChannel } from 'stg-fake-channel';
 import type { SentMessage } from 'stg-fake-telegram';
 import { connectAdapter, pump, q1, readJournal, waitUntil, type GatewayProcess } from './harness.js';
-import { OTHER, OWNER, reactionsOf, waitRecorded } from './m1-common.js';
+import { OTHER, OWNER, reactionsOf, receiptCleared, waitRecorded } from './m1-common.js';
 import { isQuote, replyTo, sttRepliesOf, sttText, voiceSetup, waitSttReply, type VoiceDialect, type VoiceSetup } from './m4-common.js';
 import { imageBytes, jpegBytes, mediaOf } from './m7-common.js';
 
@@ -79,7 +81,7 @@ export function soundSuite(dialect: VoiceDialect): void {
       await s.close();
     });
 
-    it('A7.7 свой кружок 0:42: ответ-расшифровка на кружок → 👀 → 👌; провайдеру — .mp4 video/mp4; агенту — слово владельца (owner) и кадр', async () => {
+    it('A7.7 свой кружок 0:42: ответ-расшифровка на кружок → 👀, ответ агента его снимает (#52); провайдеру — .mp4 video/mp4; агенту — слово владельца (owner) и кадр', async () => {
       const mp4 = Buffer.from('\x00\x00\x00\x18ftypmp42 fake video note '.repeat(40), 'latin1');
       const frame = jpegBytes(320, 320, 7000, 6);
       const fileId = file(mp4, 'mp4');
@@ -120,13 +122,13 @@ export function soundSuite(dialect: VoiceDialect): void {
       const m = await mediaOf(ch, seq);
       assert.ok(m.ok);
       assert.deepEqual(imageBytes(m.r), frame);
-      // Агент увидел — 👀; ответил — 👌. Ответ на кружок не правится, «→ ответил» нет.
+      // Агент увидел — 👀; ответил — 👀 снят, когда ответ ушёл (0.3.6, #52). Ответ на кружок не правится, «→ ответил» нет.
       await ch.delivered(seq);
       await pump(gw, () => reactionsOf(s.fake, u).at(-1) === '👀' || null, { what: '👀' });
       const a = await ch.reply(seq, 'Понял про кружки', turn);
       assert.ok(a.type === 'ack', JSON.stringify(a));
-      await pump(gw, () => reactionsOf(s.fake, u).at(-1) === '👌' || null, { what: '👌' });
-      assert.deepEqual(reactionsOf(s.fake, u), ['👀', '👌']);
+      await pump(gw, () => receiptCleared(s.fake, u) || null, { what: 'снятия 👀' });
+      assert.deepEqual(reactionsOf(s.fake, u), ['👀', '']);
       assert.equal(r.edits.length, 0, 'ответ на кружок не правится');
       assert.equal(sttRepliesOf(s, u).length, 1, 'ответ один');
     });

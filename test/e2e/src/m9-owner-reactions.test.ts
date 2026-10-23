@@ -19,7 +19,7 @@ import type { SentMessage } from 'stg-fake-telegram';
 import { privateChatOf } from 'stg-fake-telegram';
 import { VOICE_FAILED_TEXT, deferredNotice, ownerReactionText, type Chat, type OwnerReaction, type Update } from 'stg-core';
 import { assertNoLoss, connectAdapter, count, meta, pump, q1, readJournal, runCli, shiftClockFile, sleep, waitUntil, type GatewayProcess } from './harness.js';
-import { OTHER, OWNER, STRANGER, botTexts, reactionsOf, setup, type Setup } from './m1-common.js';
+import { OTHER, OWNER, STRANGER, botTexts, reactionOf, setup, type Setup } from './m1-common.js';
 import { buttonsOf, press, waitSent } from './m2-common.js';
 import { pushVoice, voiceSetup, waitSttReply, type VoiceSetup } from './m4-common.js';
 
@@ -66,8 +66,10 @@ describe('M9 · реакции владельца на ответы агента
     assert.ok(a.type === 'ack' && a.result === 'queued', JSON.stringify(a));
     const msg = await pump(gw, () => s.fake.sentTo(chatId).find((m) => m.text === answer && m.parse_mode === 'HTML'), { what: 'ответа агента' });
     await waitUntil(() => q1(s.home, 'SELECT 1 FROM messages_out WHERE tg_message_id = ? AND chat_id = ?', msg.message_id, chatId), 5000, 'messages_out');
-    // 👌 шлюза на сообщении владельца уже встал — дальше реакций шлюза по этому ответу не будет.
-    await pump(gw, () => reactionsOf(s.fake, u!).at(-1) === '👌' || null, { what: '👌 на сообщении' });
+    // Ответ ушёл — квитанция на сообщении владельца снята (0.3.6, #52; 👀 не успел встать — снимать нечего) — дальше
+    // реакций шлюза по этому ответу не будет.
+    await pump(gw, () => q1(s.home, "SELECT 1 FROM reactions WHERE event_seq = ? AND want = '' AND status = 'done'", seq) || null, { what: 'снятия на сообщении' });
+    assert.equal(reactionOf(s.fake, u!), null);
     return { seq, msg };
   }
 
@@ -433,7 +435,8 @@ function holdHelpers(b: HoldBench) {
     assert.ok(a.type === 'ack' && a.result === 'queued', JSON.stringify(a));
     const msg = await pump(b.gw, () => b.s.fake.sentTo(OWNER.id).find((m) => m.text === answer), { what: 'ответа агента' });
     await waitUntil(() => q1(b.s.home, 'SELECT 1 FROM messages_out WHERE tg_message_id = ? AND chat_id = ?', msg.message_id, OWNER.id), 5000, 'messages_out');
-    await pump(b.gw, () => reactionsOf(b.s.fake, u!).at(-1) === '👌' || null, { what: '👌 на сообщении' });
+    // Ответ ушёл — квитанция снята (0.3.6, #52).
+    await pump(b.gw, () => q1(b.s.home, "SELECT 1 FROM reactions WHERE event_seq = ? AND want = '' AND status = 'done'", seq) || null, { what: 'снятия на сообщении' });
     return { seq, msg };
   }
   function react(msg: SentMessage, now: string[], old: string[] = []): Update {

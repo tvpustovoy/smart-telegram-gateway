@@ -4,7 +4,8 @@
 // 0.3.1 (P-19; образец — бот Voice Messages): A4.1 распознанное голосовое — ответом на него
 // расшифровка целиком, только текст (без номера, кавычек и «→ ответил»); пока распознаётся — строки нет и на голосовом
 // ничего (0.3.2: ✍ нет);
-// звук в raw/, расшифровка в events.transcript, запрос с языком и словарём; ответ агента — 👀 → 👌, расшифровка не
+// звук в raw/, расшифровка в events.transcript, запрос с языком и словарём; агент увидел — 👀, ответ агента его снимает
+// (0.3.6, #52), расшифровка не
 // правится; A4.10 длинная — несколькими сообщениями подряд, все ответом на то же голосовое, без меток (i/N); [расшифровка]
 // на квитанции прежней версии — та же расшифровка ответом, агенту ничего, чужое нажатие — отказ; A4.2 ошибка провайдера —
 // ответом «Не смог распознать — звук сохранён. Срочное — текстом», событие «не распознано»; A4.3 закрытая тема и
@@ -26,7 +27,7 @@ import { errors, privateChatOf } from 'stg-fake-telegram';
 import type { FakeChannel } from 'stg-fake-channel';
 import { STOPPED_TEXT, type Update } from 'stg-core';
 import { connectAdapter, count, meta, pump, q1, readJournal, sleep, waitUntil, type GatewayProcess } from './harness.js';
-import { OTHER, OWNER, STRANGER, reactionsOf, waitRecorded } from './m1-common.js';
+import { OTHER, OWNER, STRANGER, reactionsOf, receiptCleared, waitRecorded } from './m1-common.js';
 import { DIALECT, currentButtons, currentText, isQuote, pressCurrent, pushVoice, replyTo, sttRepliesOf, sttText, voiceSetup, waitSttReply, type VoiceDialect, type VoiceSetup } from './m4-common.js';
 
 const CLOSED_TOPIC = 77;
@@ -117,14 +118,14 @@ export function sttSuite(dialect: VoiceDialect): void {
       assert.deepEqual({ kind: e.kind, transcript: e.transcript, trust: e.trust }, { kind: 'voice', transcript: FULL, trust: 'owner' }, 'агенту — как прежде');
     });
 
-    it('5.5: агент увидел — 👀, ответил — 👌; расшифровка не правится, «→ ответил» нет', async () => {
+    it('5.5: агент увидел — 👀, ответил — 👀 снят (0.3.6, #52); расшифровка не правится, «→ ответил» нет', async () => {
       const { u, seq } = first!;
       await ch.delivered(seq);
       await pump(gw, () => reactionsOf(s.fake, u).at(-1) === '👀' || null, { what: '👀' });
       const a = await ch.reply(seq, 'Записал на завтра', turn);
       assert.ok(a.type === 'ack' && a.result === 'queued', JSON.stringify(a));
-      await pump(gw, () => (reactionsOf(s.fake, u).at(-1) === '👌' && s.fake.sentTo(OWNER.id).some((m) => m.text === 'Записал на завтра')) || null, { what: '👌 и ответа агента' });
-      assert.deepEqual(reactionsOf(s.fake, u), ['👀', '👌']);
+      await pump(gw, () => (receiptCleared(s.fake, u) && s.fake.sentTo(OWNER.id).some((m) => m.text === 'Записал на завтра')) || null, { what: 'снятия 👀 и ответа агента' });
+      assert.deepEqual(reactionsOf(s.fake, u), ['👀', '']);
       for (let i = 0; i < 3; i++) await gw.advance('1s');
       const [r] = sttRepliesOf(s, u);
       assert.equal(r!.edits.length, 0, 'расшифровка не правится');

@@ -17,7 +17,7 @@
 // - ✍ записанному 0.2 с 0.3.2 не ставится (R-1 «б»): до 👀 на сообщениях ничего; нового
 //   ответа с расшифровкой на распознанное 0.2 голосовое нет (оно уже распознано);
 // - [расшифровка] на квитанции 0.2 — по 0.3.1: та же расшифровка ответом на голосовое, только текст;
-// - агент подключился — 👀, ответил — 👌; фото после обновления — ничего до 👀, media(seq) пишет media_ref (столбец v8
+// - агент подключился — 👀, ответил — 👀 снят (0.3.6, #52), done — 👌; фото после обновления — ничего до 👀, media(seq) пишет media_ref (столбец v8
 //   есть);
 // - второй старт ничего из этого не повторяет.
 
@@ -142,7 +142,7 @@ describe('M7 · первый старт сведённой версии (0.3 …
       const [byButton] = await waitSttReply(s, g1, voiceU, 1, 'расшифровки по кнопке 0.2');
       assert.deepEqual({ text: sttText(byButton!), reply: byButton!.reply_parameters, markup: byButton!.reply_markup }, { text: FULL, reply: replyTo(voiceU), markup: null });
 
-      // Агент подключился: 👀 — увидел, 👌 — ответил.
+      // Агент подключился: 👀 — увидел; ответ снимает 👀 (0.3.6, #52), done — 👌.
       const { ch, turn } = await connectAdapter(s.home);
       try {
         const n = await ch.waitEvent(voiceSeq, 15_000);
@@ -153,8 +153,8 @@ describe('M7 · первый старт сведённой версии (0.3 …
         await pump(g1, () => (reactionsOf(s.fake, text).at(-1) === '👀' && reactionsOf(s.fake, voiceU).at(-1) === '👀') || null, { what: '👀' });
         assert.ok((await ch.reply(voiceSeq, 'Позвоню юристу', turn)).type === 'ack');
         await ch.done([textSeq]);
-        await pump(g1, () => (reactionsOf(s.fake, text).at(-1) === '👌' && reactionsOf(s.fake, voiceU).at(-1) === '👌') || null, { what: '👌' });
-        assert.deepEqual([reactionsOf(s.fake, text), reactionsOf(s.fake, voiceU)], [['👀', '👌'], ['👀', '👌']]);
+        await pump(g1, () => (reactionsOf(s.fake, text).at(-1) === '👌' && reactionsOf(s.fake, voiceU).at(-1) === '') || null, { what: '👌 и снятия' });
+        assert.deepEqual([reactionsOf(s.fake, text), reactionsOf(s.fake, voiceU)], [['👀', '👌'], ['👀', '']]);
 
         // Фото после обновления: до 👀 ничего; media(seq) скачивает картинку и пишет media_ref — столбец v8 есть.
         const jpeg = jpegBytes(1280, 960, 9000, 5);

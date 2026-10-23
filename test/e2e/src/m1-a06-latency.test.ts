@@ -2,7 +2,9 @@
 // delivered и done, как сессия): «записал» — запись (COMMIT) ≤ 2 с (p90) от выдачи обновления (L-2; с 0.3.2 ✍ нет,
 // мерка по COMMIT ⟨предл.⟩); 👀 «агент увидел» — ≤ 1 с (p90) от отдачи агенту (delivered; 👌
 // вместо 👀, если агент успел отметить done раньше) ⟨предл.⟩. Реакции на каждом — по порядку 👀 → 👌 (могут слиться),
-// последней — 👌; ✍ нет ни на одном. Подделка ещё и держит предел
+// последней — 👌; ✍ нет ни на одном. Снятие 👌 следующим сообщением владельца (0.3.6, #52) здесь выключено
+// (ui.clear_receipts: false): в потоке «сообщение в секунду» каждое следующее снимало бы 👌 предыдущего, а тест меряет
+// задержки 👀 и порядок реакций; снятие — m12-receipts-clear. Подделка ещё и держит предел
 // «1 сообщение в секунду в чат» — 429 не было (закреплённая строка правится не чаще раза в 3 с).
 // A1.12 (Ш-16) — после A1.6: в журнале каждое входящее и исходящее с меткой (реакции — тоже); в latency у каждого события
 // t_update ≤ t_admit ≤ t_receipt и t_admit ≤ t_delivered ≤ t_eyes.
@@ -26,7 +28,11 @@ describe(`A1.6 · задержки на настоящем времени (${N} 
   const ids: number[] = [];
 
   before(async () => {
-    s = await setup({ fake: { now: Date.now, latencyMs: 50, chatRateLimit: { perSecond: 1, retryAfter: 1 } }, env: { STG_CLOCK: 'real' } });
+    s = await setup({
+      fake: { now: Date.now, latencyMs: 50, chatRateLimit: { perSecond: 1, retryAfter: 1 } },
+      env: { STG_CLOCK: 'real' },
+      home: { extraConfig: 'ui: { material_hold_seconds: 0, clear_receipts: false }\n' },
+    });
     gw = await s.start();
     ag = await seeingAgent(s, { done: true });
   });

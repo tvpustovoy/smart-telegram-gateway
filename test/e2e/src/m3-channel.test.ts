@@ -11,7 +11,7 @@ import { after, before, describe, it } from 'node:test';
 import { CHANNEL_SERVER_NAME, FrameDecoder, type Update } from 'stg-core';
 import { CHANNEL_ENTRY, FakeClaude } from './fake-claude.js';
 import { count, pump, q, q1, readJournal, sleep, waitUntil, type GatewayProcess } from './harness.js';
-import { OTHER, OWNER, inReactionOrder, reactionsOf, setup, statusLineOf, waitRecorded, type Setup } from './m1-common.js';
+import { OTHER, OWNER, reactionOf, reactionsOf, setup, statusLineOf, waitRecorded, type Setup } from './m1-common.js';
 import { keyboardOrPlaceholder, press, waitSent } from './m2-common.js';
 import { jpegBytes } from './m7-common.js';
 
@@ -141,9 +141,11 @@ describe('M3 · канал под поддельным Claude Code', () => {
     assert.deepEqual(await fc.call('reply', { seq: sq, text: 'записал задачу' }), { text: 'отправлено', isError: false });
     const rec = await waitSent(s, gw, (m) => m.text === 'записал задачу', 'ответа агента');
     assert.equal(keyboardOrPlaceholder(rec), false, 'клавиатуры и подсказки нет (0.3.1)');
-    // Канал толкнул событие в сессию (delivered) — 👀, ответ — 👌 (0.3.2: ✍ нет).
-    await pump(gw, () => reactionsOf(s.fake, u).at(-1) === '👌' || null, { what: '👌 после ответа' });
-    assert.ok(inReactionOrder(reactionsOf(s.fake, u), '👌'), reactionsOf(s.fake, u).join(' '));
+    // Канал толкнул событие в сессию (delivered) — 👀 (0.3.2: ✍ нет); ответ ушёл — 👀 снят (0.3.6, #52: 👌 нет). Ответ
+    // успел раньше, чем встал 👀, — снимать нечего: на сообщении ничего и не было.
+    await pump(gw, () => q1(s.home, "SELECT 1 FROM reactions WHERE event_seq = ? AND want = '' AND status = 'done'", sq) || null, { what: 'снятия после ответа' });
+    assert.equal(reactionOf(s.fake, u), null);
+    assert.ok([JSON.stringify([]), JSON.stringify(['👀', ''])].includes(JSON.stringify(reactionsOf(s.fake, u))), reactionsOf(s.fake, u).join(' '));
   });
 
   it('A3.9 через инструмент: эпизод с чужой пересылкой закрыт — итог помечен untrusted; исход словами', async () => {
