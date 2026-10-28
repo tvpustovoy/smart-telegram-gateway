@@ -9,7 +9,7 @@ import { describe, it } from 'node:test';
 import { fileURLToPath } from 'node:url';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
-const ALLOWED = new Set(['@modelcontextprotocol/sdk', 'yaml', 'zod', '@grammyjs/types']);
+const ALLOWED = new Set(['@modelcontextprotocol/sdk', 'yaml', 'zod', '@grammyjs/types', 'undici']);
 const ALLOWED_DEV = new Set(['typescript', '@types/node']);
 
 interface Pkg {
@@ -60,7 +60,7 @@ describe('N-3 · зависимости', () => {
         seen.set(dep, sub.version ?? '?');
       }
     }
-    assert.deepEqual([...seen.keys()].sort(), [...ALLOWED].sort(), 'все четыре — на месте');
+    assert.deepEqual([...seen.keys()].sort(), [...ALLOWED].sort(), 'все зависимости списка — на месте');
     assert.match(seen.get('@modelcontextprotocol/sdk') ?? '', /^1\.\d+\.\d+$/);
   });
 

@@ -1,8 +1,18 @@
-// Минимальный клиент Telegram Bot API на встроенном fetch (TECH-SPEC §6: HTTP — встроенный fetch). Адреса содержат
+// Минимальный клиент Telegram Bot API. Адреса содержат
 // токен — они не попадают ни в текст ошибок, ни в журнал (Ш-24): всё, что уходит наружу, вычищается от токена.
 
 import type { User, WebhookInfo } from '@grammyjs/types';
+import { Agent, fetch, FormData, type Response } from 'undici';
 import { redactSecrets } from './secrets.js';
+
+// Общий пул на время жизни процесса, как у встроенного fetch, но транспорт Telegram закреплён явно.
+// Node 26 / Undici 8 включает HTTP/2 по умолчанию: после тихого обрыва сети отмена getUpdates закрывает
+// только поток, а следующие опросы снова уходят в ту же мёртвую сессию (#6073 в nodejs/undici).
+// HTTP/1.1 уничтожает соединение отменённого запроса; следующий опрос создаёт новое. Свой fetch сохраняет
+// это поведение при обновлении Node и не меняет транспорт остальных провайдеров.
+// Не создавать неограниченное число клиентов при серии отмен во время TLS-подключения. Отдельные соединения
+// оставляют длинному опросу, отправке и скачиваниям возможность идти одновременно.
+const telegramDispatcher = new Agent({ allowH2: false, connections: 4, pipelining: 1 });
 
 // Типы Bot API — из @grammyjs/types (только типы, TECH-SPEC §6); остальные пакеты берут их отсюда.
 export type { CallbackQuery, Chat, Message, MessageOrigin, Update, User, WebhookInfo } from '@grammyjs/types';
@@ -85,6 +95,7 @@ export class TelegramApi {
     let res: Response;
     try {
       res = await fetch(this.methodUrl(method), {
+        dispatcher: telegramDispatcher,
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify(params),
@@ -130,7 +141,7 @@ export class TelegramApi {
     const signal = combineSignals(opts);
     let res: Response;
     try {
-      res = await fetch(this.methodUrl(method), { method: 'POST', body: form, ...(signal ? { signal } : {}) });
+      res = await fetch(this.methodUrl(method), { dispatcher: telegramDispatcher, method: 'POST', body: form, ...(signal ? { signal } : {}) });
     } catch (err) {
       throw this.networkError(method, err);
     }
@@ -168,11 +179,15 @@ export class TelegramApi {
     const signal = combineSignals(opts);
     let res: Response;
     try {
-      res = await fetch(this.fileUrl(filePath), signal ? { signal } : {});
+      res = await fetch(this.fileUrl(filePath), { dispatcher: telegramDispatcher, ...(signal ? { signal } : {}) });
     } catch (err) {
       throw this.networkError('download', err);
     }
-    if (!res.ok) throw new TelegramApiError('download', res.status, `HTTP ${res.status}`, null);
+    if (!res.ok) {
+      // Не оставлять непрочитанный ответ (и его сокет/буферы) до сборки мусора, в том числе без timeoutMs.
+      await res.body?.cancel().catch(() => undefined);
+      throw new TelegramApiError('download', res.status, `HTTP ${res.status}`, null);
+    }
     try {
       return Buffer.from(await res.arrayBuffer());
     } catch (err) {

@@ -2,8 +2,8 @@
 
 export const PRODUCT_VERSION = '0.1.0';
 
-/** Node ≥ 22.13 — встроенный node:sqlite без флага. */
-export const MIN_NODE = { major: 22, minor: 13 } as const;
+/** Node ≥ 22.19 — встроенный node:sqlite без флага (с 22.13) и undici 8 для Telegram (с 22.19). */
+export const MIN_NODE = { major: 22, minor: 19 } as const;
 
 export function parseNodeVersion(v: string): { major: number; minor: number; patch: number } | null {
   const m = /^v?(\d+)\.(\d+)\.(\d+)/.exec(v);

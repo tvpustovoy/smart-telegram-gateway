@@ -8,7 +8,7 @@
 #   --agent-dir   папка агента Codex: его AGENTS.md, рабочий каталог команд. Адаптер в неё не пишет
 #   --stg-home    каталог бота; по умолчанию STG_HOME, иначе единственный каталог в ~/.smart-telegram-gateway/
 #   --codex       codex (или его codex.js); по умолчанию — codex из PATH
-#   --node        Node ≥ 22.13; по умолчанию — node из PATH
+#   --node        Node ≥ 22.19; по умолчанию — node из PATH
 #   --window      (по умолчанию) новое окно iTerm, если он есть, иначе Terminal
 #   --here        в этом окне
 #   --tmux        в сессии tmux stg-codex-<бот> (подключиться: tmux attach -t stg-codex-<бот>)
@@ -67,9 +67,9 @@ HOME_DIR="$(cd "$HOME_DIR" && pwd -P)"
 BOT="$(basename "$HOME_DIR")"
 
 [ -n "$NODE" ] || NODE="$(command -v node || true)"
-[ -n "$NODE" ] && [ -x "$NODE" ] || die "нет Node (поставь Node ≥ 22.13 или укажи --node)"
-"$NODE" -e 'const [a,b]=process.versions.node.split(".").map(Number); process.exit(a>22||(a===22&&b>=13)?0:1)' \
-  || die "нужен Node ≥ 22.13, а $NODE — $("$NODE" --version)"
+[ -n "$NODE" ] && [ -x "$NODE" ] || die "нет Node (поставь Node ≥ 22.19 или укажи --node)"
+"$NODE" -e 'const [a,b]=process.versions.node.split(".").map(Number); process.exit(a>22||(a===22&&b>=19)?0:1)' \
+  || die "нужен Node ≥ 22.19, а $NODE — $("$NODE" --version)"
 [ -n "$CODEX" ] || CODEX="$(command -v codex || true)"
 [ -n "$CODEX" ] && [ -e "$CODEX" ] || die "нет codex в PATH (npm install -g @openai/codex) — или укажи --codex <путь>"
 [ -f "$ENTRY" ] || die "адаптер не собран: cd $REPO && npm ci && npm run build"

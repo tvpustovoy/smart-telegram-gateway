@@ -425,7 +425,7 @@ export async function runDoctor(opts: DoctorOptions): Promise<{ lines: CheckLine
   add(
     nodeVersionOk(process.version)
       ? { ok: true, name: 'Node', detail: `${process.execPath} ${process.version}` }
-      : { ok: false, name: 'Node', detail: `${process.execPath} ${process.version}, нужен ≥ 22.13`, todo: 'поставь Node ≥ 22.13 (например, brew install node)' },
+      : { ok: false, name: 'Node', detail: `${process.execPath} ${process.version}, нужен ≥ 22.19`, todo: 'поставь Node ≥ 22.19 (например, brew install node)' },
   );
 
   // 8. @modelcontextprotocol/sdk у канала: 1.x, закреплён (5.11).
@@ -462,8 +462,8 @@ export async function runDoctor(opts: DoctorOptions): Promise<{ lines: CheckLine
             : {
                 ok: false,
                 name: 'Node службы',
-                detail: ver ? `${pc.node} ${ver}, нужен ≥ 22.13` : `${pc.node} не запускается`,
-                todo: `поставь Node ≥ 22.13 по этому пути или переустанови службу с другим (scripts/install-macos.sh --node <путь>)`,
+                detail: ver ? `${pc.node} ${ver}, нужен ≥ 22.19` : `${pc.node} не запускается`,
+                todo: `поставь Node ≥ 22.19 по этому пути или переустанови службу с другим (scripts/install-macos.sh --node <путь>)`,
               },
         );
       }

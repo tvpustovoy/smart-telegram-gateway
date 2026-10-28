@@ -7,7 +7,7 @@
 #                            [--timezone <пояс>]
 #
 #   <бот>         имя бота у BotFather (латиница, цифры, «_») — каталог ~/.smart-telegram-gateway/<бот>/
-#   --node        Node ≥ 22.13 для службы и канала; по умолчанию /opt/homebrew/bin/node (Node из Homebrew)
+#   --node        Node ≥ 22.19 для службы и канала; по умолчанию /opt/homebrew/bin/node (Node из Homebrew)
 #   --harness     claude (по умолчанию) — сессия Claude Code с каналом; codex — существующий агент Codex через
 #                 адаптер stg-codex (#55): папку агента скрипт не трогает
 #   --agent-dir   папка агента; claude — по умолчанию ~/Agents/assistant; codex — обязательна (рабочая папка агента)
@@ -63,9 +63,9 @@ esac
 printf '%s' "$BOT" | grep -Eq '^[A-Za-z0-9_]{1,64}$' || die "имя бота — латиница, цифры и «_»: $BOT"
 [ "$(uname -s)" = "Darwin" ] || die "только macOS"
 [ "$(id -u)" -ne 0 ] || die "не от root: служба — пользовательская"
-[ -x "$NODE" ] || die "нет Node: $NODE (поставь Node ≥ 22.13 или укажи --node)"
-"$NODE" -e 'const [a,b]=process.versions.node.split(".").map(Number); process.exit(a>22||(a===22&&b>=13)?0:1)' \
-  || die "нужен Node ≥ 22.13, а $NODE — $("$NODE" --version)"
+[ -x "$NODE" ] || die "нет Node: $NODE (поставь Node ≥ 22.19 или укажи --node)"
+"$NODE" -e 'const [a,b]=process.versions.node.split(".").map(Number); process.exit(a>22||(a===22&&b>=19)?0:1)' \
+  || die "нужен Node ≥ 22.19, а $NODE — $("$NODE" --version)"
 
 STG_HOME="$HOME/.smart-telegram-gateway/$BOT"
 LABEL="local.smart-telegram-gateway.$BOT"

@@ -10,7 +10,7 @@ removed.
 
 ## Pull requests
 
-1. Build and test before you open a pull request: `npm ci && npm test` (Node.js ≥ 22.13). The suite runs against fakes
+1. Build and test before you open a pull request: `npm ci && npm test` (Node.js ≥ 22.19). The suite runs against fakes
    and needs no Telegram bot or API keys.
 2. Keep changes focused; add or update tests for the behavior you change.
 3. Do not commit secrets, personal data or details of your own installation (bot names, chat ids, home paths).

@@ -9,7 +9,7 @@ or a key into the chat: they type it into the Keychain themselves, and you never
 ## 0. Check the machine
 
 - macOS (the gateway runs as a user LaunchAgent; Linux and Windows are not supported yet).
-- Node.js ≥ 22.13: `node --version`. If it is missing or older, ask the owner to install it (`brew install node`).
+- Node.js ≥ 22.19: `node --version`. If it is missing or older, ask the owner to install it (`brew install node`).
 - Codex CLI: `codex --version` (checked with 0.163). Claude Code instead: `claude --version`.
 - Your own working folder — the folder you were started in (`pwd`). This is the **agent folder**: the gateway connects
   Telegram to the agent that runs here.

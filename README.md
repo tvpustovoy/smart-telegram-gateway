@@ -75,7 +75,7 @@ Details are in [CHANGELOG.md](CHANGELOG.md).
 ## Requirements
 
 - **macOS.** The gateway runs as a per-user LaunchAgent and keeps secrets in the macOS Keychain.
-- **Node.js ≥ 22.13** — the built-in `node:sqlite` module is used; there is no native database dependency.
+- **Node.js ≥ 22.19** — the built-in `node:sqlite` module is used; there is no native database dependency.
 - **Claude Code with Channels** (research preview). The agent session is started with
   `--dangerously-load-development-channels server:smart-telegram-gateway`; Claude Code asks for confirmation at each
   start, so the session is started by a person in a terminal window or in `tmux`.
@@ -367,7 +367,7 @@ The design documents are in Russian for now.
 
 ## Status
 
-Version 0.4.0, pre-1.0. It is built for one owner, one bot and one agent (Claude Code or Codex) on one Mac. Groups and other people are
+Version 0.4.1, pre-1.0. It is built for one owner, one bot and one agent (Claude Code or Codex) on one Mac. Groups and other people are
 modelled in the data and the access rules, but there is no interface for them yet. The agent runs without a sandbox
 (see the threat model). Expect breaking changes before 1.0; database migrations run automatically, and rolling back
 needs a backup (`stg backup`).

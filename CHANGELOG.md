@@ -9,6 +9,26 @@ an older version after a migration is only possible from a database backup taken
 
 The chat interface and the design documents are in Russian; the entries below describe behavior in English.
 
+## 0.4.1 - 2026-10-28
+
+### Fixed
+
+- Telegram transport: requests to Telegram go through a pinned `undici` 8 agent over HTTP/1.1, at most 4
+  connections per host. On Node 26 the built-in `fetch` uses HTTP/2, and after a silent network drop an aborted
+  long poll left the dead session in the pool, so the next polls went into it again (upstream nodejs/undici#6073).
+  An error response to a file download now releases its body and connection at once.
+
+### Added
+
+- Memory guard: the gateway logs `memory` (rss, heap, external, array buffers) hourly and on 25% growth; above
+  `STG_RSS_LIMIT_MB` (default 1024) it logs `memory_limit` and stops with a failure code, and the service restarts
+  it. Nothing is lost: accepted messages are in the database. On 2026-10-24 two gateways on one Mac grew to 12 GB
+  each in three hours and the system stalled.
+
+### Changed
+
+- Node ≥ 22.19 (was 22.13): `undici` 8 needs it. `stg doctor`, the installer and the Codex start script check it.
+
 ## 0.4.0 - 2026-10-22
 
 ### Added
