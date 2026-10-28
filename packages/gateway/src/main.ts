@@ -79,6 +79,7 @@ import { Retention } from './retention.js';
 import { RulesService, syncDirectoryTables } from './rules.js';
 import { Sender, upgradeTo031OnStart } from './sender.js';
 import { GatewaySocketServer } from './socket-server.js';
+import { MemoryGuard, rssLimitMb } from './memguard.js';
 import { TestHooks } from './testhooks.js';
 import { Ticker } from './ticker.js';
 import { Transcriber, voiceFromConfig } from './voice.js';
@@ -555,6 +556,15 @@ export async function main(env: NodeJS.ProcessEnv = process.env): Promise<number
   const code = await gateway.start();
   if (code !== EXIT.ok) return code;
 
+  // Предел памяти (memguard.ts): rss выше предела — остановка с кодом ошибки, launchd поднимет шлюз заново.
+  let memoryTripped = false;
+  const guard = new MemoryGuard(journal, { limitMb: rssLimitMb(env) }, () => {
+    memoryTripped = true;
+    say(`память процесса выше предела ${rssLimitMb(env)} МБ — останавливаюсь, служба поднимет заново`);
+    onAnySignal('SIGTERM');
+  });
+  guard.start();
+
   return new Promise<number>((resolve) => {
     if (env.STG_TEST === '1') {
       // Под тестом: обвязка умерла, не убив шлюз (тест снят по таймауту) — не оставаться сиротой. У службы родитель —
@@ -577,9 +587,10 @@ export async function main(env: NodeJS.ProcessEnv = process.env): Promise<number
         resolve(EXIT.failure);
       }, SHUTDOWN_DEADLINE_MS);
       deadline.unref();
+      guard.stop();
       void gateway.stop(sig).then(() => {
         clearTimeout(deadline);
-        resolve(EXIT.ok);
+        resolve(memoryTripped ? EXIT.failure : EXIT.ok);
       });
     };
     if (pending) handle(pending);
