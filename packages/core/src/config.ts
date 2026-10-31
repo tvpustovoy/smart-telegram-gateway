@@ -10,7 +10,7 @@ import { writeFileAtomicSync } from './fsutil.js';
 import { ELEVENLABS_BASE_URL } from './elevenlabs.js';
 import { OPENAI_BASE_URL } from './openai.js';
 import { DEFAULT_PARCEL_TARGET, PARCEL_TARGET_RE } from './parcels.js';
-import { roleLabel } from './strings.js';
+import { relayNameProblem, roleLabel } from './strings.js';
 import { VOICE_PROVIDERS, type VoiceProviderName } from './voice-provider.js';
 
 const ru = z.locales.ru().localeError;
@@ -303,6 +303,25 @@ export const ConfigSchema = z.strictObject({
       hold_seconds: reactionHoldSeconds,
     })
     .prefault({}),
+  // Другие агенты (сценарий 1): name — имя, которым агент называет их в relay и которым подписаны письма (проверка как у
+  // reply.from); address — адрес в сети агентов, как его даёт сеть. Список — и разрешение: писем с других адресов шлюз не
+  // принимает, на другие не шлёт.
+  peers: z
+    .array(
+      z.strictObject({
+        name: z.string().superRefine((v, c) => {
+          const why = relayNameProblem(v);
+          if (why) c.addIssue({ code: 'custom', message: why });
+        }),
+        address: z.string().min(1).max(256),
+      }),
+    )
+    .default([])
+    .superRefine((list, c) => {
+      for (const key of ['name', 'address'] as const) {
+        if (new Set(list.map((p) => p[key])).size !== list.length) c.addIssue({ code: 'custom', message: `peers: ${key} повторяется` });
+      }
+    }),
   parcels: z
     .strictObject({
       dir: z

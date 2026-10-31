@@ -23,6 +23,7 @@ export const EVENT_KINDS = [
   'probe',
   'reaction',
   'instructions',
+  'peer',
 ] as const;
 export type EventKind = (typeof EVENT_KINDS)[number];
 
@@ -175,7 +176,7 @@ export const META_KEYS = {
  * События, которые отдаются агенту (5.2): команды, нажатия и закрытая тема — нет; реакция владельца (0.3.4) — да;
  * правила канала (0.3.5) — да, как probe: аренде сами, мимо курсора.
  */
-export const AGENT_EVENT_KINDS = ['text', 'voice', 'photo', 'document', 'edit', 'episode_closed', 'episode_reopened', 'probe', 'reaction', 'instructions'] as const;
+export const AGENT_EVENT_KINDS = ['text', 'voice', 'photo', 'document', 'edit', 'episode_closed', 'episode_reopened', 'probe', 'reaction', 'instructions', 'peer'] as const;
 /** События из сообщений владельца, которые «ждут агента» (строка «не на связи», Ш-14). */
 export const MESSAGE_EVENT_KINDS = ['text', 'voice', 'photo', 'document', 'edit'] as const;
 
@@ -797,6 +798,93 @@ const SCHEMA_V14 = `
 ALTER TABLE deliveries ADD COLUMN send_as TEXT NOT NULL DEFAULT 'document' CHECK (send_as IN ('document','photo'));
 `;
 
+/**
+ * Версия 15 (сценарий 1, связь с другими агентами): вид события peer и events.peer_json (PeerEventInfo) — письмо другого
+ * агента или сбой передачи; peer_messages — письма в обе стороны. Исходящее: pending → sent · failed (связь не приняла) ·
+ * dropped («стоп»). Входящее — received; wire_id уникален, поэтому повтор письма второго события не даёт. Новый вид меняет
+ * CHECK таблицы events — перестройка как в v13: вне внешних ключей, счётчик AUTOINCREMENT переносится.
+ */
+const SCHEMA_V15 = `
+CREATE TABLE events_v15 (
+  seq               INTEGER PRIMARY KEY AUTOINCREMENT,
+  update_id         INTEGER,
+  message_id        INTEGER,
+  chat_id           INTEGER,
+  thread_id         INTEGER,
+  subject_id        TEXT,
+  trust             TEXT CHECK (trust IN ('owner','untrusted','owner_forward')),
+  mixed             INTEGER NOT NULL DEFAULT 0 CHECK (mixed IN (0,1)),
+  attachments_json  TEXT,
+  kind              TEXT NOT NULL CHECK (kind IN ('text','voice','photo','document','edit','command','callback','closed_topic','episode_closed','episode_reopened','probe','reaction','instructions','peer')),
+  text              TEXT,
+  transcript        TEXT,
+  raw_ref           TEXT,
+  forward_json      TEXT,
+  reply_to          TEXT,
+  edit_of           INTEGER REFERENCES events(seq),
+  episode_id        INTEGER REFERENCES episodes(id),
+  status            TEXT NOT NULL CHECK (status IN ('transcribing','held','new','delivered','processed','handled','closed_topic','cancelled')),
+  lease_id          TEXT,
+  delivered_at      INTEGER,
+  attempts          INTEGER NOT NULL DEFAULT 0 CHECK (attempts >= 0),
+  processed_at      INTEGER,
+  processed_silent  INTEGER NOT NULL DEFAULT 0 CHECK (processed_silent IN (0,1)),
+  turn              INTEGER,
+  created_at        INTEGER NOT NULL,
+  message_date      INTEGER,
+  stt_note          TEXT CHECK (stt_note IN ('too_long','too_big')),
+  audio_seconds     REAL CHECK (audio_seconds IS NULL OR audio_seconds >= 0),
+  media_ref         TEXT,
+  reaction_json     TEXT,
+  hold_until        INTEGER,
+  instructions_json TEXT,
+  material_json     TEXT,
+  peer_json         TEXT,
+  CHECK ((kind = 'reaction') = (reaction_json IS NOT NULL)),
+  CHECK ((kind = 'instructions') = (instructions_json IS NOT NULL)),
+  CHECK ((kind = 'peer') = (peer_json IS NOT NULL)),
+  CHECK (material_json IS NULL OR kind IN ('text','voice','photo','document','edit')),
+  CHECK (status <> 'held' OR kind = 'reaction' OR material_json IS NOT NULL),
+  CHECK (status <> 'cancelled' OR kind = 'reaction'),
+  CHECK (status <> 'held' OR hold_until IS NOT NULL)
+) STRICT;
+INSERT INTO events_v15(seq, update_id, message_id, chat_id, thread_id, subject_id, trust, mixed, attachments_json, kind, text,
+  transcript, raw_ref, forward_json, reply_to, edit_of, episode_id, status, lease_id, delivered_at, attempts, processed_at,
+  processed_silent, turn, created_at, message_date, stt_note, audio_seconds, media_ref, reaction_json, hold_until,
+  instructions_json, material_json)
+SELECT seq, update_id, message_id, chat_id, thread_id, subject_id, trust, mixed, attachments_json, kind, text,
+  transcript, raw_ref, forward_json, reply_to, edit_of, episode_id, status, lease_id, delivered_at, attempts, processed_at,
+  processed_silent, turn, created_at, message_date, stt_note, audio_seconds, media_ref, reaction_json, hold_until,
+  instructions_json, material_json
+FROM events ORDER BY seq;
+UPDATE sqlite_sequence SET seq = max(seq, (SELECT seq FROM sqlite_sequence WHERE name = 'events'))
+WHERE name = 'events_v15' AND EXISTS (SELECT 1 FROM sqlite_sequence WHERE name = 'events');
+INSERT INTO sqlite_sequence(name, seq) SELECT 'events_v15', seq FROM sqlite_sequence
+WHERE name = 'events' AND NOT EXISTS (SELECT 1 FROM sqlite_sequence WHERE name = 'events_v15');
+DROP TABLE events;
+ALTER TABLE events_v15 RENAME TO events;
+CREATE INDEX events_status ON events(status, seq);
+CREATE INDEX events_message ON events(chat_id, message_id);
+CREATE INDEX events_update ON events(update_id);
+CREATE INDEX events_episode ON events(episode_id);
+CREATE TABLE peer_messages (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  direction   TEXT NOT NULL CHECK (direction IN ('out','in')),
+  peer        TEXT NOT NULL,
+  event_seq   INTEGER REFERENCES events(seq),
+  text        TEXT,
+  wire_id     TEXT UNIQUE,
+  reply_to    TEXT,
+  idem        TEXT,
+  status      TEXT NOT NULL CHECK (status IN ('pending','sent','failed','dropped','received')),
+  error       TEXT,
+  created_at  INTEGER NOT NULL,
+  sent_at     INTEGER
+) STRICT;
+CREATE INDEX peer_messages_status ON peer_messages(status, id);
+CREATE UNIQUE INDEX peer_messages_idem ON peer_messages(idem) WHERE idem IS NOT NULL;
+`;
+
 export const MIGRATIONS: readonly Migration[] = [
   { version: 1, name: 'схема 0.1: все таблицы 5.2', sql: SCHEMA_V1 },
   { version: 2, name: 'кнопки в outbox, тема Telegram у эпизода', sql: SCHEMA_V2 },
@@ -812,6 +900,7 @@ export const MIGRATIONS: readonly Migration[] = [
   { version: 12, name: 'правила канала разговору; удаление строки темы после [верно]', sql: SCHEMA_V12, foreignKeysOff: true },
   { version: 13, name: 'окно для материала без слов владельца', sql: SCHEMA_V13, foreignKeysOff: true },
   { version: 14, name: 'посылки: картинка — фото (send_as)', sql: SCHEMA_V14 },
+  { version: 15, name: 'связь с другими агентами: письма и вид события peer', sql: SCHEMA_V15, foreignKeysOff: true },
 ];
 
 /**
@@ -916,6 +1005,21 @@ export type SttNote = (typeof STT_NOTES)[number];
 export const BUTTON_KINDS = ['resume', 'episode_ok', 'episode_reject', 'episode_pick', 'transcript', 'rule_ok', 'rule_no'] as const;
 export type ButtonKind = (typeof BUTTON_KINDS)[number];
 
+/**
+ * Письмо другого агента (схема v15), events.peer_json. name — имя из peers настроек; relay_seq — слово владельца, на которое
+ * это ответ: то, на которое агент ответил письмом (reply_to), иначе последнее переданное ему. failed — не письмо, а сбой
+ * передачи слова relay_seq: причина словами связи.
+ */
+export interface PeerEventInfo {
+  name: string;
+  relay_seq: number | null;
+  failed?: string;
+}
+
+/** peer_messages.status. */
+export const PEER_MESSAGE_STATUSES = ['pending', 'sent', 'failed', 'dropped', 'received'] as const;
+export type PeerMessageStatus = (typeof PEER_MESSAGE_STATUSES)[number];
+
 export const SCHEMA_VERSION: number = MIGRATIONS[MIGRATIONS.length - 1]?.version ?? 0;
 
 /** Таблицы текущей схемы — для проверок doctor и тестов. */
@@ -937,4 +1041,5 @@ export const SCHEMA_TABLES = [
   'deletions',
   'deliveries',
   'conversations',
+  'peer_messages',
 ] as const;

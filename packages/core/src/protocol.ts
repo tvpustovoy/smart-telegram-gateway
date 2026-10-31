@@ -95,7 +95,8 @@ export const HelloSchema = z.strictObject({
   req_id: reqId,
   adapter: z.string().min(1).max(128),
   version: z.int().nonnegative(),
-  role: z.enum(['adapter', 'cli']),
+  // peer_link (связь с другими агентами): stg-ours — соединение без аренды, пересылает письма.
+  role: z.enum(['adapter', 'cli', 'peer_link']),
   // Для журнала: каталог и pid; шлюз по нему ничего не решает.
   session_hint: z
     .strictObject({ cwd: z.string().max(4096).optional(), pid: z.int().positive().optional() })
@@ -200,6 +201,44 @@ export const SendFileSchema = z.strictObject({
 });
 
 /**
+ * Передать слово владельца другому агенту (сценарий 1). seq — № его сообщения: текст или расшифровку берёт шлюз из базы,
+ * агент его не пересказывает; excerpt — отрывок, шлюз проверяет, что он входит в слово дословно; note — записка агента,
+ * в письме отдельно от слова; to — имя из peers настроек. turn и idem — как у reply. `ack.result` — RelayResult.
+ */
+export const RelaySchema = z.strictObject({
+  type: z.literal('relay'),
+  req_id: reqId,
+  seq,
+  to: z.string().min(1).max(64),
+  excerpt: z.string().min(1).max(MAX_REPLY_TEXT).optional(),
+  note: z.string().min(1).max(MAX_REPLY_TEXT).optional(),
+  turn: z.int().nonnegative(),
+  idem: token.optional(),
+});
+
+/** Показать письмо агента владельцу дословно, с меткой «↪ Имя» (как reply с from; `ack.result` — как у reply). */
+export const ShowSchema = z.strictObject({ type: z.literal('show'), req_id: reqId, seq, turn: z.int().nonnegative() });
+
+/** Кто в списке агентов и что известно о связи — только факты из базы. `ack.result` — AgentsResult. */
+export const AgentsSchema = z.strictObject({ type: z.literal('agents'), req_id: reqId });
+
+/** Связь → шлюз: письмо от адреса address. text — как есть, метку и имя ставит шлюз. reply_to — на какое письмо отвечает. */
+export const PeerInSchema = z.strictObject({
+  type: z.literal('peer_in'),
+  req_id: reqId,
+  address: z.string().min(1).max(256),
+  wire_id: z.string().min(1).max(256),
+  text: z.string().min(1).max(MAX_REPLY_TEXT),
+  reply_to: z.string().min(1).max(256).optional(),
+});
+
+/** Связь → шлюз: письмо id ушло. */
+export const PeerSentSchema = z.strictObject({ type: z.literal('peer_sent'), req_id: reqId, id: z.int().positive(), wire_id: z.string().min(1).max(256) });
+
+/** Связь → шлюз: письмо id не ушло, reason — словами связи. */
+export const PeerFailedSchema = z.strictObject({ type: z.literal('peer_failed'), req_id: reqId, id: z.int().positive(), reason: z.string().min(1).max(1000) });
+
+/**
  * Ход агента идёт (#55; в пределах v1, необязательное): «печатает…» держится в чатах событий хода всё время хода, и после
  * промежуточного ответа на них (5.5). on: true — seqs: № событий хода (отданных агенту — этой аренде или прежней;
  * прочие пропускаются); кадр заменяет прежний набор. Повторять, пока ход идёт: без нового working за WORKING_HOLD_MS
@@ -254,6 +293,12 @@ export const AdapterMessageSchema = z.discriminatedUnion('type', [
   MediaSchema,
   SendFileSchema,
   WorkingSchema,
+  RelaySchema,
+  ShowSchema,
+  AgentsSchema,
+  PeerInSchema,
+  PeerSentSchema,
+  PeerFailedSchema,
   PingSchema,
   PongSchema,
 ]);
@@ -274,6 +319,12 @@ export const ADAPTER_MESSAGE_TYPES: readonly AdapterMessageType[] = [
   'working',
   'ping',
   'pong',
+  'relay',
+  'show',
+  'agents',
+  'peer_in',
+  'peer_sent',
+  'peer_failed',
 ];
 
 // ——— Аренда и сроки (5.10) ⟨числа — предл., приняты в M3⟩ ———
@@ -408,6 +459,8 @@ export const EventMessageSchema = z.object({
     })
     .nullable(),
   redelivery: z.boolean(),
+  // Только у письма другого агента (вид peer): чьё и к какому слову; failed — сбой передачи, а не письмо.
+  peer: z.object({ name: z.string(), relay_seq: seq.nullable(), failed: z.string().optional() }).optional(),
   // Только у probe: код, который модель возвращает в done (в пределах v1; старый канал его не знает и не теряет).
   code: z.string().optional(),
   // Только у аудиофайла (J-2; в пределах v1, как code): имя, длительность (по метаданным Telegram, а у файла без них — по
@@ -521,6 +574,33 @@ export const WhereResultSchema = z.object({
   data: WhereDataSchema.optional(),
 });
 
+/** Ответ на relay. link — подключена ли связь сейчас: нет — письмо ждёт её. repeated — исход прежнего вызова с тем же ключом. */
+export const RelayResultSchema = z.object({
+  status: z.enum(['queued', 'sent', 'failed', 'dropped_stopped', 'dropped_stale_turn', 'refused_paused']),
+  id: z.int().positive().optional(),
+  link: z.boolean().optional(),
+  repeated: z.boolean().optional(),
+  error: z.string().optional(),
+});
+export type RelayResult = z.infer<typeof RelayResultSchema>;
+
+/** Ответ на agents. Времена — мс; null — такого ещё не было. Что агент жив, шлюз не знает и не говорит. */
+export const AgentsResultSchema = z.object({
+  link: z.boolean(),
+  agents: z.array(
+    z.object({ name: z.string(), waiting: z.int().nonnegative(), last_sent_at: z.int().nullable(), last_received_at: z.int().nullable() }),
+  ),
+});
+export type AgentsResult = z.infer<typeof AgentsResultSchema>;
+
+/** Шлюз → связь: отправить письмо id на адрес address. Повторяется при каждом подключении, пока нет peer_sent или peer_failed. */
+export const PeerSendSchema = z.object({
+  type: z.literal('peer_send'),
+  id: z.int().positive(),
+  address: z.string(),
+  text: z.string(),
+});
+
 export const GatewayMessageSchema = z.discriminatedUnion('type', [
   WelcomeSchema,
   EventMessageSchema,
@@ -528,6 +608,7 @@ export const GatewayMessageSchema = z.discriminatedUnion('type', [
   AckSchema,
   ErrorMessageSchema,
   WhereResultSchema,
+  PeerSendSchema,
   z.object({ type: z.literal('ping') }),
   z.object({ type: z.literal('pong') }),
 ]);

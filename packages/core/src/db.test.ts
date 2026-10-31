@@ -30,6 +30,7 @@ import {
   EVENT_STATUSES,
   MESSAGE_OUT_KINDS,
   MIGRATIONS,
+  PEER_MESSAGE_STATUSES,
   OUTBOX_ORIGINS,
   OUTBOX_STATUSES,
   RULES_LOG_STATUSES,
@@ -234,12 +235,13 @@ describe('база: v11 (0.3.4) — пересборка events с видом re
     const others = ['outbox', 'receipts', 'messages_out', 'latency', 'edits', 'reactions'].map((t) => JSON.stringify(db.prepare(`SELECT * FROM ${t} ORDER BY 1`).all()));
     const r = migrate(db);
     try {
-      assert.deepEqual(r.applied, [10, 11, 12, 13, 14], 'миграции по порядку: v10 (0.3.3, посылки) → v11 (0.3.4) → v12 (0.3.5) → v13 (0.3.6) → v14 (#60)');
+      assert.deepEqual(r.applied, [10, 11, 12, 13, 14, 15], 'миграции по порядку: v10 (0.3.3, посылки) → v11 (0.3.4) → v12 (0.3.5) → v13 (0.3.6) → v14 (#60) → v15');
       assert.equal(schemaVersion(db), SCHEMA_VERSION);
       const after = db.prepare('SELECT * FROM events ORDER BY seq').all() as Array<Record<string, unknown>>;
       assert.equal(
         JSON.stringify(
-          after.map(({ reaction_json, hold_until, instructions_json, material_json, ...rest }) => {
+          after.map(({ reaction_json, hold_until, instructions_json, material_json, peer_json, ...rest }) => {
+            assert.equal(peer_json, null, 'писем агентов у прежних событий нет (v15)');
             assert.equal(reaction_json, null);
             assert.equal(hold_until, null, 'окна отмены у прежних событий нет');
             assert.equal(instructions_json, null, 'правил канала у прежних событий нет (v12)');
@@ -323,7 +325,7 @@ describe('база: v11 (0.3.4) — пересборка events с видом re
     const dIdx = idxOf('deliveries');
     const r = migrate(db);
     try {
-      assert.deepEqual(r.applied, [11, 12, 13, 14]);
+      assert.deepEqual(r.applied, [11, 12, 13, 14, 15]);
       assert.equal(schemaVersion(db), SCHEMA_VERSION);
       assert.equal(
         JSON.stringify(
@@ -420,11 +422,12 @@ describe('база: v12 (0.3.5) — правила канала разговор
     const dBefore = JSON.stringify(deletions());
     const r = migrate(db);
     try {
-      assert.deepEqual(r.applied, [12, 13, 14], 'v12, затем v13 (0.3.6) и v14 (#60)');
+      assert.deepEqual(r.applied, [12, 13, 14, 15], 'v12, затем v13 (0.3.6), v14 (#60) и v15');
       assert.equal(schemaVersion(db), SCHEMA_VERSION);
       assert.equal(
         JSON.stringify(
-          events().map(({ instructions_json, material_json, ...rest }) => {
+          events().map(({ instructions_json, material_json, peer_json, ...rest }) => {
+            assert.equal(peer_json, null, 'писем агентов у прежних событий нет (v15)');
             assert.equal(instructions_json, null);
             assert.equal(material_json, null);
             return rest;
@@ -513,11 +516,12 @@ describe('база: v13 (0.3.6) — окно для материала без с
     const before = JSON.stringify(events());
     const r = migrate(db);
     try {
-      assert.deepEqual(r.applied, [13, 14]);
+      assert.deepEqual(r.applied, [13, 14, 15]);
       assert.equal(schemaVersion(db), SCHEMA_VERSION);
       assert.equal(
         JSON.stringify(
-          events().map(({ material_json, ...rest }) => {
+          events().map(({ material_json, peer_json, ...rest }) => {
+            assert.equal(peer_json, null, 'писем агентов у прежних событий нет (v15)');
             assert.equal(material_json, null);
             return rest;
           }),
@@ -599,9 +603,9 @@ describe('база: v14 (#60) — посылка картинкой: фото и
     const idxBefore = idx();
     const r = migrate(db);
     try {
-      assert.deepEqual(r.applied, [14]);
-      assert.equal(schemaVersion(db), 14);
-      assert.equal(SCHEMA_VERSION, 14);
+      assert.deepEqual(r.applied, [14, 15]);
+      assert.equal(schemaVersion(db), 15);
+      assert.equal(SCHEMA_VERSION, 15);
       assert.equal(
         JSON.stringify(
           deliveries().map(({ send_as, ...rest }) => {
@@ -630,11 +634,64 @@ describe('база: v14 (#60) — посылка картинкой: фото и
     }
   });
 
-  it('повторный запуск на v14 — ничего не применяется, данные те же', () => {
-    const db = dbAt(14);
+  it('повторный запуск на последней версии — ничего не применяется', () => {
+    const db = dbAt(SCHEMA_VERSION);
     try {
       assert.deepEqual(migrate(db).applied, []);
-      assert.equal(schemaVersion(db), 14);
+      assert.equal(schemaVersion(db), SCHEMA_VERSION);
+    } finally {
+      db.close();
+    }
+  });
+});
+
+describe('база: v15 — связь с другими агентами (peer_messages, вид события peer)', () => {
+  function dbAt(v: number): Db {
+    const db = openDatabase(tmpDb());
+    for (const m of MIGRATIONS.filter((x) => x.version <= v)) {
+      db.exec(m.sql);
+      setMeta(db, 'schema_version', String(m.version));
+    }
+    return db;
+  }
+
+  it('v14 → v15: события целы со всеми полями, новые № не переиспользуются, peer_json и CHECK на месте', () => {
+    const db = dbAt(14);
+    insertSample(db);
+    transaction(db, () => {
+      db.prepare(
+        "INSERT INTO events(chat_id, trust, kind, text, status, created_at, material_json, hold_until) VALUES (123456789, 'untrusted', 'document', 'файл', 'held', 5, '{\"state\":\"waiting\",\"window_ms\":1}', 9)",
+      ).run();
+      db.prepare("INSERT INTO events(chat_id, kind, status, created_at) VALUES (123456789, 'probe', 'handled', 6)").run();
+      db.prepare('DELETE FROM events WHERE seq = (SELECT max(seq) FROM events)').run();
+    });
+    const events = (): Array<Record<string, unknown>> => db.prepare('SELECT * FROM events ORDER BY seq').all() as Array<Record<string, unknown>>;
+    const before = events();
+    const idx = (): string[] =>
+      (db.prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'events' AND sql IS NOT NULL ORDER BY name").all() as Array<{ name: string }>).map((x) => x.name);
+    const idxBefore = idx();
+    const seqBefore = (db.prepare("SELECT seq FROM sqlite_sequence WHERE name = 'events'").get() as { seq: number }).seq;
+    const r = migrate(db);
+    try {
+      assert.deepEqual(r.applied, [15]);
+      assert.equal(
+        JSON.stringify(
+          events().map(({ peer_json, ...rest }) => {
+            assert.equal(peer_json, null);
+            return rest;
+          }),
+        ),
+        JSON.stringify(before),
+      );
+      assert.deepEqual(idx(), idxBefore);
+      const seq = Number(
+        db.prepare("INSERT INTO events(chat_id, trust, kind, text, status, created_at, peer_json) VALUES (123456789, 'untrusted', 'peer', 'ответ', 'new', 7, '{\"name\":\"Агент\",\"relay_seq\":null}')").run().lastInsertRowid,
+      );
+      assert.ok(seq > seqBefore, 'удалённый № не вернулся');
+      assert.throws(() => db.prepare("INSERT INTO events(chat_id, kind, status, created_at) VALUES (123456789, 'peer', 'new', 8)").run(), /CHECK/, 'peer без peer_json');
+      assert.throws(() => db.prepare("INSERT INTO events(chat_id, kind, status, created_at, peer_json) VALUES (123456789, 'text', 'new', 8, '{}')").run(), /CHECK/, 'peer_json у другого вида');
+      db.prepare("INSERT INTO peer_messages(direction, peer, wire_id, status, created_at) VALUES ('in', 'Агент', 'w1', 'received', 1)").run();
+      assert.throws(() => db.prepare("INSERT INTO peer_messages(direction, peer, wire_id, status, created_at) VALUES ('in', 'Агент', 'w1', 'received', 2)").run(), /UNIQUE/, 'один wire_id — одно письмо');
     } finally {
       db.close();
     }
@@ -659,6 +716,7 @@ describe('база: перечни 5.2 — CHECK совпадает с конс�
     ['edits', 'status', EDIT_STATUSES],
     ['deliveries', 'status', DELIVERY_STATUSES],
     ['deliveries', 'send_as', DELIVERY_SEND_AS],
+    ['peer_messages', 'status', PEER_MESSAGE_STATUSES],
     ['deletions', 'reason', DELETION_REASONS],
   ];
   for (const [table, column, values] of cases) {
