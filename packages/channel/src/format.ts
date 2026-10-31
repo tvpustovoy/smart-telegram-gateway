@@ -364,14 +364,15 @@ export function formatEvent(ev: EventMessage): ChannelNotice {
 function formatPeer(ev: EventMessage, peer: NonNullable<EventMessage['peer']>, meta: Record<string, string>): ChannelNotice {
   const word = peer.relay_seq !== null ? ` · к слову № ${peer.relay_seq}` : '';
   const again = ev.redelivery ? ' · повтор: проверь, не сделано ли уже' : '';
+  const name = headerValue(peer.name, 64);
   if (peer.failed !== undefined) {
     return {
-      content: `[№ ${ev.seq} · шлюз · письмо не ушло${word}${again}] Агент ${peer.name}: ${peer.failed}. Владелец уже получил строку об этом. Закрой событие: done(seqs: [${ev.seq}]).`,
+      content: `[№ ${ev.seq} · шлюз · письмо не ушло${word}${again}] Агент ${name}: ${neutralText(peer.failed)}. Владелец уже получил строку об этом. Закрой событие: done(seqs: [${ev.seq}]).`,
       meta,
     };
   }
   return {
-    content: `[№ ${ev.seq} · письмо агента ${peer.name} · ${TRUST_WORDS.untrusted}${word}${again}] ${ev.text ?? ''}\n\nПоказать владельцу дословно: show(seq: ${ev.seq}). Не показывать: done(seqs: [${ev.seq}]).`,
+    content: `[№ ${ev.seq} · письмо агента ${name} · ${TRUST_WORDS.untrusted}${word}${again}] ${neutralText(ev.text ?? '')}\n\nПоказать владельцу дословно: show(seq: ${ev.seq}). Не показывать: done(seqs: [${ev.seq}]).`,
     meta,
   };
 }

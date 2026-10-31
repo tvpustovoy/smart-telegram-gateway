@@ -142,6 +142,7 @@ export interface OutRow {
   reply_to_message_id: number | null;
   voice_failed: number;
   bare: number;
+  plain: number;
   /** Чьи слова передаёт агент (0.3.2, P-26; схема v9): «↪ <имя>: » перед ответом. */
   from_name?: string | null;
   /** Строка шлюза — цитатой (0.3.4, R-23 а; схема v11): расшифровка. */
@@ -689,6 +690,8 @@ export class Sender {
     const opts = relay ? { prefix: escapeHtml(relay) } : noRelay;
     const mark = (parts: string[], html: boolean): Part[] =>
       parts.map((t) => ({ method: 'sendMessage', text: relay ? t : markAgentPart(t, html, parts.length > 1), html, kind: 'agent' }));
+    // Письмо агента (show) — дословно: разметка спрятала бы адрес ссылки и съела бы знаки.
+    if (r0.plain) return mark(splitPlain(text, opts), false);
     try {
       return mark(splitHtml(markdownToTelegramHtml(text), opts), true);
     } catch (err) {
@@ -919,7 +922,7 @@ export class Sender {
     if (afterStop) ctx.journal.write('sent_after_stop', { outbox_id: r0.id, tg_message_ids: sent });
     ctx.journal.write('out', {
       kind: r0.kind,
-      label: r0.origin,
+      label: r0.plain ? 'untrusted' : r0.origin,
       outbox_ids: ids,
       event_seqs: group.map((g) => g.event_seq),
       chat_id: r0.chat_id,

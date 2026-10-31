@@ -832,6 +832,11 @@ export class AdapterService {
         conn.send({ type: 'error', req_id: msg.req_id, code: 'unavailable', text: 'связь с агентами не подключена' });
         return;
       }
+      if (!this.peers.accepts(conn)) {
+        conn.send({ type: 'error', req_id: msg.req_id, code: 'busy', text: 'связь уже подключена' });
+        conn.close();
+        return;
+      }
       conn.send({ type: 'ack', req_id: msg.req_id, result: { role: 'peer_link' } });
       this.peers.attach(conn);
       return;
@@ -1583,7 +1588,15 @@ export class AdapterService {
     return row.status === 'held' ? 'held_paused' : 'queued';
   }
 
-  private onReply(msg: Extract<AdapterMessage, { type: 'reply' }>, conn: GatewayConnection): void {
+  /** Почему агенту нельзя подписать слова этим именем: метку агента из списка ставит только show, дословно из базы. */
+  private fromProblem(from: string): string | null {
+    const name = from.trim().toLocaleLowerCase();
+    if (this.ctx.config.peers.some((p) => p.name.toLocaleLowerCase() === name)) return `«${from.trim()}» — агент из списка шлюза: его письмо показывает show, дословно`;
+    return relayNameProblem(from);
+  }
+
+  /** shown — письмо агента (show): имя ставит шлюз, текст чужой и уходит без разметки. */
+  private onReply(msg: Extract<AdapterMessage, { type: 'reply' }>, conn: GatewayConnection, shown = false): void {
     const lease = this.verifiedLease(conn, msg.req_id);
     if (!lease) return;
     const repeated = this.repeatedReply(msg);
@@ -1609,7 +1622,7 @@ export class AdapterService {
     // Чьи слова агент передаёт (0.3.2, P-26): имя проверяет шлюз — агент не выдаёт чужие слова за строку шлюза ⟨предл.⟩.
     const fromName = msg.from !== undefined ? msg.from.trim() : null;
     if (msg.from !== undefined) {
-      const why = relayNameProblem(msg.from);
+      const why = shown ? null : this.fromProblem(msg.from);
       if (why) {
         this.ctx.journal.write('reply_refused', { seq: msg.seq, reason: 'from', from: msg.from.slice(0, 80), text: why });
         conn.send({ type: 'error', req_id: msg.req_id, code: 'bad_request', text: why });
@@ -1652,6 +1665,7 @@ export class AdapterService {
         status: held ? 'held' : 'pending',
         idem: msg.idem ?? null,
         fromName,
+        plain: shown,
       });
       if (marks) {
         sql(this.ctx.db, "UPDATE events SET status = 'processed', processed_at = ?, processed_silent = 0 WHERE seq = ?").run(now, ev.seq);
@@ -1664,7 +1678,7 @@ export class AdapterService {
     this.ctx.journal.write('reply', {
       seq: msg.seq,
       outbox_id: outboxId,
-      label: 'agent',
+      label: shown ? 'untrusted' : 'agent',
       text: msg.text,
       voice: msg.voice,
       ...(fromName ? { from: fromName } : {}),
@@ -1694,7 +1708,8 @@ export class AdapterService {
 
   /**
    * show (сценарий 1): письмо агента владельцу дословно. Это reply с текстом из базы и меткой «↪ Имя»: те же проверки хода,
-   * «стопа» и паузы, событие закрывается. Ключ повтора — № письма: второй show не удваивает сообщение в чате.
+   * «стопа» и паузы, событие закрывается; уходит простым текстом, без разметки. Письмо уже идёт или ушло — второго сообщения
+   * нет; брошено «стопом» или Telegram не принял — показать можно снова.
    */
   private onShow(msg: Extract<AdapterMessage, { type: 'show' }>, conn: GatewayConnection): void {
     if (!this.verifiedLease(conn, msg.req_id)) return;
@@ -1708,7 +1723,12 @@ export class AdapterService {
       conn.send({ type: 'error', req_id: msg.req_id, code: 'bad_request', text: `№ ${msg.seq} — сбой передачи, а не письмо: показывать нечего` });
       return;
     }
-    this.onReply({ type: 'reply', req_id: msg.req_id, seq: msg.seq, text: ev.text, voice: false, turn: msg.turn, idem: `show-${msg.seq}`, from: peer.name }, conn);
+    const shown = sql(this.ctx.db, 'SELECT status FROM outbox WHERE event_seq = ? AND plain = 1 ORDER BY id DESC LIMIT 1').get(msg.seq) as { status: string } | undefined;
+    if (shown && shown.status !== 'dropped') {
+      conn.send({ type: 'ack', req_id: msg.req_id, result: shown.status === 'held' ? 'held_paused' : 'queued' });
+      return;
+    }
+    this.onReply({ type: 'reply', req_id: msg.req_id, seq: msg.seq, text: ev.text, voice: false, turn: msg.turn, from: peer.name }, conn, true);
   }
 
   /** agents: только чтение, только проверенной аренде. */
@@ -1775,7 +1795,7 @@ export class AdapterService {
     }
     const fromName = msg.from !== undefined ? msg.from.trim() : null;
     if (msg.from !== undefined) {
-      const why = relayNameProblem(msg.from);
+      const why = this.fromProblem(msg.from);
       if (why) {
         refuse('from', why);
         return;

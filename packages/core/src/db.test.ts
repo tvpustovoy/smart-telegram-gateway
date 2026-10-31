@@ -253,7 +253,7 @@ describe('база: v11 (0.3.4) — пересборка events с видом re
         'строки событий — те же',
       );
       assert.deepEqual(['outbox', 'receipts', 'messages_out', 'latency', 'edits', 'reactions'].map((t) => JSON.stringify((db.prepare(`SELECT * FROM ${t} ORDER BY 1`).all() as Array<Record<string, unknown>>).map((x) => {
-        const { quote: _q, ...rest } = x;
+        const { quote: _q, plain: _p, ...rest } = x;
         return rest;
       }))), others);
       // Номер 3 был выдан и удалён: следующий — 4.
@@ -690,8 +690,12 @@ describe('база: v15 — связь с другими агентами (peer_
       assert.ok(seq > seqBefore, 'удалённый № не вернулся');
       assert.throws(() => db.prepare("INSERT INTO events(chat_id, kind, status, created_at) VALUES (123456789, 'peer', 'new', 8)").run(), /CHECK/, 'peer без peer_json');
       assert.throws(() => db.prepare("INSERT INTO events(chat_id, kind, status, created_at, peer_json) VALUES (123456789, 'text', 'new', 8, '{}')").run(), /CHECK/, 'peer_json у другого вида');
-      db.prepare("INSERT INTO peer_messages(direction, peer, wire_id, status, created_at) VALUES ('in', 'Агент', 'w1', 'received', 1)").run();
-      assert.throws(() => db.prepare("INSERT INTO peer_messages(direction, peer, wire_id, status, created_at) VALUES ('in', 'Агент', 'w1', 'received', 2)").run(), /UNIQUE/, 'один wire_id — одно письмо');
+      const letter = db.prepare("INSERT INTO peer_messages(direction, peer, wire_id, status, created_at) VALUES (?, ?, ?, ?, 1)");
+      letter.run('in', 'Агент', 'w1', 'received');
+      assert.throws(() => letter.run('in', 'Агент', 'w1', 'received'), /UNIQUE/, 'одно письмо агента — одна строка');
+      letter.run('in', 'Другой', 'w1', 'received');
+      letter.run('out', 'Агент', 'w1', 'sent');
+      letter.run('out', 'Агент', 'w1', 'sent');
     } finally {
       db.close();
     }

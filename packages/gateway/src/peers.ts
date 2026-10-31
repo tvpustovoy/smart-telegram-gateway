@@ -6,9 +6,12 @@
 // - Письмо агента — событие вида peer с меткой «чужое»: приходит по обычному курсору аренды и будит агента, как сообщение
 //   владельца. Адрес вне peers настроек не принимается. Повтор того же письма (wire_id) второго события не даёт.
 // - Текст исходящего хранится, только пока письмо ждёт: дальше он есть в слове владельца и в истории сети.
-// - Правда о передаче — у шлюза: строку владельцу ставит код, когда связь подтвердила отправку или отказала.
+// - Письма уходят в связь по одному: следующее — после исхода предыдущего. Так «стоп» останавливает всё, что ещё не начато,
+//   а в пути бывает не больше одного письма.
+// - Правда о передаче — у шлюза: строку владельцу ставит код, когда связь подтвердила отправку или отказала; в ней видно,
+//   что ушёл отрывок и что была записка.
 
-import { MAX_REPLY_TEXT, MESSAGE_EVENT_KINDS, sql, transaction, type AdapterMessage, type AgentsResult, type ErrorCode, type Mode, type PeerEventInfo, type RelayResult } from 'stg-core';
+import { MAX_REPLY_TEXT, MESSAGE_EVENT_KINDS, cutGraphemes, sql, transaction, type AdapterMessage, type AgentsResult, type ErrorCode, type Mode, type PeerEventInfo, type RelayResult } from 'stg-core';
 import { enqueueServiceLine, type Ctx } from './context.js';
 import type { GatewayConnection } from './socket-server.js';
 
@@ -24,6 +27,7 @@ interface PeerRow {
   peer: string;
   event_seq: number | null;
   text: string | null;
+  detail: string | null;
   status: 'pending' | 'sent' | 'failed' | 'dropped' | 'received';
   error: string | null;
 }
@@ -33,6 +37,7 @@ interface WordRow {
   trust: string | null;
   text: string | null;
   transcript: string | null;
+  attachments_json: string | null;
 }
 
 export type RelayOutcome = { ok: true; result: RelayResult } | { ok: false; code: ErrorCode; text: string };
@@ -42,6 +47,8 @@ export type PeerInResult = { status: 'accepted'; seq: number } | { status: 'dupl
 /** Скобки заголовков письма: в записке агента они заменяются, чтобы записка не выглядела словом владельца. */
 const HEAD_OPEN = '⟦';
 const HEAD_CLOSE = '⟧';
+/** Сколько отрывка видно в строке владельцу. */
+const DETAIL_EXCERPT_MAX = 120;
 
 const REPEAT_STATUS: Record<PeerRow['status'], RelayResult['status']> = {
   pending: 'queued',
@@ -50,6 +57,27 @@ const REPEAT_STATUS: Record<PeerRow['status'], RelayResult['status']> = {
   failed: 'failed',
   dropped: 'dropped_stopped',
 };
+
+/**
+ * Слова владельца в событии с меткой owner. Подпись — всегда его. Расшифровка — только его собственного звука: голосового или
+ * своего файла; звук видео и чужого файла — чужая речь, даже если прислал владелец (как в канале, format.ts: bodyOf).
+ */
+function ownerWords(ev: WordRow): string {
+  const attachments = ev.attachments_json ? (JSON.parse(ev.attachments_json) as Array<{ kind: string; trust: string }>) : [];
+  const ownSound = ev.kind === 'voice' || attachments.find((a) => a.kind === 'document')?.trust === 'owner';
+  return [ev.text, ownSound ? ev.transcript : null].filter((x): x is string => !!x?.trim()).join('\n');
+}
+
+/** Что владелец увидит в строке о передаче: какой отрывок ушёл и была ли записка. */
+function detailOf(excerpt: string | undefined, note: string | undefined): string | null {
+  const parts: string[] = [];
+  if (excerpt !== undefined) {
+    const c = cutGraphemes(excerpt.replace(/\s+/g, ' '), DETAIL_EXCERPT_MAX);
+    parts.push(`отрывок: «${c.text}${c.cut ? '…' : ''}»`);
+  }
+  if (note !== undefined) parts.push('с запиской');
+  return parts.length ? parts.join(', ') : null;
+}
 
 /** Письмо: слово и записка раздельно, заголовки ставит шлюз. */
 export function peerLetter(seq: number, words: string, excerpted: boolean, note: string | null): string {
@@ -64,6 +92,8 @@ export function peerLetter(seq: number, words: string, excerpted: boolean, note:
 
 export class PeerService {
   private link: GatewayConnection | null = null;
+  /** Письмо в пути: отдано связи, исхода ещё нет. */
+  private inflight: number | null = null;
 
   constructor(
     private readonly ctx: Ctx,
@@ -74,19 +104,27 @@ export class PeerService {
     return this.link?.alive ?? false;
   }
 
-  /** Подключилась связь: прежняя закрывается, ждущие письма уходят. */
+  /**
+   * Занято живой связью — отказ: два процесса вытесняли бы друг друга, а память об отправленном у каждого своя. Отказанный
+   * подключается снова и подхватит работу, когда прежний выйдет.
+   */
+  accepts(conn: GatewayConnection): boolean {
+    return !this.link || this.link === conn || !this.link.alive;
+  }
+
+  /** Подключилась связь: ждущие письма пойдут по одному. */
   attach(conn: GatewayConnection): void {
-    if (this.link && this.link !== conn) this.link.close();
     this.link = conn;
+    this.inflight = null;
     conn.role = 'peer_link';
-    const rows = sql(this.ctx.db, "SELECT * FROM peer_messages WHERE status = 'pending' AND direction = 'out' ORDER BY id").all() as unknown as PeerRow[];
-    for (const row of rows) this.push(row);
-    this.ctx.journal.write('peer_link_up', { waiting: rows.length });
+    this.ctx.journal.write('peer_link_up', {});
+    this.next();
   }
 
   detach(conn: GatewayConnection): void {
     if (this.link !== conn) return;
     this.link = null;
+    this.inflight = null;
     this.ctx.journal.write('peer_link_down', {});
   }
 
@@ -104,10 +142,10 @@ export class PeerService {
       const names = this.ctx.config.peers.map((p) => p.name).join(', ');
       return { ok: false, code: 'bad_request', text: `агента «${msg.to.slice(0, 64)}» нет в списке шлюза${names ? `; есть: ${names}` : '; список пуст'}` };
     }
-    const ev = sql(this.ctx.db, 'SELECT kind, trust, text, transcript FROM events WHERE seq = ?').get(msg.seq) as WordRow | undefined;
+    const ev = sql(this.ctx.db, 'SELECT kind, trust, text, transcript, attachments_json FROM events WHERE seq = ?').get(msg.seq) as WordRow | undefined;
     if (!ev || !(MESSAGE_EVENT_KINDS as readonly string[]).includes(ev.kind)) return { ok: false, code: 'unknown_seq', text: `нет сообщения № ${msg.seq}` };
     if (ev.trust !== 'owner') return { ok: false, code: 'bad_request', text: `№ ${msg.seq} — не слова владельца; передать можно только их, остальное — запиской` };
-    const words = [ev.text, ev.transcript].filter((x): x is string => !!x?.trim()).join('\n');
+    const words = ownerWords(ev);
     if (!words) return { ok: false, code: 'bad_request', text: `в № ${msg.seq} нет слов: сообщение без текста или голос ещё не распознан` };
     const excerpt = msg.excerpt?.trim();
     if (excerpt !== undefined && !words.includes(excerpt)) return { ok: false, code: 'bad_request', text: `отрывка нет в № ${msg.seq} дословно` };
@@ -127,11 +165,11 @@ export class PeerService {
     // Предел кадра связи: расшифровка длинного голосового может быть больше.
     if (text.length > MAX_REPLY_TEXT) return { ok: false, code: 'bad_request', text: `письмо длиннее ${MAX_REPLY_TEXT} знаков: передай отрывком (excerpt)` };
     const r = sql(this.ctx.db,
-      `INSERT INTO peer_messages(direction, peer, event_seq, text, idem, status, created_at) VALUES ('out', ?, ?, ?, ?, 'pending', ?)`,
-    ).run(peer.name, msg.seq, text, msg.idem ?? null, this.ctx.clock.now());
+      `INSERT INTO peer_messages(direction, peer, event_seq, text, detail, idem, status, created_at) VALUES ('out', ?, ?, ?, ?, ?, 'pending', ?)`,
+    ).run(peer.name, msg.seq, text, detailOf(excerpt, msg.note), msg.idem ?? null, this.ctx.clock.now());
     const id = Number(r.lastInsertRowid);
     this.ctx.journal.write('relay', { id, seq: msg.seq, to: peer.name, excerpt: excerpt !== undefined, note: msg.note !== undefined, link: this.linked });
-    this.push({ id, peer: peer.name, event_seq: msg.seq, text, status: 'pending', error: null });
+    this.next();
     return { ok: true, result: { status: 'queued', id, link: this.linked } };
   }
 
@@ -142,7 +180,7 @@ export class PeerService {
       this.ctx.journal.write('peer_refused', { address: msg.address.slice(0, 12), wire_id: msg.wire_id.slice(0, 12) });
       return { ok: true, result: { status: 'unknown_peer' } };
     }
-    if (sql(this.ctx.db, 'SELECT 1 FROM peer_messages WHERE wire_id = ?').get(msg.wire_id)) return { ok: true, result: { status: 'duplicate' } };
+    if (sql(this.ctx.db, "SELECT 1 FROM peer_messages WHERE direction = 'in' AND peer = ? AND wire_id = ?").get(peer.name, msg.wire_id)) return { ok: true, result: { status: 'duplicate' } };
     const owner = this.ctx.config.owner_id;
     if (owner === null) return { ok: false, code: 'unavailable', text: 'владелец не задан (первая настройка)' };
     const info: PeerEventInfo = { name: peer.name, relay_seq: this.relaySeq(peer.name, msg.reply_to ?? null) };
@@ -165,29 +203,23 @@ export class PeerService {
 
   /** Связь подтвердила отправку. Письмо, брошенное «стопом» уже в пути, тоже становится sent: оно дошло. */
   sent(msg: Extract<AdapterMessage, { type: 'peer_sent' }>): void {
-    const row = sql(this.ctx.db, 'SELECT * FROM peer_messages WHERE id = ?').get(msg.id) as PeerRow | undefined;
-    if (!row || (row.status !== 'pending' && row.status !== 'dropped')) return;
-    transaction(this.ctx.db, () => {
-      sql(this.ctx.db, "UPDATE peer_messages SET status = 'sent', wire_id = ?, text = NULL, sent_at = ? WHERE id = ?").run(msg.wire_id, this.ctx.clock.now(), msg.id);
-      enqueueServiceLine(this.ctx, `⚙ Слово № ${row.event_seq ?? '?'} передано: ${row.peer}`);
-    });
-    this.ctx.journal.write('peer_sent', { id: msg.id, to: row.peer, wire_id: msg.wire_id.slice(0, 12) });
-    this.hooks.onQueued();
+    const row = this.row(msg.id);
+    if (row && (row.status === 'pending' || row.status === 'dropped')) {
+      transaction(this.ctx.db, () => {
+        sql(this.ctx.db, "UPDATE peer_messages SET status = 'sent', wire_id = ?, text = NULL, detail = NULL, sent_at = ? WHERE id = ?").run(msg.wire_id, this.ctx.clock.now(), msg.id);
+        enqueueServiceLine(this.ctx, `⚙ Слово № ${row.event_seq ?? '?'} передано: ${row.peer}${row.detail ? `, ${row.detail}` : ''}`);
+      });
+      this.ctx.journal.write('peer_sent', { id: msg.id, to: row.peer, wire_id: msg.wire_id.slice(0, 12) });
+      this.hooks.onQueued();
+    }
+    this.settled(msg.id);
   }
 
-  /** Связь отказала: письмо закрыто, агент получает событие, владелец — строку. */
+  /** Связь отказала. */
   failed(msg: Extract<AdapterMessage, { type: 'peer_failed' }>): void {
-    const row = sql(this.ctx.db, 'SELECT * FROM peer_messages WHERE id = ?').get(msg.id) as PeerRow | undefined;
-    const owner = this.ctx.config.owner_id;
-    if (!row || row.status !== 'pending' || owner === null) return;
-    transaction(this.ctx.db, () => {
-      sql(this.ctx.db, "UPDATE peer_messages SET status = 'failed', error = ?, text = NULL WHERE id = ?").run(msg.reason, msg.id);
-      this.insertEvent(owner, null, null, { name: row.peer, relay_seq: row.event_seq, failed: msg.reason });
-      enqueueServiceLine(this.ctx, `⚙ Слово № ${row.event_seq ?? '?'} не передано: ${row.peer}. ${msg.reason}`);
-    });
-    this.ctx.journal.write('peer_failed', { id: msg.id, to: row.peer, reason: msg.reason });
-    this.hooks.onEvent();
-    this.hooks.onQueued();
+    const row = this.row(msg.id);
+    if (row?.status === 'pending') this.fail(row, msg.reason);
+    this.settled(msg.id);
   }
 
   /** Список из настроек и что о нём известно из базы. Что сессия агента жива, шлюз не знает. */
@@ -207,10 +239,42 @@ export class PeerService {
     };
   }
 
-  private push(row: PeerRow): void {
-    const address = this.ctx.config.peers.find((p) => p.name === row.peer)?.address;
-    if (address === undefined || row.text === null || !this.link?.alive) return;
-    this.link.send({ type: 'peer_send', id: row.id, address, text: row.text });
+  private row(id: number): PeerRow | undefined {
+    return sql(this.ctx.db, 'SELECT * FROM peer_messages WHERE id = ?').get(id) as PeerRow | undefined;
+  }
+
+  /** Письмо закрыто с отказом: агент получает событие, владелец — строку. */
+  private fail(row: PeerRow, reason: string): void {
+    const owner = this.ctx.config.owner_id;
+    transaction(this.ctx.db, () => {
+      sql(this.ctx.db, "UPDATE peer_messages SET status = 'failed', error = ?, text = NULL, detail = NULL WHERE id = ?").run(reason, row.id);
+      if (owner === null) return;
+      this.insertEvent(owner, null, null, { name: row.peer, relay_seq: row.event_seq, failed: reason });
+      enqueueServiceLine(this.ctx, `⚙ Слово № ${row.event_seq ?? '?'} не передано: ${row.peer}. ${reason}`);
+    });
+    this.ctx.journal.write('peer_failed', { id: row.id, to: row.peer, reason });
+    this.hooks.onEvent();
+    this.hooks.onQueued();
+  }
+
+  private settled(id: number): void {
+    if (this.inflight === id) this.inflight = null;
+    this.next();
+  }
+
+  /** Отдать связи следующее письмо, если в пути нет другого. Агента убрали из настроек — письмо закрывается с отказом. */
+  private next(): void {
+    while (this.inflight === null && this.link?.alive) {
+      const row = sql(this.ctx.db, "SELECT * FROM peer_messages WHERE status = 'pending' AND direction = 'out' ORDER BY id LIMIT 1").get() as PeerRow | undefined;
+      if (!row) return;
+      const address = this.ctx.config.peers.find((p) => p.name === row.peer)?.address;
+      if (address === undefined || row.text === null) {
+        this.fail(row, 'агента нет в списке шлюза');
+        continue;
+      }
+      this.inflight = row.id;
+      this.link.send({ type: 'peer_send', id: row.id, address, text: row.text });
+    }
   }
 
   /** К какому слову письмо: на которое агент ответил, иначе последнее переданное ему. */

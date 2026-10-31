@@ -801,8 +801,10 @@ ALTER TABLE deliveries ADD COLUMN send_as TEXT NOT NULL DEFAULT 'document' CHECK
 /**
  * Версия 15 (сценарий 1, связь с другими агентами): вид события peer и events.peer_json (PeerEventInfo) — письмо другого
  * агента или сбой передачи; peer_messages — письма в обе стороны. Исходящее: pending → sent · failed (связь не приняла) ·
- * dropped («стоп»). Входящее — received; wire_id уникален, поэтому повтор письма второго события не даёт. Новый вид меняет
- * CHECK таблицы events — перестройка как в v13: вне внешних ключей, счётчик AUTOINCREMENT переносится.
+ * dropped («стоп»). Входящее — received; (peer, wire_id) уникально, поэтому повтор письма второго события не даёт. detail —
+ * что владелец увидит в строке о передаче (отрывок, записка), пока письмо ждёт. outbox.plain — письмо агента, показанное
+ * владельцу (show): уходит простым текстом, без разметки, и чистится как чужое. Новый вид меняет CHECK таблицы events —
+ * перестройка как в v13: вне внешних ключей, счётчик AUTOINCREMENT переносится.
  */
 const SCHEMA_V15 = `
 CREATE TABLE events_v15 (
@@ -873,7 +875,8 @@ CREATE TABLE peer_messages (
   peer        TEXT NOT NULL,
   event_seq   INTEGER REFERENCES events(seq),
   text        TEXT,
-  wire_id     TEXT UNIQUE,
+  detail      TEXT,
+  wire_id     TEXT,
   reply_to    TEXT,
   idem        TEXT,
   status      TEXT NOT NULL CHECK (status IN ('pending','sent','failed','dropped','received')),
@@ -883,6 +886,8 @@ CREATE TABLE peer_messages (
 ) STRICT;
 CREATE INDEX peer_messages_status ON peer_messages(status, id);
 CREATE UNIQUE INDEX peer_messages_idem ON peer_messages(idem) WHERE idem IS NOT NULL;
+CREATE UNIQUE INDEX peer_messages_in ON peer_messages(peer, wire_id) WHERE direction = 'in';
+ALTER TABLE outbox ADD COLUMN plain INTEGER NOT NULL DEFAULT 0 CHECK (plain IN (0,1));
 `;
 
 export const MIGRATIONS: readonly Migration[] = [

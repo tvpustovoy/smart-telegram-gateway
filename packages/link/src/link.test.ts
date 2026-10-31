@@ -21,9 +21,12 @@ class FakeNetwork implements NetworkPort {
   read: string[] = [];
   sent: Array<{ address: string; text: string }> = [];
   verdicts: Array<SendVerdict | Error> = [];
+  hangUnread = false;
+  hangSend = false;
   private ring: (() => void) | null = null;
 
   async unread(): Promise<Letter[]> {
+    if (this.hangUnread) return new Promise(() => undefined);
     return this.inbox.filter((l) => !this.read.includes(l.wire_id));
   }
 
@@ -32,6 +35,7 @@ class FakeNetwork implements NetworkPort {
   }
 
   async send(address: string, text: string): Promise<SendVerdict> {
+    if (this.hangSend) return new Promise(() => undefined);
     const v = this.verdicts.shift() ?? { sent: true as const, wire_id: `wire-${this.sent.length + 1}` };
     if (v instanceof Error) throw v;
     this.sent.push({ address, text });
@@ -61,6 +65,8 @@ class FakeGateway {
   frames: Array<Record<string, any>> = [];
   sock: net.Socket | null = null;
   refuse = false;
+  badRequest: string | null = null;
+  unavailable = 0;
   private constructor(private readonly server: net.Server) {}
 
   static async start(file: string): Promise<FakeGateway> {
@@ -79,6 +85,11 @@ class FakeGateway {
         const m = JSON.parse(f.line) as Record<string, any>;
         this.frames.push(m);
         if (this.refuse && m.type === 'peer_in') sock.write(encodeFrame({ type: 'error', req_id: m.req_id, code: 'unavailable', text: 'нет' }));
+        else if (this.badRequest !== null && m.text === this.badRequest) sock.write(encodeFrame({ type: 'error', req_id: m.req_id, code: 'bad_request', text: 'нет' }));
+        else if (this.unavailable > 0 && m.type === 'peer_sent') {
+          this.unavailable--;
+          sock.write(encodeFrame({ type: 'error', req_id: m.req_id, code: 'unavailable', text: 'диск полон' }));
+        }
         else sock.write(encodeFrame({ type: 'ack', req_id: m.req_id, result: 'ok' }));
       }
     });
@@ -155,6 +166,26 @@ describe('stg-link: входящие', () => {
     await r.close();
   });
 
+  it('письмо, которое шлюз не примет никогда, не держит ящик; слишком длинный reply_to отбрасывается', async () => {
+    const r = await rig();
+    r.gw.badRequest = 'плохое';
+    r.network.inbox.push({ wire_id: 'bad', from: 'ADDR', kind: 'text', text: 'плохое', reply_to: null });
+    r.network.inbox.push({ wire_id: 'good', from: 'ADDR', kind: 'text', text: 'хорошее', reply_to: 'x'.repeat(300) });
+    await until(() => r.network.read.includes('good') && r.network.read.includes('bad'), 'обоих снятых писем');
+    assert.equal(r.gw.of('peer_in').find((f) => f.wire_id === 'good')?.reply_to, undefined);
+    await r.close();
+  });
+
+  it('зависшая сеть не останавливает приём навсегда', async () => {
+    const r = await rig({ network_ms: 20 });
+    r.network.hangUnread = true;
+    await new Promise((res) => setTimeout(res, 60));
+    r.network.hangUnread = false;
+    r.network.letter('w1');
+    await until(() => r.network.read.includes('w1'), 'прочтения после зависания');
+    await r.close();
+  });
+
   it('опрос подбирает письмо, о котором поток не сообщил', async () => {
     const r = await rig();
     r.network.inbox.push({ wire_id: 'w9', from: 'ADDR', kind: 'text', text: 'тихо', reply_to: null });
@@ -208,6 +239,28 @@ describe('stg-link: исходящие', () => {
     r.gw.push(send);
     await until(() => r.gw.of('peer_failed').length === 1, 'peer_failed');
     assert.match(r.gw.of('peer_failed')[0]?.reason, /сеть недоступна: нет связи/);
+    await r.close();
+  });
+});
+
+describe('stg-link: исходящие, сбои', () => {
+  const send = { type: 'peer_send', id: 7, address: 'ADDR', text: 'слово' };
+
+  it('шлюз не записал исход (диск полон): повтор, пока не запишет; письмо одно', async () => {
+    const r = await rig();
+    r.gw.unavailable = 2;
+    r.gw.push(send);
+    await until(() => r.gw.of('peer_sent').length === 3, 'трёх peer_sent');
+    assert.equal(r.network.sent.length, 1);
+    await r.close();
+  });
+
+  it('сеть зависла на отправке: peer_failed без повтора — письмо могло уйти', async () => {
+    const r = await rig({ network_ms: 20 });
+    r.network.hangSend = true;
+    r.gw.push(send);
+    await until(() => r.gw.of('peer_failed').length === 1, 'peer_failed');
+    assert.match(r.gw.of('peer_failed')[0]?.reason, /письмо могло уйти/);
     await r.close();
   });
 });

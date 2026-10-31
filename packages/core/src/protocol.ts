@@ -222,18 +222,21 @@ export const ShowSchema = z.strictObject({ type: z.literal('show'), req_id: reqI
 /** Кто в списке агентов и что известно о связи — только факты из базы. `ack.result` — AgentsResult. */
 export const AgentsSchema = z.strictObject({ type: z.literal('agents'), req_id: reqId });
 
+/** Предел адреса и номера письма в кадрах связи. */
+export const PEER_ID_MAX = 256;
+
 /** Связь → шлюз: письмо от адреса address. text — как есть, метку и имя ставит шлюз. reply_to — на какое письмо отвечает. */
 export const PeerInSchema = z.strictObject({
   type: z.literal('peer_in'),
   req_id: reqId,
-  address: z.string().min(1).max(256),
-  wire_id: z.string().min(1).max(256),
+  address: z.string().min(1).max(PEER_ID_MAX),
+  wire_id: z.string().min(1).max(PEER_ID_MAX),
   text: z.string().min(1).max(MAX_REPLY_TEXT),
-  reply_to: z.string().min(1).max(256).optional(),
+  reply_to: z.string().min(1).max(PEER_ID_MAX).optional(),
 });
 
 /** Связь → шлюз: письмо id ушло. */
-export const PeerSentSchema = z.strictObject({ type: z.literal('peer_sent'), req_id: reqId, id: z.int().positive(), wire_id: z.string().min(1).max(256) });
+export const PeerSentSchema = z.strictObject({ type: z.literal('peer_sent'), req_id: reqId, id: z.int().positive(), wire_id: z.string().min(1).max(PEER_ID_MAX) });
 
 /** Связь → шлюз: письмо id не ушло, reason — словами связи. */
 export const PeerFailedSchema = z.strictObject({ type: z.literal('peer_failed'), req_id: reqId, id: z.int().positive(), reason: z.string().min(1).max(1000) });
@@ -593,7 +596,7 @@ export const AgentsResultSchema = z.object({
 });
 export type AgentsResult = z.infer<typeof AgentsResultSchema>;
 
-/** Шлюз → связь: отправить письмо id на адрес address. Повторяется при каждом подключении, пока нет peer_sent или peer_failed. */
+/** Шлюз → связь: отправить письмо id на адрес address. По одному: следующее — после peer_sent или peer_failed; при новом подключении — снова. */
 export const PeerSendSchema = z.object({
   type: z.literal('peer_send'),
   id: z.int().positive(),

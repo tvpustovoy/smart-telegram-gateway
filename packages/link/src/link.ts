@@ -3,11 +3,12 @@
 // - Входящее: прочитанным письмо становится только после ack шлюза. Обрыв между ними даёт повтор, а не потерю; повтор шлюз
 //   отсекает по wire_id. Будит поток уведомлений сети; опрос раз в poll_ms страхует его: у потока нет гарантии доставки.
 // - Исходящее: id письма запоминается вместе с wire_id, поэтому повтор peer_send после перезапуска шлюза не даёт второго письма.
-//   Сбой сети — несколько попыток, затем peer_failed: шлюз скажет агенту и владельцу. Отказ сети — peer_failed сразу.
+//   Сбой сети — несколько попыток, затем peer_failed: шлюз скажет агенту и владельцу. Отказ сети — peer_failed сразу. Сеть не
+//   ответила в срок — тоже peer_failed, без повтора: письмо могло уйти. Шлюз не смог записать исход — повтор, пока не запишет.
 // - Шлюз недоступен — подключается заново; письма ждут: входящие в сети, исходящие в базе шлюза.
 
 import net from 'node:net';
-import { FrameDecoder, MAX_REPLY_TEXT, PROTOCOL_VERSION, encodeFrame, parseGatewayLine, type GatewayMessage } from 'stg-core';
+import { FrameDecoder, MAX_REPLY_TEXT, PEER_ID_MAX, PROTOCOL_VERSION, encodeFrame, parseGatewayLine, type GatewayMessage } from 'stg-core';
 import type { Letter, NetworkPort, SendVerdict } from './port.js';
 
 export const LINK_ADAPTER = 'stg-link';
@@ -18,9 +19,10 @@ export interface LinkTiming {
   retry_ms: number;
   attempts: number;
   answer_ms: number;
+  network_ms: number;
 }
 
-export const DEFAULT_LINK_TIMING: LinkTiming = { reconnect_ms: 2_000, poll_ms: 60_000, retry_ms: 5_000, attempts: 3, answer_ms: 10_000 };
+export const DEFAULT_LINK_TIMING: LinkTiming = { reconnect_ms: 2_000, poll_ms: 60_000, retry_ms: 5_000, attempts: 3, answer_ms: 10_000, network_ms: 30_000 };
 
 export interface LinkOptions {
   socketPath: string;
@@ -41,6 +43,16 @@ export function letterText(l: Letter): string {
   if (text.length <= MAX_REPLY_TEXT) return text;
   const tail = `\n… (письмо обрезано шлюзом: ${text.length} знаков)`;
   return text.slice(0, MAX_REPLY_TEXT - tail.length) + tail;
+}
+
+/** Срок вызову сети: зависший вызов иначе навсегда остановил бы приём или отправку. */
+class NetworkTimeout extends Error {}
+
+function within<T>(work: Promise<T>, ms: number): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new NetworkTimeout(`сеть не ответила за ${Math.round(ms / 1000)} с`)), ms);
+    work.then(resolve, reject).finally(() => clearTimeout(timer));
+  });
 }
 
 function wait(ms: number, signal: AbortSignal): Promise<void> {
@@ -66,6 +78,7 @@ export class PeerLink {
   private sending: Promise<void> = Promise.resolve();
   private draining = false;
   private again = false;
+  private refusal: string | null = null;
 
   constructor(private readonly opts: LinkOptions) {
     this.timing = { ...DEFAULT_LINK_TIMING, ...opts.timing };
@@ -148,10 +161,13 @@ export class PeerLink {
     }
     if ((m.type === 'ack' || m.type === 'error') && m.req_id === 'link-hello') {
       if (m.type === 'error') {
-        this.opts.log(`шлюз не принял связь: ${m.text}`);
+        // Занято другим процессом связи — ждать своей очереди молча, сообщив один раз.
+        if (m.text !== this.refusal) this.opts.log(`шлюз не принял связь: ${m.text}`);
+        this.refusal = m.text;
         sock.destroy();
         return;
       }
+      this.refusal = null;
       this.ready = true;
       this.opts.log('связь со шлюзом установлена');
       void this.drain();
@@ -192,16 +208,19 @@ export class PeerLink {
         this.again = false;
         const taken: string[] = [];
         try {
-          for (const l of await this.opts.port.unread()) {
-            const r = await this.ask('peer_in', { address: l.from, wire_id: l.wire_id, text: letterText(l), ...(l.reply_to ? { reply_to: l.reply_to } : {}) });
-            if (r.type !== 'ack') {
-              this.opts.log(`шлюз не принял письмо ${l.wire_id.slice(0, 12)}: ${r.type === 'error' ? r.text : r.type}`);
+          for (const l of await within(this.opts.port.unread(), this.timing.network_ms)) {
+            const reply = l.reply_to && l.reply_to.length <= PEER_ID_MAX ? { reply_to: l.reply_to } : {};
+            const r = await this.ask('peer_in', { address: l.from, wire_id: l.wire_id, text: letterText(l), ...reply });
+            if (r.type === 'error' && r.code !== 'bad_request') {
+              this.opts.log(`шлюз не принял письмо ${l.wire_id.slice(0, 12)}: ${r.text}`);
               break;
             }
+            // Письмо, которое шлюз не примет никогда, ящик не держит: следующее иначе не дойдёт.
+            if (r.type === 'error') this.opts.log(`письмо ${l.wire_id.slice(0, 12)} снято: ${r.text}`);
             taken.push(l.wire_id);
           }
         } finally {
-          if (taken.length) await this.opts.port.consume(taken);
+          if (taken.length) await within(this.opts.port.consume(taken), this.timing.network_ms);
         }
       } while (this.again && this.ready);
     } catch (err) {
@@ -214,11 +233,20 @@ export class PeerLink {
   private async deliver(m: PeerSend): Promise<void> {
     const verdict = await this.sendOnce(m);
     try {
-      if (verdict.sent) await this.ask('peer_sent', { id: m.id, wire_id: verdict.wire_id });
-      else await this.ask('peer_failed', { id: m.id, reason: verdict.reason.slice(0, 1000) });
+      if (verdict.sent) await this.report('peer_sent', { id: m.id, wire_id: verdict.wire_id });
+      else await this.report('peer_failed', { id: m.id, reason: verdict.reason.slice(0, 1000) });
     } catch (err) {
-      // Шлюз повторит peer_send при подключении; отправленное второй раз не уйдёт.
+      // Соединения нет: шлюз пришлёт письмо снова при подключении, отправленное второй раз не уйдёт.
       this.opts.log(`письмо ${m.id}: исход не передан шлюзу: ${(err as Error).message}`);
+    }
+  }
+
+  /** Передать исход письма. Шлюз не смог записать (диск полон) — повторять: иначе письмо останется ждущим и уйдёт ещё раз. */
+  private async report(type: string, fields: Record<string, unknown>): Promise<void> {
+    for (;;) {
+      const r = await this.ask(type, fields);
+      if (r.type !== 'error' || r.code !== 'unavailable') return;
+      await new Promise((resolve) => setTimeout(resolve, this.timing.retry_ms));
     }
   }
 
@@ -228,13 +256,14 @@ export class PeerLink {
     let last = '';
     for (let attempt = 1; attempt <= this.timing.attempts; attempt++) {
       try {
-        const v = await this.opts.port.send(m.address, m.text);
+        const v = await within(this.opts.port.send(m.address, m.text), this.timing.network_ms);
         if (v.sent) {
           this.sent.set(m.id, v.wire_id);
           if (this.sent.size > SENT_MEMORY) this.sent.delete(this.sent.keys().next().value!);
         }
         return v;
       } catch (err) {
+        if (err instanceof NetworkTimeout) return { sent: false, reason: `${err.message}: письмо могло уйти` };
         last = (err as Error).message;
         this.opts.log(`письмо ${m.id}, попытка ${attempt}: ${last}`);
         if (attempt < this.timing.attempts) await new Promise((r) => setTimeout(r, this.timing.retry_ms));

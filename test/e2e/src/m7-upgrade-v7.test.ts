@@ -90,7 +90,7 @@ describe('M7 · первый старт сведённой версии (0.3 …
         // events.hold_until, events.media_ref, outbox.quote и outbox.from_name.
         db.exec('DROP TABLE conversations; DROP TABLE deliveries; DROP TABLE peer_messages; ALTER TABLE deletions DROP COLUMN fallback_text;');
         eventsBackToV7(db);
-        db.exec("ALTER TABLE outbox DROP COLUMN quote; ALTER TABLE outbox DROP COLUMN from_name; UPDATE meta SET value = '7' WHERE key = 'schema_version';");
+        db.exec("ALTER TABLE outbox DROP COLUMN plain; ALTER TABLE outbox DROP COLUMN quote; ALTER TABLE outbox DROP COLUMN from_name; UPDATE meta SET value = '7' WHERE key = 'schema_version';");
         db.prepare("DELETE FROM meta WHERE key = 'keyboard_removed'").run();
         db.prepare("INSERT OR REPLACE INTO meta(key, value) VALUES ('keyboard_placeholder', '')").run();
         db.prepare('DELETE FROM reactions').run();
