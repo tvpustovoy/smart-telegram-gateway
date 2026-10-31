@@ -116,7 +116,7 @@ describe('M14 · связь с другими агентами', () => {
     assert.match(network.sent[0]!.text, new RegExp(`Слово владельца № ${seq}`));
     assert.match(network.sent[0]!.text, /Проверь, пожалуйста, отчёт за неделю/);
     assert.match(network.sent[0]!.text, /Записка агента, не слово владельца[^]*Нужен ответ до вечера/);
-    const line = await waitSent(s, gw, (m) => m.text === `⚙ Передано: Исследователь, с запиской`, 'строки о передаче');
+    const line = await waitSent(s, gw, (m) => m.text === `⚙ ➡\uFE0F Исследователь, с запиской`, 'строки о передаче');
     const said = q1<{ message_id: number }>(s.home, 'SELECT message_id FROM events WHERE seq = ?', seq)!.message_id;
     assert.equal((line.reply_parameters as { message_id: number }).message_id, said, 'строка — ответом на слово владельца');
     assert.equal(status(r.id), 'sent');
@@ -203,7 +203,7 @@ describe('M14 · связь с другими агентами', () => {
     await sleep(100);
     assert.equal(network.sent.length, 1, 'остальные не ушли');
     assert.deepEqual(ids.slice(1).map(status), ['dropped', 'dropped']);
-    await waitSent(s, gw, (m) => m.text === `⚙ Передано: Исследователь, с запиской`, 'строки с запиской после «стопа»');
+    await waitSent(s, gw, (m) => m.text === `⚙ ➡\uFE0F Исследователь, с запиской`, 'строки с запиской после «стопа»');
   });
 
   it('вторая связь не вытесняет первую: письмо одно', async () => {
@@ -277,7 +277,7 @@ describe('M14 · связь с другими агентами', () => {
     await linked();
     const seq = await say('Не удаляй базу, это важно');
     resultOf(await ch.relay(seq, 'Исследователь', turn, { excerpt: 'удаляй базу', note: 'срочно' }));
-    await waitSent(s, gw, (m) => m.text === `⚙ Передано: Исследователь, отрывок: «удаляй базу», с запиской`, 'строки с отрывком');
+    await waitSent(s, gw, (m) => m.text === `⚙ ➡\uFE0F Исследователь, отрывок: «удаляй базу», с запиской`, 'строки с отрывком');
   });
 
   it('чужой адрес: события нет, письмо снято из ящика, запись в журнале', async () => {

@@ -231,7 +231,7 @@ export class PeerService {
     if (row && (row.status === 'pending' || row.status === 'dropped')) {
       transaction(this.ctx.db, () => {
         sql(this.ctx.db, "UPDATE peer_messages SET status = 'sent', wire_id = ?, text = NULL, detail = NULL, sent_at = ? WHERE id = ?").run(msg.wire_id, this.ctx.clock.now(), msg.id);
-        this.ownerLine(row, `⚙ Передано: ${row.peer}${row.detail ? `, ${row.detail}` : ''}`);
+        this.ownerLine(row, `⚙ ➡\uFE0F ${row.peer}${row.detail ? `, ${row.detail}` : ''}`);
       });
       this.ctx.journal.write('peer_sent', { id: msg.id, to: row.peer, wire_id: msg.wire_id.slice(0, 12) });
       this.hooks.onQueued();
