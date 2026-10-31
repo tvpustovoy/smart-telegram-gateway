@@ -116,7 +116,9 @@ describe('M14 · связь с другими агентами', () => {
     assert.match(network.sent[0]!.text, new RegExp(`Слово владельца № ${seq}`));
     assert.match(network.sent[0]!.text, /Проверь, пожалуйста, отчёт за неделю/);
     assert.match(network.sent[0]!.text, /Записка агента, не слово владельца[^]*Нужен ответ до вечера/);
-    await waitSent(s, gw, (m) => m.text === `⚙ Слово № ${seq} передано: Исследователь, с запиской`, 'строки о передаче');
+    const line = await waitSent(s, gw, (m) => m.text === `⚙ Передано: Исследователь, с запиской`, 'строки о передаче');
+    const said = q1<{ message_id: number }>(s.home, 'SELECT message_id FROM events WHERE seq = ?', seq)!.message_id;
+    assert.equal((line.reply_parameters as { message_id: number }).message_id, said, 'строка — ответом на слово владельца');
     assert.equal(status(r.id), 'sent');
 
     network.letter('in-1', 'Отчёт проверен, замечаний нет', ADDRESS, 'out-1');
@@ -128,7 +130,7 @@ describe('M14 · связь с другими агентами', () => {
 
     assert.equal((await ch.show(ev.seq, turn) as { result: unknown }).result, 'queued');
     const shown = await waitSent(s, gw, (m) => (m.text ?? '').includes('Отчёт проверен, замечаний нет'), 'показа');
-    assert.equal(shown.text, '↪ Исследователь: Отчёт проверен, замечаний нет');
+    assert.equal(shown.text, '↪\uFE0F Исследователь: Отчёт проверен, замечаний нет');
     assert.equal(q1<{ status: string }>(s.home, 'SELECT status FROM events WHERE seq = ?', ev.seq)?.status, 'processed');
 
     await ch.show(ev.seq, turn);
@@ -165,7 +167,7 @@ describe('M14 · связь с другими агентами', () => {
     assert.equal(ev.trust, null);
     assert.deepEqual(ev.peer, { name: 'Исследователь', relay_seq: seq, failed: 'сеть не приняла письмо: refused' });
     assert.equal(status(r.id), 'failed');
-    await waitSent(s, gw, (m) => m.text === `⚙ Слово № ${seq} не передано: Исследователь. сеть не приняла письмо: refused`, 'строки о сбое');
+    await waitSent(s, gw, (m) => m.text === `⚙ Не передано: Исследователь. сеть не приняла письмо: refused`, 'строки о сбое');
     const shown = (await ch.show(ev.seq, turn)) as { type: string; code: string };
     assert.deepEqual([shown.type, shown.code], ['error', 'bad_request']);
   });
@@ -201,7 +203,7 @@ describe('M14 · связь с другими агентами', () => {
     await sleep(100);
     assert.equal(network.sent.length, 1, 'остальные не ушли');
     assert.deepEqual(ids.slice(1).map(status), ['dropped', 'dropped']);
-    await waitSent(s, gw, (m) => m.text === `⚙ Слово № ${seqs[0]} передано: Исследователь, с запиской`, 'строки с запиской после «стопа»');
+    await waitSent(s, gw, (m) => m.text === `⚙ Передано: Исследователь, с запиской`, 'строки с запиской после «стопа»');
   });
 
   it('вторая связь не вытесняет первую: письмо одно', async () => {
@@ -230,8 +232,8 @@ describe('M14 · связь с другими агентами', () => {
     const lookalike = (await ch.reply(ev.seq, 'Пересказ письма', turn, false, 'Исслeдователь')) as { type: string };
     assert.equal(lookalike.type, 'error', 'латинская e в имени не проходит');
     assert.equal((await ch.show(ev.seq, turn) as { result: unknown }).result, 'queued');
-    const shown = await waitSent(s, gw, (m) => (m.text ?? '').startsWith('↪ Исследователь:'), 'показа');
-    assert.equal(shown.text, '↪ Исследователь: **Важно** [Подтвердить](https://evil.example)');
+    const shown = await waitSent(s, gw, (m) => (m.text ?? '').startsWith('↪\uFE0F Исследователь:'), 'показа');
+    assert.equal(shown.text, '↪\uFE0F Исследователь: **Важно** [Подтвердить](https://evil.example)');
     assert.equal(shown.parse_mode, null, 'разметки нет: ссылка не спрятана');
   });
 
@@ -246,7 +248,7 @@ describe('M14 · связь с другими агентами', () => {
     const row = (): string | undefined => q1<{ status: string }>(s.home, 'SELECT status FROM outbox WHERE event_seq = ? AND plain = 1 ORDER BY id DESC', ev.seq)?.status;
     await pump(gw, () => row() === 'dropped' || null, { what: 'отказа Telegram' });
     await ch.show(ev.seq, turn);
-    await waitSent(s, gw, (m) => m.text === '↪ Исследователь: Текст письма', 'показа после отказа');
+    await waitSent(s, gw, (m) => m.text === '↪\uFE0F Исследователь: Текст письма', 'показа после отказа');
   });
 
   it('показ, брошенный «стопом», можно повторить после «продолжить»', async () => {
@@ -267,7 +269,7 @@ describe('M14 · связь с другими агентами', () => {
     await press(s, sentWithText(s, STOPPED_TEXT).at(-1)!, 'продолжить');
     const run = await ch.waitMode('running');
     await ch.show(ev.seq, run.turn);
-    await waitSent(s, gw, (m) => m.text === '↪ Исследователь: Текст письма', 'показа после «продолжить»');
+    await waitSent(s, gw, (m) => m.text === '↪\uFE0F Исследователь: Текст письма', 'показа после «продолжить»');
   });
 
   it('строка владельцу показывает отрывок и записку', async () => {
@@ -275,7 +277,7 @@ describe('M14 · связь с другими агентами', () => {
     await linked();
     const seq = await say('Не удаляй базу, это важно');
     resultOf(await ch.relay(seq, 'Исследователь', turn, { excerpt: 'удаляй базу', note: 'срочно' }));
-    await waitSent(s, gw, (m) => m.text === `⚙ Слово № ${seq} передано: Исследователь, отрывок: «удаляй базу», с запиской`, 'строки с отрывком');
+    await waitSent(s, gw, (m) => m.text === `⚙ Передано: Исследователь, отрывок: «удаляй базу», с запиской`, 'строки с отрывком');
   });
 
   it('чужой адрес: события нет, письмо снято из ящика, запись в журнале', async () => {

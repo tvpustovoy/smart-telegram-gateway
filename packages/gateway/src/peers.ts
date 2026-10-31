@@ -231,7 +231,7 @@ export class PeerService {
     if (row && (row.status === 'pending' || row.status === 'dropped')) {
       transaction(this.ctx.db, () => {
         sql(this.ctx.db, "UPDATE peer_messages SET status = 'sent', wire_id = ?, text = NULL, detail = NULL, sent_at = ? WHERE id = ?").run(msg.wire_id, this.ctx.clock.now(), msg.id);
-        enqueueServiceLine(this.ctx, `⚙ Слово № ${row.event_seq ?? '?'} передано: ${row.peer}${row.detail ? `, ${row.detail}` : ''}`);
+        this.ownerLine(row, `⚙ Передано: ${row.peer}${row.detail ? `, ${row.detail}` : ''}`);
       });
       this.ctx.journal.write('peer_sent', { id: msg.id, to: row.peer, wire_id: msg.wire_id.slice(0, 12) });
       this.hooks.onQueued();
@@ -267,6 +267,12 @@ export class PeerService {
     return sql(this.ctx.db, 'SELECT * FROM peer_messages WHERE id = ?').get(id) as PeerRow | undefined;
   }
 
+  /** Строка владельцу о письме — ответом на его сообщение, поэтому номер события ему не нужен. */
+  private ownerLine(row: PeerRow, text: string): void {
+    const ev = sql(this.ctx.db, 'SELECT message_id FROM events WHERE seq = ?').get(row.event_seq) as { message_id: number | null } | undefined;
+    enqueueServiceLine(this.ctx, text, { replyToMessageId: ev?.message_id ?? null });
+  }
+
   /** Письмо закрыто с отказом: агент получает событие, владелец — строку. */
   private fail(row: PeerRow, reason: string): void {
     const owner = this.ctx.config.owner_id;
@@ -274,7 +280,7 @@ export class PeerService {
       sql(this.ctx.db, "UPDATE peer_messages SET status = 'failed', error = ?, text = NULL, detail = NULL WHERE id = ?").run(reason, row.id);
       if (owner === null) return;
       this.insertEvent(owner, null, null, { name: row.peer, relay_seq: row.event_seq, failed: reason });
-      enqueueServiceLine(this.ctx, `⚙ Слово № ${row.event_seq ?? '?'} не передано: ${row.peer}. ${reason}`);
+      this.ownerLine(row, `⚙ Не передано: ${row.peer}. ${reason}`);
     });
     this.ctx.journal.write('peer_failed', { id: row.id, to: row.peer, reason });
     this.hooks.onEvent();

@@ -17,7 +17,7 @@ The chat interface and the design documents are in Russian; the entries below de
   `relay`; the gateway takes the text or transcript from its database, so the go-between cannot rewrite it, and checks an
   excerpt word for word. The peer's answer wakes the agent as an ordinary event labelled untrusted; `show` gives it to you
   verbatim with the `↪ Name:` mark. `agents` lists the peers and what is known about the link, never whether a session
-  is alive. The gateway itself tells you a line when a letter went or failed.
+  is alive. The gateway itself tells you when a letter went or failed, in a line that replies to your message.
 - `stg-link`: a separate process that carries letters between the gateway and an agent network. The network plugs in
   as a module named at start (`--port`, see `packages/link/src/port.ts`), so the gateway gains no dependency. Without
   `stg-link` the gateway works as before and letters wait. Peers are listed in `peers` in `config.yaml`; the list is also
@@ -26,6 +26,7 @@ The chat interface and the design documents are in Russian; the entries below de
 ### Changed
 
 - Schema v15: event kind `peer`, column `peer_json`, table `peer_messages`.
+- The `↪` mark is sent with U+FE0F, so Telegram shows it as an emoji; it is recognised with or without it.
 
 ## 0.4.1 - 2026-10-28
 

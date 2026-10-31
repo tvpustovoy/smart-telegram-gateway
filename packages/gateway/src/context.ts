@@ -141,6 +141,8 @@ export interface ServiceLineOptions {
   replyMarkup?: GatewayMarkup | null;
   /** Без разметки шлюза (ответ «где мы» — его удаляют). */
   bare?: boolean;
+  /** Ответом на какое сообщение Telegram. */
+  replyToMessageId?: number | null;
 }
 
 /** Служебная строка владельцу в личку (`⚙ …`). null — владельца нет (первая настройка). */
@@ -158,6 +160,7 @@ export function enqueueServiceLine(ctx: Ctx, text: string, opts: number | null |
     origin: 'gateway',
     replyMarkup: o.replyMarkup ?? null,
     bare: o.bare ?? false,
+    replyToMessageId: o.replyToMessageId ?? null,
   });
 }
 

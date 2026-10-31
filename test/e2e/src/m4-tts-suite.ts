@@ -88,7 +88,7 @@ export function ttsSuite(dialect: VoiceDialect): void {
       const n = sent().length;
       assert.ok((await ch.reply(seq, 'Нашла **две** статьи', turn, true, 'Исследователь')).type === 'ack');
       const v = await pump(gw, () => sent().slice(n).find((m) => m.method === 'sendVoice'), { what: 'голосового' });
-      assert.equal(v.caption, '↪ Исследователь: Нашла <b>две</b> статьи');
+      assert.equal(v.caption, '↪\uFE0F Исследователь: Нашла <b>две</b> статьи');
       assert.equal(s.synth.tts.at(-1)?.text, 'Нашла две статьи', 'имя не озвучивается');
       const seq2 = await ownerSays('голосом про шестерёнку');
       const n2 = sent().length;
