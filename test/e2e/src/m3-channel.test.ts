@@ -38,7 +38,7 @@ describe('M3 · канал под поддельным Claude Code', () => {
     await s.close();
   });
 
-  it('возможности: claude/channel и tools; имя сервера; instructions; восемь инструментов (media — 0.3, send_file — 0.3.3), у episode нет role', async () => {
+  it('возможности: claude/channel и tools; имя сервера; instructions; инструменты (media — 0.3, send_file — 0.3.3, relay, show, agents — 5.19), у episode нет role', async () => {
     fc = await FakeClaude.start(s.home);
     const caps = fc.client.getServerCapabilities();
     assert.deepEqual(caps?.experimental, { 'claude/channel': {} });
@@ -48,7 +48,7 @@ describe('M3 · канал под поддельным Claude Code', () => {
     const instr = fc.client.getInstructions() ?? '';
     for (const w of ['проверка канала', 'повтор', 'чужое', 'reply(seq', 'done(seqs)', 'Markdown', 'episode_summary']) assert.ok(instr.includes(w), `instructions без «${w}»`);
     const tools = (await fc.client.listTools()).tools;
-    assert.deepEqual(tools.map((t) => t.name), ['reply', 'done', 'episode', 'episode_summary', 'where', 'rule', 'media', 'send_file']);
+    assert.deepEqual(tools.map((t) => t.name), ['reply', 'done', 'episode', 'episode_summary', 'where', 'rule', 'media', 'send_file', 'relay', 'show', 'agents']);
     const ep = tools.find((t) => t.name === 'episode')!;
     assert.ok(!('role' in ((ep.inputSchema.properties ?? {}) as object)), 'episode без role');
   });

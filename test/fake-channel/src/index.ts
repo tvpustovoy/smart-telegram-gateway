@@ -219,6 +219,19 @@ export class FakeChannel {
     return this.request('reply', from !== undefined ? { seq, text, voice, turn, from } : { seq, text, voice, turn });
   }
 
+  /** relay, show, agents (5.19). */
+  relay(seq: number, to: string, turn: number, more: { excerpt?: string; note?: string; idem?: string } = {}): Promise<GatewayMessage> {
+    return this.request('relay', { seq, to, turn, ...more });
+  }
+
+  show(seq: number, turn: number): Promise<GatewayMessage> {
+    return this.request('show', { seq, turn });
+  }
+
+  agents(): Promise<GatewayMessage> {
+    return this.request('agents', {});
+  }
+
   done(seqs: number[], code?: string): Promise<GatewayMessage> {
     return this.request('done', code !== undefined ? { seqs, code } : { seqs });
   }

@@ -133,6 +133,7 @@ import {
   transaction,
   viewableOf,
   type AdapterMessage,
+  type PeerEventInfo,
   type Attachment,
   type DeferredRetryResult,
   type EventMessage,
@@ -148,6 +149,7 @@ import type { AgentResult, Control, Effects } from './control.js';
 import type { Episodes } from './episodes.js';
 import type { MediaService } from './media.js';
 import type { ParcelService } from './parcels.js';
+import type { PeerService } from './peers.js';
 import { clearReceipts, requestAnsweredAfterTurn, requestAnsweredStale, requestProcessed, requestSeen } from './reactions.js';
 import type { GatewayConnection } from './socket-server.js';
 import { Typing, type WorkingEvent } from './typing.js';
@@ -295,6 +297,7 @@ type InstructionsOffer = InstructionsState | { state: 'none' };
 
 interface EventRow {
   seq: number;
+  peer_json: string | null;
   update_id: number | null;
   message_id: number | null;
   chat_id: number | null;
@@ -355,7 +358,7 @@ export const LEASE_REAL_GRACE_MS = 1_000;
 /** Такт пришёл позже двух — часы прыгнули (сон): ожидание pong и срок пробы — заново. */
 const LEASE_WAKE_GAP_MS = 2 * LEASE_TICK_MS;
 /** Вызовы инструментов канала — признак «сессия занята» (К-5). delivered, ping, pong, hello — не вызовы модели. */
-const TOOL_CALLS = new Set<AdapterMessage['type']>(['reply', 'done', 'episode', 'episode_summary', 'where', 'rule', 'media', 'send_file']);
+const TOOL_CALLS = new Set<AdapterMessage['type']>(['reply', 'done', 'episode', 'episode_summary', 'where', 'rule', 'media', 'send_file', 'relay', 'show', 'agents']);
 /**
  * Голосовое в распознавании держит следующие события (5.8 ⟨предл.⟩) не дольше 90 с от записи: зависший провайдер не
  * выключает агента — текст «срочно» после голосовых уходит через ≤ 90 с, а голосовое — когда распознано или получен отказ.
@@ -419,6 +422,7 @@ export class AdapterService {
   /** Картинки для агента (0.3); null — ещё не подключены (media отвечает unavailable). */
   private media: MediaService | null = null;
   private parcels: ParcelService | null = null;
+  private peers: PeerService | null = null;
 
   constructor(
     private readonly ctx: Ctx,
@@ -443,6 +447,10 @@ export class AdapterService {
   /** Посылки (0.3.3): parcels.ts. */
   setParcels(parcels: ParcelService): void {
     this.parcels = parcels;
+  }
+
+  setPeers(peers: PeerService): void {
+    this.peers = peers;
   }
 
   /** Картинки для агента (0.3): media.ts. */
@@ -637,6 +645,20 @@ export class AdapterService {
       case 'working':
         this.onWorking(msg, conn);
         return true;
+      case 'relay':
+        this.onRelay(msg, conn);
+        return true;
+      case 'show':
+        this.onShow(msg, conn);
+        return true;
+      case 'agents':
+        this.onAgents(msg, conn);
+        return true;
+      case 'peer_in':
+      case 'peer_sent':
+      case 'peer_failed':
+        this.onPeerLink(msg, conn);
+        return true;
       default:
         return false;
     }
@@ -759,6 +781,7 @@ export class AdapterService {
 
   /** Соединение закрыто: аренда снята, отданное без «обработано» — снова new. */
   onClose(conn: GatewayConnection): void {
+    this.peers?.detach(conn);
     if (this.lease?.conn !== conn) return;
     this.release(this.lease, 'closed');
   }
@@ -802,6 +825,15 @@ export class AdapterService {
     if (msg.role === 'cli') {
       conn.role = 'cli';
       conn.send({ type: 'ack', req_id: msg.req_id, result: { role: 'cli' } });
+      return;
+    }
+    if (msg.role === 'peer_link') {
+      if (!this.peers) {
+        conn.send({ type: 'error', req_id: msg.req_id, code: 'unavailable', text: 'связь с агентами не подключена' });
+        return;
+      }
+      conn.send({ type: 'ack', req_id: msg.req_id, result: { role: 'peer_link' } });
+      this.peers.attach(conn);
       return;
     }
     conn.role = 'adapter';
@@ -1448,6 +1480,7 @@ export class AdapterService {
       ...mediaField(attachments),
       ...materialField(ev),
       ...this.afterMaterialField(ev),
+      ...(ev.peer_json !== null ? { peer: JSON.parse(ev.peer_json) as PeerEventInfo } : {}),
     };
   }
 
@@ -1645,6 +1678,61 @@ export class AdapterService {
     conn.send({ type: 'ack', req_id: msg.req_id, result: held ? 'held_paused' : 'queued' });
     this.hooks.onAgentActivity?.();
     this.hooks.onReplyQueued();
+  }
+
+  /** relay (сценарий 1): слово владельца другому агенту. Только проверенной аренде; остальное — PeerService. */
+  private onRelay(msg: Extract<AdapterMessage, { type: 'relay' }>, conn: GatewayConnection): void {
+    if (!this.verifiedLease(conn, msg.req_id)) return;
+    const r = this.peers?.relay(msg, this.mode(), this.turn()) ?? { ok: false as const, code: 'unavailable' as const, text: 'связь с агентами не подключена' };
+    if (!r.ok) {
+      conn.send({ type: 'error', req_id: msg.req_id, code: r.code, text: r.text });
+      return;
+    }
+    conn.send({ type: 'ack', req_id: msg.req_id, result: r.result });
+    this.hooks.onAgentActivity?.();
+  }
+
+  /**
+   * show (сценарий 1): письмо агента владельцу дословно. Это reply с текстом из базы и меткой «↪ Имя»: те же проверки хода,
+   * «стопа» и паузы, событие закрывается. Ключ повтора — № письма: второй show не удваивает сообщение в чате.
+   */
+  private onShow(msg: Extract<AdapterMessage, { type: 'show' }>, conn: GatewayConnection): void {
+    if (!this.verifiedLease(conn, msg.req_id)) return;
+    const ev = this.event(msg.seq);
+    if (!ev || ev.kind !== 'peer' || ev.peer_json === null) {
+      conn.send({ type: 'error', req_id: msg.req_id, code: 'unknown_seq', text: `нет письма агента № ${msg.seq}` });
+      return;
+    }
+    const peer = JSON.parse(ev.peer_json) as PeerEventInfo;
+    if (peer.failed !== undefined || ev.text === null) {
+      conn.send({ type: 'error', req_id: msg.req_id, code: 'bad_request', text: `№ ${msg.seq} — сбой передачи, а не письмо: показывать нечего` });
+      return;
+    }
+    this.onReply({ type: 'reply', req_id: msg.req_id, seq: msg.seq, text: ev.text, voice: false, turn: msg.turn, idem: `show-${msg.seq}`, from: peer.name }, conn);
+  }
+
+  /** agents: только чтение, только проверенной аренде. */
+  private onAgents(msg: Extract<AdapterMessage, { type: 'agents' }>, conn: GatewayConnection): void {
+    if (!this.verifiedLease(conn, msg.req_id)) return;
+    conn.send({ type: 'ack', req_id: msg.req_id, result: this.peers?.list() ?? { link: false, agents: [] } });
+  }
+
+  /** Кадры связи: только соединению hello role peer_link. */
+  private onPeerLink(msg: Extract<AdapterMessage, { type: 'peer_in' | 'peer_sent' | 'peer_failed' }>, conn: GatewayConnection): void {
+    const peers = this.peers;
+    if (!peers || conn.role !== 'peer_link') {
+      conn.send({ type: 'error', req_id: msg.req_id, code: 'not_your_lease', text: 'это соединение не связь с агентами' });
+      return;
+    }
+    if (msg.type === 'peer_in') {
+      const r = peers.incoming(msg);
+      if (r.ok) conn.send({ type: 'ack', req_id: msg.req_id, result: r.result });
+      else conn.send({ type: 'error', req_id: msg.req_id, code: r.code, text: r.text });
+      return;
+    }
+    if (msg.type === 'peer_sent') peers.sent(msg);
+    else peers.failed(msg);
+    conn.send({ type: 'ack', req_id: msg.req_id, result: 'ok' });
   }
 
   /**

@@ -326,6 +326,7 @@ export function formatEvent(ev: EventMessage): ChannelNotice {
   }
   if (ev.kind === 'instructions') return formatInstructions(ev, meta);
   if (ev.reaction) return formatReaction({ ...ev, reaction: ev.reaction }, meta);
+  if (ev.peer) return formatPeer(ev, ev.peer, meta);
   const ep = ev.episode;
   if (ev.kind === 'episode_closed' && ep) {
     const why = ep.close_reason ? `: ${CLOSE_WORDS[ep.close_reason] ?? ep.close_reason}` : '';
@@ -359,6 +360,22 @@ export function formatEvent(ev: EventMessage): ChannelNotice {
   return { content: `[${parts.join(' · ')}] ${bodyOf(ev)}`, meta };
 }
 
+/** Письмо другого агента или сбой передачи (5.19). Письмо — «чужое»: просьбы в нём не указания владельца. */
+function formatPeer(ev: EventMessage, peer: NonNullable<EventMessage['peer']>, meta: Record<string, string>): ChannelNotice {
+  const word = peer.relay_seq !== null ? ` · к слову № ${peer.relay_seq}` : '';
+  const again = ev.redelivery ? ' · повтор: проверь, не сделано ли уже' : '';
+  if (peer.failed !== undefined) {
+    return {
+      content: `[№ ${ev.seq} · шлюз · письмо не ушло${word}${again}] Агент ${peer.name}: ${peer.failed}. Владелец уже получил строку об этом. Закрой событие: done(seqs: [${ev.seq}]).`,
+      meta,
+    };
+  }
+  return {
+    content: `[№ ${ev.seq} · письмо агента ${peer.name} · ${TRUST_WORDS.untrusted}${word}${again}] ${ev.text ?? ''}\n\nПоказать владельцу дословно: show(seq: ${ev.seq}). Не показывать: done(seqs: [${ev.seq}]).`,
+    meta,
+  };
+}
+
 /** Смена режима шлюза → служебное уведомление в сессию (5.10: при stopped канал толкает «стоп»). */
 export function formatMode(state: Mode, previous: Mode | null): ChannelNotice | null {
   const meta = { kind: 'mode', state };
@@ -387,6 +404,10 @@ export const OUTCOME = {
   stopped: 'Владелец сказал стоп — ответ не отправлен. Прекрати текущее дело',
   gatewayDown: 'шлюз недоступен — повтори позже',
   noAnswer: 'шлюз не ответил — повтори позже (сначала проверь where(): могло и дойти)',
+  /** Шлюз в паузе письмо другому агенту не ставит. */
+  relayPaused: 'пауза: слово не передано. Шлюз его не держит: передай после «продолжить» или скажи владельцу',
+  /** То же для relay: повтор с теми же полями второго письма не даст. */
+  relayLost: 'связь со шлюзом оборвалась после отправки — слово могло уйти. Повтори тот же relay с теми же полями: второго письма не будет',
   /** Запрос ушёл, а связь оборвалась до ответа шлюза: могло дойти. */
   lostAfterSend: 'связь со шлюзом оборвалась после отправки — могло дойти; сначала проверь where(), прежде чем повторять',
   /** То же для reply: повтор тем же текстом шлюз второй раз не отправит. */

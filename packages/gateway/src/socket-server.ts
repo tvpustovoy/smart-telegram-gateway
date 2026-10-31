@@ -23,7 +23,7 @@ export class GatewayConnection {
   readonly id = ++GatewayConnection.seq;
 
   /** Кто на том конце: после `hello role cli` — CLI (аренду не берёт, может просить повтор отложенного). */
-  role: 'adapter' | 'cli' | null = null;
+  role: 'adapter' | 'cli' | 'peer_link' | null = null;
 
   constructor(private readonly sock: net.Socket) {}
 

@@ -244,10 +244,32 @@ describe('канал: событие → уведомление (5.11)', () => {
   });
 });
 
+describe('письмо другого агента (5.19)', () => {
+  it('письмо — «чужое», с именем, словом и подсказкой show; повтор виден', () => {
+    const peer = { name: 'Исследователь', relay_seq: 12 };
+    const { content } = formatEvent(ev({ seq: 30, kind: 'peer', trust: 'untrusted', text: 'Готово, смотри отчёт', peer }));
+    assert.match(content, /^\[№ 30 · письмо агента Исследователь · .* · к слову № 12\] Готово, смотри отчёт/);
+    assert.match(content, /show\(seq: 30\)/);
+    assert.match(content, /done\(seqs: \[30\]\)/);
+    assert.match(formatEvent(ev({ seq: 30, kind: 'peer', trust: 'untrusted', text: 'x', peer, redelivery: true })).content, /повтор: проверь/);
+  });
+
+  it('без слова: заголовок без «к слову»', () => {
+    const { content } = formatEvent(ev({ seq: 31, kind: 'peer', trust: 'untrusted', text: 'сам', peer: { name: 'А', relay_seq: null } }));
+    assert.ok(!content.includes('к слову'));
+  });
+
+  it('сбой передачи — от шлюза, без show', () => {
+    const { content } = formatEvent(ev({ seq: 32, kind: 'peer', trust: null, text: null, peer: { name: 'А', relay_seq: 12, failed: 'сеть недоступна' } }));
+    assert.match(content, /^\[№ 32 · шлюз · письмо не ушло · к слову № 12\] Агент А: сеть недоступна/);
+    assert.ok(!content.includes('show('));
+  });
+});
+
 describe('канал: инструменты, instructions, сроки', () => {
-  it('восемь инструментов 5.11 (media — 0.3, send_file — 0.3.3); у episode нет role; схемы — объекты', () => {
+  it('инструменты 5.11 (media — 0.3, send_file — 0.3.3, relay, show, agents — 5.19); у episode нет role; схемы — объекты', () => {
     assert.deepEqual(TOOLS.map((t) => t.name), [...TOOL_NAMES]);
-    assert.deepEqual([...TOOL_NAMES], ['reply', 'done', 'episode', 'episode_summary', 'where', 'rule', 'media', 'send_file']);
+    assert.deepEqual([...TOOL_NAMES], ['reply', 'done', 'episode', 'episode_summary', 'where', 'rule', 'media', 'send_file', 'relay', 'show', 'agents']);
     for (const t of TOOLS) assert.equal(t.inputSchema.type, 'object');
     const ep = TOOLS.find((t) => t.name === 'episode')!;
     assert.ok(!('role' in ep.inputSchema.properties));

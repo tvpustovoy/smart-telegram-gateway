@@ -48,7 +48,8 @@ export function answeredBy(tool: string, args: Record<string, unknown>, ok: bool
   if (!ok) return { seqs: [], episode: null };
   switch (tool) {
     case 'reply':
-    case 'send_file': {
+    case 'send_file':
+    case 'show': {
       const s = int(args.seq);
       return { seqs: s === null ? [] : [s], episode: null };
     }
@@ -78,6 +79,10 @@ export function describeCall(tool: string, args: Record<string, unknown>, out: T
     }
     case 'send_file':
       return { kind: 'out', text: `send_file${seq !== null ? ` № ${seq}` : ''}: ${short(String(args.path ?? ''), 120)} → ${verdict}` };
+    case 'show':
+      return { kind: 'out', text: `show № ${String(args.seq ?? '?')} → ${verdict}` };
+    case 'relay':
+      return { kind: 'out', text: `relay № ${String(args.seq ?? '?')} → ${short(String(args.to ?? ''), 64)}: ${verdict}` };
     case 'done': {
       const raw = Array.isArray(args.seqs) ? args.seqs : [args.seqs];
       return { kind: 'tool', text: `done № ${raw.map((v) => String(v)).join(', ')} → ${verdict}` };

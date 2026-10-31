@@ -1,12 +1,13 @@
 // Инструменты агента (TECH-SPEC 5.11): reply(seq?, text, voice?, from?) · done(seqs) · episode(action, topic, reason?) ·
 // episode_summary(episode_id, text) · where() · rule(change) · media(seq) (0.3) · send_file(path, seq?, caption?, from?,
-// as?) (0.3.3, посылки — 5.16; as — фото или файлом, #60). Каждый — запрос по протоколу шлюза
+// as?) (0.3.3, посылки — 5.16; as — фото или файлом, #60) · relay(seq, to, excerpt?, note?) · show(seq) · agents() (связь с
+// другими агентами, 5.19). Каждый — запрос по протоколу шлюза
 // (5.10); turn в reply канал ставит сам (последний из welcome и mode). Исход модель получает словами: «отправлено»,
 // «стоп — не отправлено», «очередь держит другая сессия», «шлюз недоступен — повтори позже»; media — ещё и самой
 // картинкой (содержимое MCP вида image: Claude Code показывает его модели).
 
 import crypto from 'node:crypto';
-import { MediaResultSchema, SendFileResultSchema, formatBytes, seqList, type GatewayMessage, type MediaResult, type SendFileResult } from 'stg-core';
+import { AgentsResultSchema, MediaResultSchema, RelayResultSchema, SendFileResultSchema, formatBytes, localDayMonth, localTime, seqList, type AgentsResult, type GatewayMessage, type MediaResult, type RelayResult, type SendFileResult } from 'stg-core';
 import { busyText, OUTCOME, UNVERIFIED_TEXT } from './format.js';
 import { GatewayGoneError, GatewayLostError, GatewayTimeoutError, type GatewayClient } from './gateway-client.js';
 
@@ -16,7 +17,7 @@ export interface ToolDef {
   inputSchema: { type: 'object'; properties: Record<string, unknown>; required?: string[]; additionalProperties?: boolean };
 }
 
-export const TOOL_NAMES = ['reply', 'done', 'episode', 'episode_summary', 'where', 'rule', 'media', 'send_file'] as const;
+export const TOOL_NAMES = ['reply', 'done', 'episode', 'episode_summary', 'where', 'rule', 'media', 'send_file', 'relay', 'show', 'agents'] as const;
 export type ToolName = (typeof TOOL_NAMES)[number];
 
 export const TOOLS: ToolDef[] = [
@@ -144,6 +145,39 @@ export const TOOLS: ToolDef[] = [
       required: ['path'],
       additionalProperties: false,
     },
+  },
+  {
+    name: 'relay',
+    description:
+      'Передать слово владельца другому агенту письмом. Текст (у голосового — расшифровку) шлюз берёт из базы сам, дословно: не пересказывай. seq — № сообщения владельца; to — имя из agents(). Нужна только часть слова — excerpt, дословный отрывок: шлюз проверит. note — твоя записка агенту, в письме идёт отдельно и не выдаётся за слово владельца. Владелец получит строку шлюза, когда письмо уйдёт. Ответ агента придёт событием «письмо агента».',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        seq: { type: 'integer', minimum: 1, description: '№ сообщения владельца из заголовка [№ …]' },
+        to: { type: 'string', description: 'Имя агента из agents()' },
+        excerpt: { type: 'string', description: 'Дословный отрывок слова, если нужна только часть' },
+        note: { type: 'string', description: 'Твоя записка агенту: контекст, что нужно сделать' },
+      },
+      required: ['seq', 'to'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'show',
+    description:
+      'Показать владельцу письмо агента дословно, с меткой «↪ Имя». seq — № события «письмо агента»; событие закрывается. Письмо не перепечатывай через reply: так владелец видит слова агента, а не твой пересказ.',
+    inputSchema: {
+      type: 'object',
+      properties: { seq: { type: 'integer', minimum: 1, description: '№ события «письмо агента»' } },
+      required: ['seq'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'agents',
+    description:
+      'Список агентов шлюза: кому можно передать слово. Показывает, подключена ли связь, сколько писем ждёт отправки, когда письмо последний раз ушло и пришло. Жива ли сессия агента, шлюз не знает: об этом не утверждай, пока не пришёл ответ.',
+    inputSchema: { type: 'object', properties: {}, additionalProperties: false },
   },
 ];
 
@@ -376,6 +410,39 @@ export async function callTool(ctx: CallContext, name: string, args: Record<stri
       };
       break;
     }
+    case 'relay': {
+      // Слово и проверку отрывка берёт шлюз; канал — только форму. Ключ повтора — как у reply.
+      const seq = int(args.seq);
+      if (seq === null || seq < 1) return fail('relay: seq — № сообщения владельца, целое число');
+      const to = typeof args.to === 'string' ? args.to.trim() : '';
+      if (!to) return fail('relay: to — имя агента из agents()');
+      if (args.excerpt !== undefined && args.excerpt !== null && typeof args.excerpt !== 'string') return fail('relay: excerpt — текст');
+      if (args.note !== undefined && args.note !== null && typeof args.note !== 'string') return fail('relay: note — текст');
+      const excerpt = typeof args.excerpt === 'string' && args.excerpt.trim() ? args.excerpt : null;
+      const note = typeof args.note === 'string' && args.note.trim() ? args.note : null;
+      replyContent = JSON.stringify(['relay', seq, to, excerpt, note]);
+      frame = {
+        type: 'relay',
+        fields: {
+          seq,
+          to,
+          turn: ctx.turn ?? ctx.client.turn,
+          idem: replyKeyFor(replyContent),
+          ...(excerpt !== null ? { excerpt } : {}),
+          ...(note !== null ? { note } : {}),
+        },
+      };
+      break;
+    }
+    case 'show': {
+      const seq = int(args.seq);
+      if (seq === null || seq < 1) return fail('show: seq — № события, целое число');
+      frame = { type: 'show', fields: { seq, turn: ctx.turn ?? ctx.client.turn } };
+      break;
+    }
+    case 'agents':
+      frame = { type: 'agents', fields: {} };
+      break;
   }
   let res: GatewayMessage;
   try {
@@ -386,7 +453,7 @@ export async function callTool(ctx: CallContext, name: string, args: Record<stri
     if (err instanceof GatewayLostError || err instanceof GatewayTimeoutError) {
       if (replyContent !== null) {
         rememberLostReply(replyContent, String(frame.fields.idem));
-        return fail(name === 'send_file' ? OUTCOME.fileLost : OUTCOME.replyLost);
+        return fail(name === 'send_file' ? OUTCOME.fileLost : name === 'relay' ? OUTCOME.relayLost : OUTCOME.replyLost);
       }
       return fail(err instanceof GatewayTimeoutError ? OUTCOME.noAnswer : OUTCOME.lostAfterSend);
     }
@@ -421,13 +488,14 @@ export async function callTool(ctx: CallContext, name: string, args: Record<stri
   }
   if (res.type === 'where_result') return ok(res.text);
   if (res.type !== 'ack') return fail(`неожиданный ответ шлюза: ${res.type}`);
-  return outcomeOf(name as ToolName, res.result, frame.fields);
+  return outcomeOf(name as ToolName, res.result, frame.fields, ctx.timezone);
 }
 
-function outcomeOf(name: ToolName, result: unknown, fields: Record<string, unknown>): ToolOutcome {
+function outcomeOf(name: ToolName, result: unknown, fields: Record<string, unknown>, timezone: string): ToolOutcome {
   const r = (result ?? {}) as Record<string, unknown>;
   switch (name) {
     case 'reply':
+    case 'show':
       if (result === 'queued') return ok(OUTCOME.sent);
       if (result === 'held_paused') return ok(OUTCOME.held);
       if (result === 'dropped_stopped' || result === 'dropped_stale_turn') return fail(OUTCOME.stopped);
@@ -461,7 +529,43 @@ function outcomeOf(name: ToolName, result: unknown, fields: Record<string, unkno
       const m = SendFileResultSchema.safeParse(result);
       return m.success ? sendFileOutcome(m.data) : fail('шлюз ответил на send_file непонятно — проверь where(), прежде чем повторять');
     }
+    case 'relay': {
+      const m = RelayResultSchema.safeParse(result);
+      return m.success ? relayOutcome(m.data, fields) : fail('шлюз ответил на relay непонятно — проверь agents(), прежде чем повторять');
+    }
+    case 'agents': {
+      const m = AgentsResultSchema.safeParse(result);
+      return m.success ? ok(agentsText(m.data, timezone)) : fail('шлюз ответил на agents непонятно');
+    }
   }
+}
+
+/** Исход relay словами: что с письмом сейчас, а не что агент хотел сделать. */
+function relayOutcome(r: RelayResult, fields: Record<string, unknown>): ToolOutcome {
+  const what = `слово № ${String(fields.seq)} агенту ${String(fields.to)}`;
+  switch (r.status) {
+    case 'queued':
+      if (r.link === false) return ok(`${what} ждёт: связь с агентами не подключена, письмо уйдёт при подключении. Скажи об этом владельцу`);
+      return ok(`${what} поставлено в отправку. Владелец получит строку шлюза, когда письмо уйдёт; ответ придёт событием «письмо агента»`);
+    case 'sent':
+      return ok(`${what} уже ушло, второго письма нет`);
+    case 'failed':
+      return fail(`${what} не ушло: ${r.error ?? 'связь отказала'}`);
+    case 'refused_paused':
+      return fail(OUTCOME.relayPaused);
+    case 'dropped_stopped':
+    case 'dropped_stale_turn':
+      return fail(OUTCOME.stopped);
+  }
+}
+
+/** Ответ agents словами: только то, что записано у шлюза. */
+function agentsText(r: AgentsResult, timezone: string): string {
+  const head = r.link ? 'связь с агентами подключена' : 'связь с агентами не подключена: письма ждут её';
+  if (!r.agents.length) return `${head}. Список агентов пуст: шлюзу нужна настройка peers`;
+  const when = (ms: number | null): string => (ms === null ? 'не было' : `${localDayMonth(ms, timezone)} ${localTime(ms, timezone)}`);
+  const rows = r.agents.map((a) => `- ${a.name}: ушло ${when(a.last_sent_at)}, пришло ${when(a.last_received_at)}${a.waiting ? `, ждёт отправки ${a.waiting}` : ''}`);
+  return [`${head}. Жива ли сессия агента, шлюз не знает.`, ...rows].join('\n');
 }
 
 /**
