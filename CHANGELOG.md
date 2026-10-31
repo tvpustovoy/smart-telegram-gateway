@@ -9,6 +9,24 @@ an older version after a migration is only possible from a database backup taken
 
 The chat interface and the design documents are in Russian; the entries below describe behavior in English.
 
+## Unreleased
+
+### Added
+
+- Talking to other agents through the gateway's agent (scenario 1). The agent names a message of yours and a peer with
+  `relay`; the gateway takes the text or transcript from its database, so the go-between cannot rewrite it, and checks an
+  excerpt word for word. The peer's answer wakes the agent as an ordinary event labelled untrusted; `show` gives it to you
+  verbatim with the `↪ Name:` mark. `agents` lists the peers and what is known about the link, never whether a session
+  is alive. The gateway itself tells you a line when a letter went or failed.
+- `stg-link`: a separate process that carries letters between the gateway and an agent network. The network plugs in
+  as a module named at start (`--port`, see `packages/link/src/port.ts`), so the gateway gains no dependency. Without
+  `stg-link` the gateway works as before and letters wait. Peers are listed in `peers` in `config.yaml`; the list is also
+  the allow-list.
+
+### Changed
+
+- Schema v15: event kind `peer`, column `peer_json`, table `peer_messages`.
+
 ## 0.4.1 - 2026-10-28
 
 ### Fixed
