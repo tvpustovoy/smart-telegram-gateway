@@ -6,6 +6,7 @@
     { "path": "packages/channel" },
     { "path": "packages/cli" },
     { "path": "packages/codex" },
+    { "path": "packages/link" },
     { "path": "test/fake-telegram" },
     { "path": "test/fake-channel" },
     { "path": "test/fake-elevenlabs" },

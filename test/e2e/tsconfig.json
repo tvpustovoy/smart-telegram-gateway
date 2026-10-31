@@ -24,6 +24,7 @@
     {
       "path": "../../packages/codex"
     },
+    { "path": "../../packages/link" },
     {
       "path": "../fake-telegram"
     },
