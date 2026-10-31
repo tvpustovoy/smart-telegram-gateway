@@ -255,6 +255,19 @@ describe('stg-link: исходящие, сбои', () => {
     await r.close();
   });
 
+  it('поля исхода всегда в пределах кадра: очередь не встаёт из-за порта', async () => {
+    const r = await rig();
+    r.network.verdicts = [{ sent: true, wire_id: 'x'.repeat(300) }];
+    r.gw.push(send);
+    await until(() => r.gw.of('peer_sent').length === 1, 'peer_sent');
+    assert.equal(r.gw.of('peer_sent')[0]?.wire_id.length, 256);
+    r.network.verdicts = [{ sent: false, reason: '   ' }];
+    r.gw.push({ ...send, id: 8 });
+    await until(() => r.gw.of('peer_failed').length === 1, 'peer_failed');
+    assert.match(r.gw.of('peer_failed')[0]?.reason, /без причины/);
+    await r.close();
+  });
+
   it('сеть зависла на отправке: peer_failed без повтора — письмо могло уйти', async () => {
     const r = await rig({ network_ms: 20 });
     r.network.hangSend = true;

@@ -11,7 +11,7 @@
 // - Правда о передаче — у шлюза: строку владельцу ставит код, когда связь подтвердила отправку или отказала; в ней видно,
 //   что ушёл отрывок и что была записка.
 
-import { MAX_REPLY_TEXT, MESSAGE_EVENT_KINDS, cutGraphemes, sql, transaction, type AdapterMessage, type AgentsResult, type ErrorCode, type Mode, type PeerEventInfo, type RelayResult } from 'stg-core';
+import { LEASE_PONG_TIMEOUT_MS, MAX_REPLY_TEXT, MESSAGE_EVENT_KINDS, cutGraphemes, sql, transaction, type AdapterMessage, type AgentsResult, type ErrorCode, type Mode, type PeerEventInfo, type RelayResult } from 'stg-core';
 import { enqueueServiceLine, type Ctx } from './context.js';
 import type { GatewayConnection } from './socket-server.js';
 
@@ -44,6 +44,8 @@ export type RelayOutcome = { ok: true; result: RelayResult } | { ok: false; code
 
 export type PeerInResult = { status: 'accepted'; seq: number } | { status: 'duplicate' | 'unknown_peer' };
 
+/** Настоящее время на ответ, как у аренды: часы могли прыгнуть, а связь не успела ответить. */
+const LEASE_REAL_GRACE_MS = 1_000;
 /** Скобки заголовков письма: в записке агента они заменяются, чтобы записка не выглядела словом владельца. */
 const HEAD_OPEN = '⟦';
 const HEAD_CLOSE = '⟧';
@@ -94,6 +96,8 @@ export class PeerService {
   private link: GatewayConnection | null = null;
   /** Письмо в пути: отдано связи, исхода ещё нет. */
   private inflight: number | null = null;
+  /** ping связи без ответа: время по часам шлюза и настоящее. */
+  private ping: { at: number; real: number } | null = null;
 
   constructor(
     private readonly ctx: Ctx,
@@ -116,6 +120,7 @@ export class PeerService {
   attach(conn: GatewayConnection): void {
     this.link = conn;
     this.inflight = null;
+    this.ping = null;
     conn.role = 'peer_link';
     this.ctx.journal.write('peer_link_up', {});
     this.next();
@@ -125,7 +130,26 @@ export class PeerService {
     if (this.link !== conn) return;
     this.link = null;
     this.inflight = null;
+    this.ping = null;
     this.ctx.journal.write('peer_link_down', {});
+  }
+
+  /** Такт шлюза: зависшая связь держала бы место и письмо в пути; не ответила на ping — соединение закрывается. Сон сбрасывает ожидание. */
+  tick(now: number, real: number, woke: boolean): void {
+    const link = this.link;
+    if (!link) return;
+    if (woke) this.ping = null;
+    if (!this.ping) {
+      this.ping = { at: now, real };
+      link.send({ type: 'ping' });
+    } else if (now - this.ping.at >= LEASE_PONG_TIMEOUT_MS && real - this.ping.real >= LEASE_REAL_GRACE_MS) {
+      this.ctx.journal.write('peer_link_lost', { waited_ms: now - this.ping.at });
+      link.destroy();
+    }
+  }
+
+  pong(conn: GatewayConnection): void {
+    if (this.link === conn) this.ping = null;
   }
 
   /**

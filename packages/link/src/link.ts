@@ -233,8 +233,9 @@ export class PeerLink {
   private async deliver(m: PeerSend): Promise<void> {
     const verdict = await this.sendOnce(m);
     try {
-      if (verdict.sent) await this.report('peer_sent', { id: m.id, wire_id: verdict.wire_id });
-      else await this.report('peer_failed', { id: m.id, reason: verdict.reason.slice(0, 1000) });
+      // Поля — в пределах кадра: отвергнутый исход оставил бы письмо в пути навсегда.
+      if (verdict.sent) await this.report('peer_sent', { id: m.id, wire_id: verdict.wire_id.slice(0, PEER_ID_MAX) || 'без номера' });
+      else await this.report('peer_failed', { id: m.id, reason: verdict.reason.trim().slice(0, 1000) || 'сеть отказала без причины' });
     } catch (err) {
       // Соединения нет: шлюз пришлёт письмо снова при подключении, отправленное второй раз не уйдёт.
       this.opts.log(`письмо ${m.id}: исход не передан шлюзу: ${(err as Error).message}`);
@@ -245,6 +246,7 @@ export class PeerLink {
   private async report(type: string, fields: Record<string, unknown>): Promise<void> {
     for (;;) {
       const r = await this.ask(type, fields);
+      if (r.type === 'error' && r.code !== 'unavailable') this.opts.log(`шлюз отверг ${type}: ${r.text}`);
       if (r.type !== 'error' || r.code !== 'unavailable') return;
       await new Promise((resolve) => setTimeout(resolve, this.timing.retry_ms));
     }

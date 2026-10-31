@@ -25,6 +25,7 @@ import {
   ownerReactionLabel,
   ownerReactionTarget,
   ownerReactionText,
+  nameSkeleton,
   relayNameProblem,
   relayPrefix,
   episodeAnnounceText,
@@ -335,5 +336,13 @@ describe('реакция владельца на ответ агента (0.3.4)
   it('текст для прежнего канала: «Реакция на твой ответ к № 12: 👍 — твой ответ: «…»»', () => {
     assert.equal(ownerReactionText({ to_seq: 12, emoji: ['👍'], old: [], excerpt: 'Да, вижу' }), 'Реакция на твой ответ к № 12: 👍 — твой ответ: «Да, вижу»');
     assert.equal(ownerReactionText({ to_seq: null, emoji: [], old: ['👍'], excerpt: null }), 'Реакция на твоё сообщение: снял 👍');
+  });
+});
+
+describe('имя на глаз (5.19)', () => {
+  it('похожие буквы, регистр и знаки препинания не делают другое имя', () => {
+    assert.equal(nameSkeleton('Исслeдователь'), nameSkeleton('Исследователь'), 'латинская e');
+    assert.equal(nameSkeleton('Ѕcоut.Мain'), nameSkeleton('scout main'));
+    assert.notEqual(nameSkeleton('Исследователь'), nameSkeleton('Наблюдатель'));
   });
 });

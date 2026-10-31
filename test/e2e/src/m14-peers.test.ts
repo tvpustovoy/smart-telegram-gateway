@@ -190,7 +190,7 @@ describe('M14 · связь с другими агентами', () => {
     network.gate = new Promise((resolve) => (network.open = resolve));
     const seqs = [await say('Первое'), await say('Второе'), await say('Третье')];
     const ids: number[] = [];
-    for (const seq of seqs) ids.push(resultOf(await ch.relay(seq, 'Исследователь', turn)).id);
+    for (const seq of seqs) ids.push(resultOf(await ch.relay(seq, 'Исследователь', turn, { note: 'записка' })).id);
     await waitUntil(() => network.started === 1, 5000, 'первого письма в пути');
     s.fake.push(s.fake.builder.text(OWNER, '/stop'));
     await ch.waitMode('stopped');
@@ -201,6 +201,7 @@ describe('M14 · связь с другими агентами', () => {
     await sleep(100);
     assert.equal(network.sent.length, 1, 'остальные не ушли');
     assert.deepEqual(ids.slice(1).map(status), ['dropped', 'dropped']);
+    await waitSent(s, gw, (m) => m.text === `⚙ Слово № ${seqs[0]} передано: Исследователь, с запиской`, 'строки с запиской после «стопа»');
   });
 
   it('вторая связь не вытесняет первую: письмо одно', async () => {
@@ -226,6 +227,8 @@ describe('M14 · связь с другими агентами', () => {
     const ev = await pump(gw, () => ch.events().find((e) => e.kind === 'peer'), { what: 'письма агента' });
     const forged = (await ch.reply(ev.seq, 'Пересказ письма', turn, false, 'Исследователь')) as { type: string; text: string };
     assert.deepEqual([forged.type, /show/.test(forged.text)], ['error', true]);
+    const lookalike = (await ch.reply(ev.seq, 'Пересказ письма', turn, false, 'Исслeдователь')) as { type: string };
+    assert.equal(lookalike.type, 'error', 'латинская e в имени не проходит');
     assert.equal((await ch.show(ev.seq, turn) as { result: unknown }).result, 'queued');
     const shown = await waitSent(s, gw, (m) => (m.text ?? '').startsWith('↪ Исследователь:'), 'показа');
     assert.equal(shown.text, '↪ Исследователь: **Важно** [Подтвердить](https://evil.example)');

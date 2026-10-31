@@ -34,7 +34,7 @@ function fresh() {
   const relay = (seq: number, more: Partial<Extract<AdapterMessage, { type: 'relay' }>> = {}) =>
     service.relay({ type: 'relay', req_id: 'r', seq, to: 'Исследователь', turn: 1, ...more }, 'running', 1);
   const letter = (id: number): string => (sql(db, 'SELECT text FROM peer_messages WHERE id = ?').get(id) as { text: string }).text;
-  return { db, word, service, relay, letter };
+  return { db, ctx, word, service, relay, letter };
 }
 
 describe('слово владельца другому агенту', () => {
@@ -208,6 +208,62 @@ describe('письмо агента', () => {
     const id = r.ok ? r.result.id! : 0;
     t.service.sent({ type: 'peer_sent', req_id: 'r', id, wire_id: 'w' });
     assert.deepEqual({ ...(sql(t.db, 'SELECT status, text FROM peer_messages WHERE id = ?').get(id) as object) }, { status: 'sent', text: null });
+    t.db.close();
+  });
+});
+
+describe('связь', () => {
+  const stub = () => {
+    const sent: Array<{ type: string; id?: number }> = [];
+    return { sent, destroyed: 0, alive: true, role: null as string | null, send(m: { type: string }) { this.sent.push(m); }, destroy() { this.destroyed++; }, close() {} };
+  };
+
+  it('письма идут по одному: следующее — после исхода предыдущего', () => {
+    const t = fresh();
+    const a = t.relay(t.word('text', 'owner', 'первое'));
+    t.relay(t.word('text', 'owner', 'второе'));
+    const c = stub();
+    t.service.attach(c as never);
+    assert.equal(c.sent.filter((m) => m.type === 'peer_send').length, 1);
+    t.service.sent({ type: 'peer_sent', req_id: 'r', id: a.ok ? a.result.id! : 0, wire_id: 'w' });
+    assert.equal(c.sent.filter((m) => m.type === 'peer_send').length, 2);
+    t.db.close();
+  });
+
+  it('агента убрали из настроек: письмо закрыто отказом, очередь идёт дальше', () => {
+    const t = fresh();
+    const seq = t.word('text', 'owner', 'слово');
+    const r = t.relay(seq);
+    t.ctx.config.peers = [];
+    t.service.attach(stub() as never);
+    assert.equal((sql(t.db, 'SELECT status FROM peer_messages WHERE id = ?').get(r.ok ? r.result.id! : 0) as { status: string }).status, 'failed');
+    assert.equal((sql(t.db, "SELECT count(*) AS n FROM events WHERE kind = 'peer'").get() as { n: number }).n, 1);
+    t.db.close();
+  });
+
+  it('вторая связь не принимается, пока первая жива; мёртвая место не держит', () => {
+    const t = fresh();
+    const first = stub();
+    const second = stub();
+    t.service.attach(first as never);
+    assert.equal(t.service.accepts(second as never), false);
+    first.alive = false;
+    assert.equal(t.service.accepts(second as never), true);
+    t.db.close();
+  });
+
+  it('связь не ответила на ping — соединение закрывается; ответ и сон снимают ожидание', () => {
+    const t = fresh();
+    const c = stub();
+    t.service.attach(c as never);
+    t.service.tick(1000, 0, false);
+    assert.equal(c.sent.filter((m) => m.type === 'ping').length, 1);
+    t.service.pong(c as never);
+    t.service.tick(2000, 1000, false);
+    t.service.tick(2000 + 60_000, 2000, true);
+    assert.equal(c.destroyed, 0, 'сон: ожидание заново');
+    t.service.tick(2000 + 120_000, 9000, false);
+    assert.equal(c.destroyed, 1, 'молчит дольше срока');
     t.db.close();
   });
 });

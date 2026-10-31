@@ -253,7 +253,7 @@ export class Control {
         // (находка проверки). Документ, который сейчас загружается, отправитель прервёт сам (sender.kick).
         const d = sql(this.ctx.db, "UPDATE deliveries SET status = 'dropped', note = ? WHERE status = 'pending'").run(PARCEL_NOTE_STOP);
         // Письма другим агентам, ещё не ушедшие, — тоже: «стоп» прекращает и передачу. Единственное письмо в пути может дойти, тогда sent.
-        const p = sql(this.ctx.db, "UPDATE peer_messages SET status = 'dropped', text = NULL, detail = NULL WHERE status = 'pending'").run();
+        const p = sql(this.ctx.db, "UPDATE peer_messages SET status = 'dropped', text = NULL WHERE status = 'pending'").run();
         if (Number(p.changes)) this.ctx.journal.write('relay_dropped', { count: Number(p.changes), reason: 'stopped' });
         if (Number(r.changes)) this.ctx.journal.write('replies_dropped', { count: Number(r.changes), reason: 'stopped', turn, ...(Number(d.changes) ? { deliveries: Number(d.changes) } : {}) });
         line(STOPPED_TEXT, this.resumeButton());

@@ -101,6 +101,15 @@ function foldedName(name: string): string {
   return name.normalize('NFKD').replace(/\p{M}/gu, '');
 }
 
+/** Кириллица, неотличимая от латиницы на глаз: «Исслeдователь» с латинской e — то же имя (5.19). */
+const LOOKALIKE: Readonly<Record<string, string>> = { а: 'a', в: 'b', е: 'e', к: 'k', м: 'm', н: 'h', о: 'o', р: 'p', с: 'c', т: 't', у: 'y', х: 'x', і: 'i', ј: 'j', ѕ: 's', ԁ: 'd', һ: 'h', ԛ: 'q', ԝ: 'w' };
+
+/** Имя как его видит глаз: без регистра, знаков препинания и различий похожих букв. */
+export function nameSkeleton(name: string): string {
+  const folded = foldedName(name).toLocaleLowerCase().replace(/[^\p{L}\p{N}]/gu, '');
+  return [...folded].map((c) => LOOKALIKE[c] ?? c).join('');
+}
+
 /**
  * reply.from (0.3.2, P-26) — почему имя не годится; null — годится. Имя — коротко (до 64 знаков), одной строкой, без
  * управляющих и невидимых знаков; не шлюз и не служебное («шлюз», «gateway», «stg», «служебное») и без знаков шлюза

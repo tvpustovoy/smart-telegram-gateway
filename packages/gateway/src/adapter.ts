@@ -127,6 +127,7 @@ import {
   readTurn,
   instructionsWhereLine,
   ownerReactionText,
+  nameSkeleton,
   relayNameProblem,
   setMeta,
   silentAgentNotice,
@@ -667,6 +668,7 @@ export class AdapterService {
   /** pong от переходника: ожидание снято. */
   onPong(conn: GatewayConnection): void {
     if (this.lease?.conn === conn) this.lease.ping = null;
+    this.peers?.pong(conn);
   }
 
   private answer(conn: GatewayConnection, reqId: string, r: AgentResult | { ok: true; result: unknown; effects: Effects }): void {
@@ -1302,6 +1304,7 @@ export class AdapterService {
     const delta = now - this.lastTick;
     this.lastTick = now;
     const lease = this.lease;
+    if (!this.closed) this.peers?.tick(now, performance.now(), delta > LEASE_WAKE_GAP_MS);
     if (this.closed || !lease) return;
     try {
       const real = performance.now();
@@ -1590,8 +1593,8 @@ export class AdapterService {
 
   /** Почему агенту нельзя подписать слова этим именем: метку агента из списка ставит только show, дословно из базы. */
   private fromProblem(from: string): string | null {
-    const name = from.trim().toLocaleLowerCase();
-    if (this.ctx.config.peers.some((p) => p.name.toLocaleLowerCase() === name)) return `«${from.trim()}» — агент из списка шлюза: его письмо показывает show, дословно`;
+    const name = nameSkeleton(from);
+    if (this.ctx.config.peers.some((p) => nameSkeleton(p.name) === name)) return `«${from.trim()}» — агент из списка шлюза: его письмо показывает show, дословно`;
     return relayNameProblem(from);
   }
 
