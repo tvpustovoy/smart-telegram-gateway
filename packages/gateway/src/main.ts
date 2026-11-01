@@ -290,7 +290,9 @@ class Gateway {
       stt: () => transcriber.view(),
       tts: () => ({ keyKnown: voice.ttsKey.known }),
       agent: () => ({ state: agentState.snapshot(), view: agentState.view() }),
+      peerLink: () => adapter.peerLinked,
     });
+    control.reconcileLine();
     this.socket.setHandlers({
       onMessage: (msg, conn) => (this.db ? adapter.handle(msg, conn) : false),
       onClose: (conn) => {
@@ -418,7 +420,10 @@ class Gateway {
    * Помощь. Не вышло — запись в журнал; команды словом работают и без меню (нижней клавиатуры с 0.3.1 нет).
    */
   private setCommandsMenu(api: TelegramApi, ownerId: number): void {
-    const commands = MENU_COMMANDS.map((c) => ({ command: COMMAND_WORDS[c].slash.slice(1), description: COMMAND_WORDS[c].menu }));
+    // Линия (5.20) — в меню, только если есть с кем соединять.
+    const peers = this.config.peers.length > 0;
+    const commands = MENU_COMMANDS.filter((c) => peers || c !== 'agents').map((c) => ({ command: COMMAND_WORDS[c].slash.slice(1), description: COMMAND_WORDS[c].menu }));
+    if (peers) commands.splice(3, 0, { command: this.config.line.main_command, description: `↩ ${this.config.line.main_name}` });
     void api.call('setMyCommands', { commands, scope: { type: 'chat', chat_id: ownerId } }, { timeoutMs: 15_000 }).then(
       () => this.journal.write('commands_menu', { count: commands.length }),
       (err: unknown) => this.journal.write('commands_menu_failed', { error: api.redact((err as Error).message) }),

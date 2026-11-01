@@ -148,7 +148,7 @@ export class Ticker {
   checkOffline(now: number): void {
     if (this.adapter.hasLease || this.ctx.config.owner_id === null) return;
     if (getMeta(this.ctx.db, META_KEYS.offlineNotice) === '1') return;
-    const row = sql(this.ctx.db, `SELECT count(*) AS n, min(created_at) AS oldest FROM events WHERE status IN ('new', 'delivered', 'transcribing') AND kind IN (${MSG_KINDS_SQL})`)
+    const row = sql(this.ctx.db, `SELECT count(*) AS n, min(created_at) AS oldest FROM events WHERE status IN ('new', 'delivered', 'transcribing') AND route IS NULL AND kind IN (${MSG_KINDS_SQL})`)
       .get() as { n: number; oldest: number | null };
     if (!row.n || row.oldest === null) return;
     if (now - row.oldest < this.ctx.config.agent_offline_notice_minutes * 60_000) return;

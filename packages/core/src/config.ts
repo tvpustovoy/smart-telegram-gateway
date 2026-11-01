@@ -6,11 +6,13 @@
 import fs from 'node:fs';
 import { parseDocument, stringify } from 'yaml';
 import { z } from 'zod';
+import { COMMANDS } from './commands.js';
 import { writeFileAtomicSync } from './fsutil.js';
 import { ELEVENLABS_BASE_URL } from './elevenlabs.js';
 import { OPENAI_BASE_URL } from './openai.js';
 import { DEFAULT_PARCEL_TARGET, PARCEL_TARGET_RE } from './parcels.js';
-import { relayNameProblem, roleLabel } from './strings.js';
+import { ROUTE_ASK } from './schema.js';
+import { nameSkeleton, relayNameProblem, roleLabel } from './strings.js';
 import { VOICE_PROVIDERS, type VoiceProviderName } from './voice-provider.js';
 
 const ru = z.locales.ru().localeError;
@@ -310,7 +312,7 @@ export const ConfigSchema = z.strictObject({
     .array(
       z.strictObject({
         name: z.string().superRefine((v, c) => {
-          const why = relayNameProblem(v);
+          const why = relayNameProblem(v) ?? (v === ROUTE_ASK ? 'имя занято шлюзом' : null);
           if (why) c.addIssue({ code: 'custom', message: why });
         }),
         address: z.string().min(1).max(256),
@@ -322,6 +324,26 @@ export const ConfigSchema = z.strictObject({
         if (new Set(list.map((p) => p[key])).size !== list.length) c.addIssue({ code: 'custom', message: `peers: ${key} повторяется` });
       }
     }),
+  // Линия (сценарий 2): владелец говорит с агентом из peers напрямую. main_name — как подписан ведущий агент, пока идёт
+  // линия; main_command — команда ему: без текста возвращает к нему, с текстом пишет ему, не меняя линию;
+  // silence_minutes — после такой тишины шлюз спрашивает, кому сообщение.
+  line: z
+    .strictObject({
+      main_name: z
+        .string()
+        .superRefine((v, c) => {
+          const why = relayNameProblem(v);
+          if (why) c.addIssue({ code: 'custom', message: why });
+        })
+        .default('Агент'),
+      main_command: z
+        .string()
+        .regex(/^[a-z][a-z0-9_]{0,31}$/, { message: 'команда — латиница, цифры и «_», без «/»' })
+        .refine((v) => !(COMMANDS as readonly string[]).includes(v), { message: 'такая команда уже есть у шлюза' })
+        .default('agent'),
+      silence_minutes: z.number().int().min(1).default(60),
+    })
+    .prefault({}),
   parcels: z
     .strictObject({
       dir: z
@@ -334,6 +356,11 @@ export const ConfigSchema = z.strictObject({
         .default([DEFAULT_PARCEL_TARGET]),
     })
     .prefault({}),
+}).superRefine((c, ctx) => {
+  // Метка «↪ имя» у ведущего агента и у агента из peers должна различаться: реплай идёт по ней автору.
+  if (c.peers.some((p) => nameSkeleton(p.name) === nameSkeleton(c.line.main_name))) {
+    ctx.addIssue({ code: 'custom', path: ['line', 'main_name'], message: 'имя совпадает с агентом из peers' });
+  }
 });
 
 export type Config = z.infer<typeof ConfigSchema>;

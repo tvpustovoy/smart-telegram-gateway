@@ -150,6 +150,7 @@ import type { AgentResult, Control, Effects } from './control.js';
 import type { Episodes } from './episodes.js';
 import type { MediaService } from './media.js';
 import type { ParcelService } from './parcels.js';
+import { openLine } from './lines.js';
 import type { PeerService } from './peers.js';
 import { clearReceipts, requestAnsweredAfterTurn, requestAnsweredStale, requestProcessed, requestSeen } from './reactions.js';
 import type { GatewayConnection } from './socket-server.js';
@@ -359,7 +360,7 @@ export const LEASE_REAL_GRACE_MS = 1_000;
 /** Такт пришёл позже двух — часы прыгнули (сон): ожидание pong и срок пробы — заново. */
 const LEASE_WAKE_GAP_MS = 2 * LEASE_TICK_MS;
 /** Вызовы инструментов канала — признак «сессия занята» (К-5). delivered, ping, pong, hello — не вызовы модели. */
-const TOOL_CALLS = new Set<AdapterMessage['type']>(['reply', 'done', 'episode', 'episode_summary', 'where', 'rule', 'media', 'send_file', 'relay', 'show', 'agents']);
+const TOOL_CALLS = new Set<AdapterMessage['type']>(['reply', 'done', 'episode', 'episode_summary', 'where', 'rule', 'media', 'send_file', 'relay', 'show', 'agents', 'lines', 'line_log']);
 /**
  * Голосовое в распознавании держит следующие события (5.8 ⟨предл.⟩) не дольше 90 с от записи: зависший провайдер не
  * выключает агента — текст «срочно» после голосовых уходит через ≤ 90 с, а голосовое — когда распознано или получен отказ.
@@ -654,6 +655,12 @@ export class AdapterService {
         return true;
       case 'agents':
         this.onAgents(msg, conn);
+        return true;
+      case 'lines':
+        this.onLines(msg, conn);
+        return true;
+      case 'line_log':
+        this.onLineLog(msg, conn);
         return true;
       case 'peer_in':
       case 'peer_sent':
@@ -1246,6 +1253,7 @@ export class AdapterService {
    * и отдаётся, когда окно прошло.
    */
   pump(): void {
+    this.routeNew();
     const lease = this.lease;
     if (this.closed || !lease || !lease.verified || this.mode() === 'stopped') return;
     const now = this.ctx.clock.now();
@@ -1256,7 +1264,7 @@ export class AdapterService {
     };
     if (lease.skipped.size) {
       const ids = JSON.stringify([...lease.skipped]);
-      const ready = sql(this.ctx.db, "SELECT * FROM events WHERE status = 'new' AND seq IN (SELECT value FROM json_each(?)) ORDER BY seq").all(ids) as unknown as EventRow[];
+      const ready = sql(this.ctx.db, "SELECT * FROM events WHERE status = 'new' AND route IS NULL AND seq IN (SELECT value FROM json_each(?)) ORDER BY seq").all(ids) as unknown as EventRow[];
       for (const ev of ready) {
         lease.skipped.delete(ev.seq);
         send(ev);
@@ -1266,10 +1274,10 @@ export class AdapterService {
       );
       for (const seq of lease.skipped) if (!still.has(seq)) lease.skipped.delete(seq);
     }
-    const barrier = sql(this.ctx.db, `SELECT min(seq) AS s FROM events WHERE status = 'transcribing' AND kind IN (${PUMP_KINDS_SQL}) AND seq > ? AND created_at > ?`)
+    const barrier = sql(this.ctx.db, `SELECT min(seq) AS s FROM events WHERE status = 'transcribing' AND route IS NULL AND kind IN (${PUMP_KINDS_SQL}) AND seq > ? AND created_at > ?`)
       .get(lease.cursor, now - VOICE_HOLD_MS) as { s: number | null };
     const from = lease.cursor;
-    const rows = sql(this.ctx.db, `SELECT * FROM events WHERE status = 'new' AND kind IN (${PUMP_KINDS_SQL}) AND seq > ? AND seq < ? ORDER BY seq LIMIT ${PUMP_BATCH}`)
+    const rows = sql(this.ctx.db, `SELECT * FROM events WHERE status = 'new' AND route IS NULL AND kind IN (${PUMP_KINDS_SQL}) AND seq > ? AND seq < ? ORDER BY seq LIMIT ${PUMP_BATCH}`)
       .all(from, barrier.s ?? Number.MAX_SAFE_INTEGER) as unknown as EventRow[];
     for (const ev of rows) {
       lease.cursor = ev.seq;
@@ -1277,7 +1285,7 @@ export class AdapterService {
     }
     if (rows.length) {
       // Голосовые, мимо которых прошёл курсор (распознаются дольше VOICE_HOLD_MS), — отдать, когда будут готовы.
-      const passed = sql(this.ctx.db, `SELECT seq, created_at FROM events WHERE status = 'transcribing' AND kind IN (${PUMP_KINDS_SQL}) AND seq > ? AND seq < ?`)
+      const passed = sql(this.ctx.db, `SELECT seq, created_at FROM events WHERE status = 'transcribing' AND route IS NULL AND kind IN (${PUMP_KINDS_SQL}) AND seq > ? AND seq < ?`)
         .all(from, lease.cursor) as Array<{ seq: number; created_at: number }>;
       for (const p of passed) {
         lease.skipped.add(p.seq);
@@ -1297,6 +1305,26 @@ export class AdapterService {
     }
   }
 
+  /** Ведущему агенту стали доступны сообщения, ждавшие ответа «кому» (5.20): мимо них курсор уже мог пройти. */
+  releaseAsked(seqs: readonly number[]): void {
+    const lease = this.lease;
+    if (!lease) return;
+    for (const seq of seqs) if (seq <= lease.cursor) lease.skipped.add(seq);
+  }
+
+  private routeNew(): void {
+    if (!this.closed) this.peers?.routeNew(this.mode(), VOICE_HOLD_MS);
+  }
+
+  /** На линии ответ ведущего агента подписывает шлюз: владелец говорит с другим. Только в личке владельца. */
+  private lineSign(chatId: number): string | null {
+    return chatId === this.ctx.config.owner_id && openLine(this.ctx) ? this.ctx.config.line.main_name : null;
+  }
+
+  get peerLinked(): boolean {
+    return this.peers?.linked ?? false;
+  }
+
   // ——— такт аренды ———
 
   private tick(): void {
@@ -1305,6 +1333,8 @@ export class AdapterService {
     this.lastTick = now;
     const lease = this.lease;
     if (!this.closed) this.peers?.tick(now, performance.now(), delta > LEASE_WAKE_GAP_MS);
+    // Без аренды pump не зовут: слово на линии не ждёт ведущего агента.
+    this.routeNew();
     if (this.closed || !lease) return;
     try {
       const real = performance.now();
@@ -1535,8 +1565,9 @@ export class AdapterService {
     return null;
   }
 
+  /** Событие для ведущего агента. С адресом (5.20) для него не существует: ни один инструмент не дотянется до него по №. */
   private event(seq: number): EventRow | null {
-    return (sql(this.ctx.db, 'SELECT * FROM events WHERE seq = ?').get(seq) as EventRow | undefined) ?? null;
+    return (sql(this.ctx.db, 'SELECT * FROM events WHERE seq = ? AND route IS NULL').get(seq) as EventRow | undefined) ?? null;
   }
 
   /** Событие отдано этой аренде (кадр ушёл ей, или delivered от неё). */
@@ -1667,7 +1698,7 @@ export class AdapterService {
         turn: msg.turn,
         status: held ? 'held' : 'pending',
         idem: msg.idem ?? null,
-        fromName,
+        fromName: fromName ?? this.lineSign(chatId),
         plain: shown,
       });
       if (marks) {
@@ -1738,6 +1769,24 @@ export class AdapterService {
   private onAgents(msg: Extract<AdapterMessage, { type: 'agents' }>, conn: GatewayConnection): void {
     if (!this.verifiedLease(conn, msg.req_id)) return;
     conn.send({ type: 'ack', req_id: msg.req_id, result: this.peers?.list() ?? { link: false, agents: [] } });
+  }
+
+  /** lines: только чтение. Содержимого здесь нет. */
+  private onLines(msg: Extract<AdapterMessage, { type: 'lines' }>, conn: GatewayConnection): void {
+    if (!this.verifiedLease(conn, msg.req_id)) return;
+    conn.send({ type: 'ack', req_id: msg.req_id, result: this.peers?.lines(msg.limit ?? 10) ?? { lines: [] } });
+  }
+
+  /** line_log: содержимое линии. Журнал пишет, что агент его прочитал. */
+  private onLineLog(msg: Extract<AdapterMessage, { type: 'line_log' }>, conn: GatewayConnection): void {
+    if (!this.verifiedLease(conn, msg.req_id)) return;
+    const r = this.peers?.lineLog(msg.id) ?? null;
+    if (!r) {
+      conn.send({ type: 'error', req_id: msg.req_id, code: 'bad_request', text: `нет линии ${msg.id}` });
+      return;
+    }
+    this.ctx.journal.write('line_read', { id: msg.id, peer: r.peer });
+    conn.send({ type: 'ack', req_id: msg.req_id, result: r });
   }
 
   /** Кадры связи: только соединению hello role peer_link. */
@@ -1831,7 +1880,7 @@ export class AdapterService {
         leaseCwd: lease.hint?.cwd ?? null,
         idem: msg.idem ?? null,
         ...(msg.as !== undefined ? { as: msg.as } : {}),
-        req: { seq: msg.seq, chatId, threadId: ev?.thread_id ?? null, caption: msg.caption ?? '', fromName, turn: msg.turn, held },
+        req: { seq: msg.seq, chatId, threadId: ev?.thread_id ?? null, caption: msg.caption ?? '', fromName: fromName ?? this.lineSign(chatId), turn: msg.turn, held },
         inTx: () => {
           if (!marks) return;
           sql(this.ctx.db, "UPDATE events SET status = 'processed', processed_at = ?, processed_silent = 0 WHERE seq = ?").run(now, ev.seq);

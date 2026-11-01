@@ -5,7 +5,7 @@
 // по-прежнему команды: у клиента клавиатура могла остаться, пока её не сняли. Исполняет команды код (этап M2); здесь —
 // только распознавание.
 
-export const COMMANDS = ['where', 'new', 'stop', 'pause', 'resume', 'status', 'help'] as const;
+export const COMMANDS = ['where', 'new', 'stop', 'pause', 'resume', 'status', 'help', 'agents'] as const;
 export type CommandName = (typeof COMMANDS)[number];
 
 /**
@@ -20,10 +20,21 @@ export const COMMAND_WORDS: Record<CommandName, { word: string; slash: string; b
   resume: { word: 'продолжить', slash: '/resume', menu: '▶ Продолжить после паузы' },
   status: { word: 'статус', slash: '/status', menu: '📊 Статус' },
   help: { word: 'помощь', slash: '/help', menu: '❓ Помощь' },
+  agents: { word: 'агенты', slash: '/agents', menu: '🔌 Агенты' },
 };
 
 /** Меню команд (кнопка меню Telegram, личка владельца) — по порядку. */
-export const MENU_COMMANDS: readonly CommandName[] = ['where', 'new', 'pause', 'stop', 'status', 'help'];
+export const MENU_COMMANDS: readonly CommandName[] = ['where', 'new', 'agents', 'pause', 'stop', 'status', 'help'];
+
+/**
+ * Команда ведущему агенту (линия, TECH-SPEC 5.20), имя — line.main_command. «/имя» — вернуться к нему (rest пуст),
+ * «/имя текст» — написать ему, не меняя линию.
+ */
+export function parseMainCommand(text: string | null, command: string): { rest: string } | null {
+  const m = text?.trim().match(/^\/([a-z0-9_]+)(?:@[a-z0-9_]{1,64})?(?:\s+([\s\S]*))?$/i);
+  if (!m || m[1]!.toLowerCase() !== command) return null;
+  return { rest: (m[2] ?? '').trim() };
+}
 
 /** Для сравнения: без регистра, крайних и двойных пробелов и без селектора варианта эмодзи (U+FE0F). */
 function norm(s: string): string {

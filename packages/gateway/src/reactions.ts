@@ -234,6 +234,11 @@ export function requestSeen(ctx: Ctx, seqs: readonly number[]): number {
   return request(ctx, seqs, REACTIONS.seen);
 }
 
+/** 🕊 письмо на линии ушло агенту (TECH-SPEC 5.20). Внутри транзакции. */
+export function requestSent(ctx: Ctx, seqs: readonly number[]): number {
+  return request(ctx, seqs, REACTIONS.sent);
+}
+
 /**
  * 👌 «агент ответил» — done (и reply или send_file с seq при ui.clear_receipts: false). Только если оно — последнее
  * событие своего сообщения: правка, ещё не обработанная, держит свою реакцию. Внутри транзакции.

@@ -94,9 +94,13 @@ import {
   type Update,
   type User,
   type VoiceInfo,
+  MESSAGE_EVENT_KINDS,
+  ROUTE_ASK,
+  parseMainCommand,
 } from 'stg-core';
 import type { AdapterService } from './adapter.js';
 import type { Ctx } from './context.js';
+import { routeFor, type ReplyAuthor } from './lines.js';
 import type { Control, Effects } from './control.js';
 import type { Directory, Resolved } from './directory.js';
 import type { Episodes } from './episodes.js';
@@ -172,7 +176,11 @@ interface Draft {
   /** Эпизод: по сообщению (открыть, если нет; закрыть по тишине) · текущий открытый · никакой. */
   episode: 'message' | 'current' | 'none';
   receipt: boolean;
-  command: CommandName | null;
+  command: CommandName | 'main' | null;
+  /** «/команда текст»: ведущему агенту, мимо линии (5.20). */
+  main?: boolean;
+  /** Чьё сообщение под реплаем владельца (5.20). */
+  author?: ReplyAuthor;
   callback: CallbackQuery | null;
   /** Файл содержимого в событии (raw_ref): относительный путь в STG_HOME; ставится по записанным файлам. */
   rawRef: string | null;
@@ -201,7 +209,7 @@ type ReactionOutcome =
   | { kind: 'cancelled'; seq: number; emoji: string[]; old: string[]; heldMs: number };
 
 /** Почему реакция не стала событием (журнал reaction_skipped) ⟨предл.⟩. */
-export type ReactionSkip = 'not_owner' | 'own_message' | 'unknown_message' | 'transcript' | 'gateway_line' | 'no_change';
+export type ReactionSkip = 'not_owner' | 'own_message' | 'unknown_message' | 'transcript' | 'gateway_line' | 'no_change' | 'line';
 
 /** Что за сообщение бота: к какой строке outbox и событию, чьё (messages_out + outbox). */
 interface BotMessage {
@@ -212,6 +220,8 @@ interface BotMessage {
   text: string | null;
   /** Тема Telegram, в которую ушёл ответ (outbox.thread_id): туда же — ответ агента на реакцию. */
   thread_id: number | null;
+  /** Письмо с линии: ведущий агент о нём не знает, реакция ему не идёт. */
+  route: string | null;
 }
 
 export function fullName(u: User): string {
@@ -501,8 +511,9 @@ export class Admission {
     else {
       bot =
         (sql(db,
-          `SELECT m.kind, m.outbox_id, COALESCE(o.event_seq, m.event_seq) AS event_seq, o.origin, o.text, o.thread_id
-           FROM messages_out m LEFT JOIN outbox o ON o.id = m.outbox_id WHERE m.chat_id = ? AND m.tg_message_id = ?`,
+          `SELECT m.kind, m.outbox_id, COALESCE(o.event_seq, m.event_seq) AS event_seq, o.origin, o.text, o.thread_id, e.route
+           FROM messages_out m LEFT JOIN outbox o ON o.id = m.outbox_id LEFT JOIN events e ON e.seq = COALESCE(o.event_seq, m.event_seq)
+           WHERE m.chat_id = ? AND m.tg_message_id = ?`,
         ).get(chatId, mr.message_id) as BotMessage | undefined) ?? null;
       if (!bot) {
         // Не сообщение бота: своё сообщение владельца (на нём 👀 и 👌 шлюза — их Telegram боту не присылает, а реакция
@@ -511,6 +522,7 @@ export class Admission {
         skip = own ? 'own_message' : 'unknown_message';
       } else if (bot.kind === 'receipt') skip = 'transcript';
       else if (bot.kind !== 'agent' || bot.origin !== 'agent') skip = 'gateway_line';
+      else if (bot.route !== null) skip = 'line';
       else if (sameEmoji(emoji, old)) skip = 'no_change';
     }
     const holdMs = reactionHoldMs(this.ctx);
@@ -684,7 +696,10 @@ export class Admission {
     const mo = sql(db, 'SELECT kind, outbox_id, event_seq FROM messages_out WHERE chat_id = ? AND tg_message_id = ?').get(chatId, messageId) as
       | { kind: 'agent' | 'receipt' | 'service'; outbox_id: number | null; event_seq: number | null }
       | undefined;
+    // Сообщение с линии для ведущего агента — чужое и неизвестное: ни № его, ни отрывка (5.20).
+    const onLine = (seq: number | null): boolean => seq !== null && !!sql(db, 'SELECT 1 FROM events WHERE seq = ? AND route IS NOT NULL').get(seq);
     if (mo) {
+      if (onLine(mo.event_seq)) return { kind: 'unknown', event_seq: null };
       if (mo.kind === 'agent') {
         const o = mo.outbox_id !== null ? (sql(db, 'SELECT text FROM outbox WHERE id = ?').get(mo.outbox_id) as { text: string | null } | undefined) : undefined;
         // Начало ответа агента — с меткой «слова агента» (5.4); текст квитанций не вкладывается.
@@ -697,9 +712,30 @@ export class Admission {
          AND kind NOT IN ('callback', 'edit') ORDER BY seq LIMIT 1`,
       )
       .get(chatId, messageId) as { seq: number } | undefined;
+    if (ev && onLine(ev.seq)) return { kind: 'unknown', event_seq: null };
     if (ev) return { kind: 'owner', event_seq: ev.seq, episode_topic: topicOf(ev.seq), ...(isMaterialEvent(this.ctx, ev.seq) ? { material: true } : {}) };
     // Старое сообщение, до шлюза: текст из Telegram не вкладывается.
     return { kind: 'unknown', event_seq: null };
+  }
+
+  /**
+   * Кому реплай владельца (5.20). Письмо агента — автору, даже если агента уже убрали из настроек: шлюз скажет, что не
+   * передал, а ведущему агенту чужое письмо не уйдёт. Своё сообщение — туда же, куда ушло оно.
+   */
+  private replyAuthor(chatId: number, messageId: number): ReplyAuthor {
+    const db = this.ctx.db;
+    const mo = sql(db, 'SELECT m.kind, o.from_name, o.plain FROM messages_out m LEFT JOIN outbox o ON o.id = m.outbox_id WHERE m.chat_id = ? AND m.tg_message_id = ?').get(chatId, messageId) as
+      | { kind: string; from_name: string | null; plain: number | null }
+      | undefined;
+    if (mo) {
+      if (mo.kind !== 'agent') return null;
+      return mo.plain === 1 && mo.from_name !== null ? { peer: mo.from_name } : 'main';
+    }
+    const own = sql(db, "SELECT route FROM events WHERE chat_id = ? AND message_id = ? AND update_id IS NOT NULL AND kind NOT IN ('callback', 'edit') ORDER BY seq LIMIT 1").get(chatId, messageId) as
+      | { route: string | null }
+      | undefined;
+    if (!own || own.route === ROUTE_ASK) return null;
+    return own.route === null ? 'main' : { peer: own.route };
   }
 
   /**
@@ -824,12 +860,26 @@ export class Admission {
       // Звук — файлом в raw/; не скачался — file_id остаётся в attachments_json.
       files: voice && oga ? [{ ref: oga, source: { voiceFileId: voice.file_id }, mustWrite: false }] : [],
       primary: oga ? [oga] : [],
+      author: labeled.replyToMessageId !== null ? this.replyAuthor(msg.chat.id, labeled.replyToMessageId) : null,
+      main: false,
     };
     if (isEdit) {
       // Правка (Ш-10): событие edit со ссылкой на исходное; командой не бывает, эпизод не меняет.
       return { ...content, kind: 'edit', status: 'new', editOf: this.originalOf(msg.chat.id, msg.message_id), episode: 'current', receipt: true, command: null };
     }
-    const command = labeled.plainOwnerText && msg.chat.type === 'private' && who.isOwner ? parseCommand(labeled.text) : null;
+    const plain = labeled.plainOwnerText && msg.chat.type === 'private' && who.isOwner;
+    const hasPeers = this.ctx.config.peers.length > 0;
+    const parsed = plain ? parseCommand(labeled.text) : null;
+    // «агенты» без настроенных агентов — обычное слово.
+    const command = parsed === 'agents' && !hasPeers ? null : parsed;
+    // Подпись к фото и реплай с цитатой — тоже его слова: команда ведущему агенту работает и там, иначе слова уйдут на линию.
+    const ownWords = who.isOwner && msg.chat.type === 'private' && labeled.forward === null;
+    const mainWord = ownWords && hasPeers ? parseMainCommand(labeled.text, this.ctx.config.line.main_command) : null;
+    if (plain && mainWord?.rest === '') return { ...content, kind: 'command', status: 'handled', editOf: null, episode: 'current', receipt: false, command: 'main' };
+    if (mainWord) {
+      content.text = mainWord.rest || null;
+      content.main = true;
+    }
     if (command) {
       // Команда исполняется кодом, мимо агента (Ш-6): событие handled, действие — в главной транзакции (control.ts).
       return { ...content, kind: 'command', status: 'handled', editOf: null, episode: 'current', receipt: false, command };
@@ -919,7 +969,10 @@ export class Admission {
       this.hooks.onCommit(db);
       const subjectId = d.who.subject.id;
       const place: MaterialPlace = { chatId: d.chatId, threadId: d.threadId, subjectId };
-      const role = this.materialRole(d);
+      // Адрес — при приёме, этой же транзакцией (5.20). Сообщение на линии не касается окна материала и эпизодов ведущего агента.
+      const forLine = d.who.isOwner && d.chatId === this.ctx.config.owner_id && (d.kind === 'edit' || (MESSAGE_EVENT_KINDS as readonly string[]).includes(d.kind));
+      const route = forLine ? routeFor(this.ctx, { main: d.main === true, editOf: d.editOf, author: d.author ?? null }, now) : null;
+      const role = route === null ? this.materialRole(d) : null;
       const decision: MaterialDecision =
         role === 'material'
           ? admitMaterial(this.ctx, place, d.status, now)
@@ -928,7 +981,8 @@ export class Admission {
             : { status: d.status, holdUntil: null, material: null };
       let episodeId: number | null = null;
       let effects: Effects = {};
-      if (d.episode === 'message') {
+      if (route !== null) episodeId = null;
+      else if (d.episode === 'message') {
         const a = this.episodes.forMessage(d.chatId, subjectId, d.who.chatRule as ChatRule, d.messageDate, d.threadId);
         episodeId = a.episode.id;
         if (a.closedEventSeq !== null) effects = { pump: true };
@@ -940,8 +994,8 @@ export class Admission {
       }
       const r = sql(db, 
           `INSERT INTO events(update_id, message_id, chat_id, thread_id, subject_id, trust, mixed, attachments_json, kind, text,
-             raw_ref, forward_json, reply_to, edit_of, episode_id, status, created_at, message_date, stt_note, hold_until, material_json)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+             raw_ref, forward_json, reply_to, edit_of, episode_id, status, created_at, message_date, stt_note, hold_until, material_json, route)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         )
         .run(
           d.updateId,
@@ -965,8 +1019,10 @@ export class Admission {
           d.sttNote,
           decision.holdUntil,
           decision.material ? JSON.stringify(decision.material) : null,
+          route,
         );
       const seq = Number(r.lastInsertRowid);
+      if (route === ROUTE_ASK) this.control.askLine(seq, d.messageId, d.threadId);
       // Окно материала (0.3.6): материал в окне — окно прочих в этом чате от него; слова — удерживаемый материал с ними;
       // новые слова (не правка, не реплай на материал) — первые после материала, ушедшего без слов: «слова после материала».
       const material: MaterialOutcome = { decision, extended: [], words: null, joined: role === 'edit_material' && decision.material ? d.editOf : null, followup: [] };
@@ -1077,6 +1133,7 @@ export class Admission {
     // Нажатие [разрешить] сменило рабочую копию правил: справочник — по ней, rules.yaml — дописать (5.9).
     if (effects.rules) this.control.refreshRules();
     if (effects.mode) this.adapter.notifyMode();
+    if (effects.released?.length) this.adapter.releaseAsked(effects.released);
     this.sender.kick();
     if (d.status === 'transcribing') this.transcriber?.kick();
     // Материал в окне или слова, которые его отпустили (0.3.6): таймер окна — на новый ближайший срок.

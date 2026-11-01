@@ -119,6 +119,7 @@ import {
   type Timer,
 } from 'stg-core';
 import { enqueueDeletion, enqueueEdit, enqueueServiceLine, type Ctx } from './context.js';
+import { noticeLetters } from './lines.js';
 import { ReactionLane, clearReceipts, requestAnswerLost, requestAnswered } from './reactions.js';
 import { STATUS_LINE_MIN_INTERVAL_MS, StatusLine, type StatusLineSaved } from './statusline.js';
 import { type VoiceKey, VoiceSynth } from './voice.js';
@@ -1126,6 +1127,12 @@ export class Sender {
       failed = sql(this.ctx.db, "SELECT id, parcel, file, chat_id FROM deliveries WHERE status = 'pending' AND outbox_id IN (SELECT value FROM json_each(?))")
         .all(JSON.stringify(ids)) as Array<{ id: number; parcel: string; file: string; chat_id: number | null }>;
       sql(this.ctx.db, "UPDATE deliveries SET status = 'failed', note = ? WHERE status = 'pending' AND outbox_id IN (SELECT value FROM json_each(?))").run(why.slice(0, 500), JSON.stringify(ids));
+      // Письмо с линии Telegram не принял: оно есть только здесь, поэтому не пропадает молча, владелец получит строку с кнопкой.
+      for (const g of group) {
+        if (!g.plain || g.event_seq === null || !g.from_name) continue;
+        const r = sql(this.ctx.db, "UPDATE peer_messages SET unseen = 1 WHERE direction = 'in' AND event_seq = ? AND origin = 'line'").run(g.event_seq);
+        if (Number(r.changes)) noticeLetters(this.ctx, g.from_name, this.ctx.clock.now());
+      }
       const owner = this.ctx.config.owner_id;
       for (const d of failed) {
         const words = why.replace(/^send(Document|Photo): /, 'Telegram не принял: ').slice(0, 300);

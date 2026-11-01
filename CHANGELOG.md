@@ -18,6 +18,13 @@ The chat interface and the design documents are in Russian; the entries below de
   excerpt word for word. The peer's answer wakes the agent as an ordinary event labelled untrusted; `show` gives it to you
   verbatim with the `↪ Name:` mark. `agents` lists the peers and what is known about the link, never whether a session
   is alive. The gateway itself tells you when a letter went or failed, in a line that replies to your message.
+- The line (scenario 2): `/agents` connects you to another agent, and your messages go to it from the gateway's code, past
+  the agent. The address is decided when a message is admitted: a command to the agent (`line.main_command`) goes to the
+  agent and keeps the line, a reply goes to the author, otherwise it goes to whoever is on the line. Shown in the pinned
+  line and in the marks. After `line.silence_minutes` of silence the next message waits for your choice. Letters on the
+  line reach you directly; a late letter waits behind [Показать] and [Соединить]. The agent can list and read these
+  conversations with `lines` and `line_log` when you ask; files are not passed yet. The agent reaches nothing on a line
+  by number: its tools treat such events as unknown.
 - `stg-link`: a separate process that carries letters between the gateway and an agent network. The network plugs in
   as a module named at start (`--port`, see `packages/link/src/port.ts`), so the gateway gains no dependency. Without
   `stg-link` the gateway works as before and letters wait. Peers are listed in `peers` in `config.yaml`; the list is also
@@ -26,6 +33,7 @@ The chat interface and the design documents are in Russian; the entries below de
 ### Changed
 
 - Schema v15: event kind `peer`, column `peer_json`, table `peer_messages`.
+- Schema v16: `events.route`, table `lines`, `peer_messages.origin`, `line_id`, `unseen`.
 - The `↪` mark is sent with U+FE0F, so Telegram shows it as an emoji; it is recognised with or without it.
 
 ## 0.4.1 - 2026-10-28

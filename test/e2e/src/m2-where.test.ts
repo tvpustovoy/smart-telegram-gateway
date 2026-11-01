@@ -43,7 +43,7 @@ describe('M2 · «не на связи», «где мы», «статус», м�
     const c = s.fake.commands[0] as { commands: Array<{ command: string; description: string }>; scope: unknown };
     assert.deepEqual(
       c.commands,
-      MENU_COMMANDS.map((k) => ({ command: COMMAND_WORDS[k].slash.slice(1), description: COMMAND_WORDS[k].menu })),
+      MENU_COMMANDS.filter((k) => k !== 'agents').map((k) => ({ command: COMMAND_WORDS[k].slash.slice(1), description: COMMAND_WORDS[k].menu })),
     );
     assert.deepEqual(
       c.commands.map((x) => `/${x.command} ${x.description}`),

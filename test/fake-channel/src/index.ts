@@ -232,6 +232,14 @@ export class FakeChannel {
     return this.request('agents', {});
   }
 
+  lines(limit?: number): Promise<GatewayMessage> {
+    return this.request('lines', limit !== undefined ? { limit } : {});
+  }
+
+  lineLog(id: number): Promise<GatewayMessage> {
+    return this.request('line_log', { id });
+  }
+
   done(seqs: number[], code?: string): Promise<GatewayMessage> {
     return this.request('done', code !== undefined ? { seqs, code } : { seqs });
   }

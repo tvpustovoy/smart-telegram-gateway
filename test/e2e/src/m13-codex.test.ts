@@ -113,6 +113,8 @@ describe('M13 · адаптер Codex (stg-codex) против поддельн�
       'function:relay',
       'function:show',
       'function:agents',
+      'function:lines',
+      'function:line_log',
     ]);
     const di = String(p.developerInstructions);
     for (const w of ['не у терминала', 'песочнице', 'reply(seq, text)', `папка посылок: ${parcels}`, `твоя папка (рабочий каталог команд): ${agentDir}`, 'AGENTS.md']) assert.ok(di.includes(w), `developer instructions без «${w}»`);

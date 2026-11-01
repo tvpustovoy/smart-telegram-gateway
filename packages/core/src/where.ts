@@ -98,14 +98,14 @@ export const HELD_MATERIAL_SQL = "material_json IS NOT NULL AND json_extract(mat
 
 /** Сколько сообщений владельца ждут агента (new · delivered · transcribing) — «где мы» и закреплённая строка. */
 export function waitingCount(db: Db): number {
-  return (sql(db, `SELECT count(*) AS n FROM events WHERE status IN ('new', 'delivered', 'transcribing') AND kind IN (${MSG_KINDS_SQL})`).get() as { n: number }).n;
+  return (sql(db, `SELECT count(*) AS n FROM events WHERE status IN ('new', 'delivered', 'transcribing') AND route IS NULL AND kind IN (${MSG_KINDS_SQL})`).get() as { n: number }).n;
 }
 
 export function whereData(db: Db, input: WhereInput): WhereData {
   const { now } = input;
   const episode = input.chatId !== null ? openEpisodeOf(db, input.chatId, input.subjectId) : null;
   const lastClosed = !episode && input.chatId !== null ? lastClosedEpisodeOf(db, input.chatId, input.subjectId) : null;
-  const waitingRows = sql(db, `SELECT seq FROM events WHERE status IN ('new', 'delivered', 'transcribing') AND kind IN (${MSG_KINDS_SQL}) ORDER BY seq LIMIT ${WAITING_LIMIT}`)
+  const waitingRows = sql(db, `SELECT seq FROM events WHERE status IN ('new', 'delivered', 'transcribing') AND route IS NULL AND kind IN (${MSG_KINDS_SQL}) ORDER BY seq LIMIT ${WAITING_LIMIT}`)
     .all() as Array<{ seq: number }>;
   const waiting = waitingCount(db);
   // Правка удерживаемого материала без слов ждёт вместе с исходным (0.3.6) — в списке её нет: живое место дало бы десятки №.

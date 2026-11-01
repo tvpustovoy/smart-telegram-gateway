@@ -48,7 +48,7 @@ describe('M3 · канал под поддельным Claude Code', () => {
     const instr = fc.client.getInstructions() ?? '';
     for (const w of ['проверка канала', 'повтор', 'чужое', 'reply(seq', 'done(seqs)', 'Markdown', 'episode_summary']) assert.ok(instr.includes(w), `instructions без «${w}»`);
     const tools = (await fc.client.listTools()).tools;
-    assert.deepEqual(tools.map((t) => t.name), ['reply', 'done', 'episode', 'episode_summary', 'where', 'rule', 'media', 'send_file', 'relay', 'show', 'agents']);
+    assert.deepEqual(tools.map((t) => t.name), ['reply', 'done', 'episode', 'episode_summary', 'where', 'rule', 'media', 'send_file', 'relay', 'show', 'agents', 'lines', 'line_log']);
     const ep = tools.find((t) => t.name === 'episode')!;
     assert.ok(!('role' in ((ep.inputSchema.properties ?? {}) as object)), 'episode без role');
   });

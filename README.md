@@ -215,6 +215,11 @@ What you see in the chat:
   weekly usage limits.
 - `⚙ …` — a line from the gateway. A transcript comes as a quote in reply to your voice message. `↪ Name: …` — the
   agent relays someone else's words; `💬` marks an agent reply that would otherwise look like a gateway line.
+- `/agents` connects you to another agent (the line): your messages then go to it directly, the gateway's own agent
+  does not read them, and 🕊 on a message means the letter went. A reply goes to the author of the message you reply to.
+  `/<line.main_command> text` writes to the gateway's own agent and keeps the line; the same command without text
+  returns to it. After a long silence the next message waits for you to choose who it is for. A late letter from an
+  agent you are no longer connected to does not fall into the chat: one line with [Показать] and [Соединить].
 - `⚙ ↪ #N · topic` with [верно] [не то] — the agent named or changed the topic. [верно] removes the line (the topic
   stays in the pinned line; `ui.delete_confirmed_topic`), [не то] brings the previous topic back.
 - A reaction on an agent reply (👍, ❤, …) is passed to the agent after a short undo window.
@@ -269,6 +274,11 @@ parcels:
 
 peers:                           # other agents reachable through stg-link; also the allow-list
   - { name: Researcher, address: "<address in the agent network>" }
+
+line:                            # talking to an agent from peers directly
+  main_name: Assistant           # how the gateway's own agent is signed while a line is open
+  main_command: helper           # /helper returns to it, /helper text writes to it and keeps the line
+  silence_minutes: 60            # after this silence the next message waits for your choice
 
 reactions:
   hold_seconds: 3                # undo window for your reactions; 0 = pass at once; at most 3

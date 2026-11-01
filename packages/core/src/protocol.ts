@@ -221,6 +221,10 @@ export const ShowSchema = z.strictObject({ type: z.literal('show'), req_id: reqI
 
 /** Кто в списке агентов и что известно о связи — только факты из базы. `ack.result` — AgentsResult. */
 export const AgentsSchema = z.strictObject({ type: z.literal('agents'), req_id: reqId });
+/** Разговоры владельца с агентами напрямую (линии): список. */
+export const LinesSchema = z.strictObject({ type: z.literal('lines'), req_id: reqId, limit: z.int().min(1).max(50).optional() });
+/** Содержимое линии. */
+export const LineLogSchema = z.strictObject({ type: z.literal('line_log'), req_id: reqId, id: z.int().positive() });
 
 /** Предел адреса и номера письма в кадрах связи. */
 export const PEER_ID_MAX = 256;
@@ -299,6 +303,8 @@ export const AdapterMessageSchema = z.discriminatedUnion('type', [
   RelaySchema,
   ShowSchema,
   AgentsSchema,
+  LinesSchema,
+  LineLogSchema,
   PeerInSchema,
   PeerSentSchema,
   PeerFailedSchema,
@@ -325,6 +331,8 @@ export const ADAPTER_MESSAGE_TYPES: readonly AdapterMessageType[] = [
   'relay',
   'show',
   'agents',
+  'lines',
+  'line_log',
   'peer_in',
   'peer_sent',
   'peer_failed',
@@ -595,6 +603,20 @@ export const AgentsResultSchema = z.object({
   ),
 });
 export type AgentsResult = z.infer<typeof AgentsResultSchema>;
+
+/** Ответ на lines: новые первыми, messages — сколько писем на линии. */
+export const LinesResultSchema = z.object({
+  lines: z.array(z.object({ id: z.int(), peer: z.string(), started_at: z.int(), ended_at: z.int().nullable(), messages: z.int().nonnegative() })),
+});
+export type LinesResult = z.infer<typeof LinesResultSchema>;
+
+/** Ответ на line_log: from — имя агента, null — владелец; forwarded — владелец переслал чужое; text — null, если текст вычищен; omitted — сколько старых писем не вошло в кадр. */
+export const LineLogResultSchema = z.object({
+  peer: z.string(),
+  messages: z.array(z.object({ at: z.int(), from: z.string().nullable(), forwarded: z.boolean(), text: z.string().nullable() })),
+  omitted: z.int().nonnegative(),
+});
+export type LineLogResult = z.infer<typeof LineLogResultSchema>;
 
 /** Шлюз → связь: отправить письмо id на адрес address. По одному: следующее — после peer_sent или peer_failed; при новом подключении — снова. */
 export const PeerSendSchema = z.object({

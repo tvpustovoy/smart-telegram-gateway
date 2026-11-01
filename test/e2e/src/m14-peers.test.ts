@@ -7,57 +7,12 @@ import assert from 'node:assert/strict';
 import { afterEach, beforeEach, describe, it } from 'node:test';
 import { STOPPED_TEXT, type Update } from 'stg-core';
 import { errors, reply } from 'stg-fake-telegram';
-import { PeerLink, type Letter, type NetworkPort, type SendVerdict } from 'stg-link';
+import { PeerLink } from 'stg-link';
 import { FakeChannel } from 'stg-fake-channel';
 import { connectAdapter, count, pump, q1, sleep, waitUntil, type GatewayProcess } from './harness.js';
 import { OWNER, setup, type Setup } from './m1-common.js';
 import { press, sentWithText, waitSent } from './m2-common.js';
-
-const ADDRESS = 'AB'.repeat(32);
-
-class FakeNetwork implements NetworkPort {
-  inbox: Letter[] = [];
-  read: string[] = [];
-  sent: Array<{ address: string; text: string }> = [];
-  verdict: SendVerdict | null = null;
-  gate: Promise<void> | null = null;
-  open: () => void = () => undefined;
-  started = 0;
-  private ring: (() => void) | null = null;
-
-  async unread(): Promise<Letter[]> {
-    return this.inbox.filter((l) => !this.read.includes(l.wire_id));
-  }
-
-  async consume(ids: string[]): Promise<void> {
-    this.read.push(...ids);
-  }
-
-  async send(address: string, text: string): Promise<SendVerdict> {
-    this.started++;
-    if (this.gate) await this.gate;
-    if (this.verdict) return this.verdict;
-    this.sent.push({ address, text });
-    return { sent: true, wire_id: `out-${this.sent.length}` };
-  }
-
-  async *wakes(signal: AbortSignal): AsyncIterable<void> {
-    while (!signal.aborted) {
-      await new Promise<void>((resolve) => {
-        this.ring = resolve;
-        signal.addEventListener('abort', () => resolve(), { once: true });
-      });
-      if (!signal.aborted) yield;
-    }
-  }
-
-  async close(): Promise<void> {}
-
-  letter(wire_id: string, text: string, from = ADDRESS, reply_to: string | null = null): void {
-    this.inbox.push({ wire_id, from, kind: 'text', text, reply_to });
-    this.ring?.();
-  }
-}
+import { ADDRESS, FakeNetwork } from './peers-common.js';
 
 describe('M14 · связь с другими агентами', () => {
   let s: Setup;

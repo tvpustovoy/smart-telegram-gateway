@@ -190,7 +190,7 @@ describe('команды (5.6)', () => {
     // Меню команд — с эмодзи в описаниях.
     assert.deepEqual(
       MENU_COMMANDS.map((c) => `${COMMAND_WORDS[c].slash} ${COMMAND_WORDS[c].menu}`),
-      ['/where 📍 Где мы', '/new 🆕 Новая тема', '/pause ⏸ Пауза', '/stop ⛔ Стоп', '/status 📊 Статус', '/help ❓ Помощь'],
+      ['/where 📍 Где мы', '/new 🆕 Новая тема', '/agents 🔌 Агенты', '/pause ⏸ Пауза', '/stop ⛔ Стоп', '/status 📊 Статус', '/help ❓ Помощь'],
     );
   });
 

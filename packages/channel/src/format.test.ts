@@ -278,7 +278,7 @@ describe('письмо другого агента (5.19)', () => {
 describe('канал: инструменты, instructions, сроки', () => {
   it('инструменты 5.11 (media — 0.3, send_file — 0.3.3, relay, show, agents — 5.19); у episode нет role; схемы — объекты', () => {
     assert.deepEqual(TOOLS.map((t) => t.name), [...TOOL_NAMES]);
-    assert.deepEqual([...TOOL_NAMES], ['reply', 'done', 'episode', 'episode_summary', 'where', 'rule', 'media', 'send_file', 'relay', 'show', 'agents']);
+    assert.deepEqual([...TOOL_NAMES], ['reply', 'done', 'episode', 'episode_summary', 'where', 'rule', 'media', 'send_file', 'relay', 'show', 'agents', 'lines', 'line_log']);
     for (const t of TOOLS) assert.equal(t.inputSchema.type, 'object');
     const ep = TOOLS.find((t) => t.name === 'episode')!;
     assert.ok(!('role' in ep.inputSchema.properties));

@@ -890,6 +890,29 @@ CREATE UNIQUE INDEX peer_messages_in ON peer_messages(peer, wire_id) WHERE direc
 ALTER TABLE outbox ADD COLUMN plain INTEGER NOT NULL DEFAULT 0 CHECK (plain IN (0,1));
 `;
 
+/**
+ * Линия (сценарий 2, TECH-SPEC 5.20). events.route — адресат, решённый при приёме: NULL — ведущий агент, ROUTE_ASK — ждёт
+ * ответа владельца, кому сообщение, иначе имя из peers. lines — кто и когда был на линии, открыта не больше одной.
+ * peer_messages: origin — кто отправил письмо (relay — агент инструментом, line — код шлюза на линии), line_id — чья линия,
+ * unseen — письмо пришло вне линии и ждёт кнопки владельца.
+ */
+const SCHEMA_V16 = `
+CREATE TABLE lines (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  peer       TEXT NOT NULL,
+  started_at INTEGER NOT NULL,
+  last_at    INTEGER NOT NULL,
+  ended_at   INTEGER,
+  end_reason TEXT
+) STRICT;
+CREATE UNIQUE INDEX lines_open ON lines((ended_at IS NULL)) WHERE ended_at IS NULL;
+ALTER TABLE events ADD COLUMN route TEXT;
+CREATE INDEX events_route ON events(status, seq) WHERE route IS NOT NULL;
+ALTER TABLE peer_messages ADD COLUMN origin TEXT NOT NULL DEFAULT 'relay' CHECK (origin IN ('relay', 'line'));
+ALTER TABLE peer_messages ADD COLUMN line_id INTEGER;
+ALTER TABLE peer_messages ADD COLUMN unseen INTEGER NOT NULL DEFAULT 0 CHECK (unseen IN (0,1));
+`;
+
 export const MIGRATIONS: readonly Migration[] = [
   { version: 1, name: 'схема 0.1: все таблицы 5.2', sql: SCHEMA_V1 },
   { version: 2, name: 'кнопки в outbox, тема Telegram у эпизода', sql: SCHEMA_V2 },
@@ -906,6 +929,7 @@ export const MIGRATIONS: readonly Migration[] = [
   { version: 13, name: 'окно для материала без слов владельца', sql: SCHEMA_V13, foreignKeysOff: true },
   { version: 14, name: 'посылки: картинка — фото (send_as)', sql: SCHEMA_V14 },
   { version: 15, name: 'связь с другими агентами: письма и вид события peer', sql: SCHEMA_V15, foreignKeysOff: true },
+  { version: 16, name: 'линия: адрес сообщения и разговор с агентом напрямую', sql: SCHEMA_V16 },
 ];
 
 /**
@@ -978,10 +1002,10 @@ export interface OwnerReaction {
  * прежней версии: строки reactions, где он ждёт отправки, полоса закрывает без запроса, а стоящий ✍ сменят 👀 и 👌
  * своим ходом (reactions.ts). Порядок — по REACTION_ORDER: реакция того же события не сменяется более ранней.
  */
-export const REACTIONS = { recorded: '✍', seen: '👀', processed: '👌' } as const;
+export const REACTIONS = { recorded: '✍', seen: '👀', sent: '🕊', processed: '👌' } as const;
 export type ReactionEmoji = (typeof REACTIONS)[keyof typeof REACTIONS];
 /** Порядок реакций одного события: (✍ прежней версии) → 👀 → 👌. */
-export const REACTION_ORDER: readonly ReactionEmoji[] = [REACTIONS.recorded, REACTIONS.seen, REACTIONS.processed];
+export const REACTION_ORDER: readonly ReactionEmoji[] = [REACTIONS.recorded, REACTIONS.seen, REACTIONS.sent, REACTIONS.processed];
 /**
  * «Реакции нет» (0.3.2) — want строки reactions, когда реакцию надо снять: владелец поправил сообщение, а агент правку
  * ещё не видел — прежние 👀 или 👌 относились к старому тексту ⟨предл.⟩. Место в порядке — самое раннее: 👀 и 👌 правки
@@ -1007,7 +1031,7 @@ export type SttNote = (typeof STT_NOTES)[number];
  * Виды одноразовых кнопок шлюза (buttons.kind; без CHECK — дополняются без миграции). rule_ok и rule_no — [разрешить] и
  * [нет] под карточкой изменения правил (M5).
  */
-export const BUTTON_KINDS = ['resume', 'episode_ok', 'episode_reject', 'episode_pick', 'transcript', 'rule_ok', 'rule_no'] as const;
+export const BUTTON_KINDS = ['resume', 'episode_ok', 'episode_reject', 'episode_pick', 'transcript', 'rule_ok', 'rule_no', 'line_connect', 'line_main', 'line_keep', 'peer_show'] as const;
 export type ButtonKind = (typeof BUTTON_KINDS)[number];
 
 /**
@@ -1022,6 +1046,9 @@ export interface PeerEventInfo {
 }
 
 /** peer_messages.status. */
+/** events.route: ждёт ответа владельца, кому сообщение (тишина на линии, TECH-SPEC 5.20). */
+export const ROUTE_ASK = '?';
+
 export const PEER_MESSAGE_STATUSES = ['pending', 'sent', 'failed', 'dropped', 'received'] as const;
 export type PeerMessageStatus = (typeof PEER_MESSAGE_STATUSES)[number];
 
@@ -1047,4 +1074,5 @@ export const SCHEMA_TABLES = [
   'deliveries',
   'conversations',
   'peer_messages',
+  'lines',
 ] as const;
