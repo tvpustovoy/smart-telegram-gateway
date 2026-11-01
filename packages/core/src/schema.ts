@@ -896,6 +896,15 @@ ALTER TABLE outbox ADD COLUMN plain INTEGER NOT NULL DEFAULT 0 CHECK (plain IN (
  * peer_messages: origin — кто отправил письмо (relay — агент инструментом, line — код шлюза на линии), line_id — чья линия,
  * unseen — письмо пришло вне линии и ждёт кнопки владельца.
  */
+/**
+ * Версия 17 (5.20): файл в письме. peer_messages.file_json — какой файл Telegram передать (PeerFileJob), file_ref — где он лежит,
+ * пока письмо ждёт. Файл агента владельцу — через deliveries, новых столбцов не нужно.
+ */
+const SCHEMA_V17 = `
+ALTER TABLE peer_messages ADD COLUMN file_json TEXT;
+ALTER TABLE peer_messages ADD COLUMN file_ref TEXT;
+`;
+
 const SCHEMA_V16 = `
 CREATE TABLE lines (
   id         INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -930,6 +939,7 @@ export const MIGRATIONS: readonly Migration[] = [
   { version: 14, name: 'посылки: картинка — фото (send_as)', sql: SCHEMA_V14 },
   { version: 15, name: 'связь с другими агентами: письма и вид события peer', sql: SCHEMA_V15, foreignKeysOff: true },
   { version: 16, name: 'линия: адрес сообщения и разговор с агентом напрямую', sql: SCHEMA_V16 },
+  { version: 17, name: 'линия: файлы в письмах', sql: SCHEMA_V17 },
 ];
 
 /**
@@ -1043,6 +1053,23 @@ export interface PeerEventInfo {
   name: string;
   relay_seq: number | null;
   failed?: string;
+  /** Файл агента: копия уже в хранилище посылок. */
+  file?: PeerFileInfo;
+}
+
+/** Файл другого агента: имя очищено шлюзом, размер и хэш посчитаны им же. copy_ref — как у посылки. */
+export interface PeerFileInfo {
+  name: string;
+  bytes: number;
+  sha256: string;
+  copy_ref: string;
+}
+
+/** peer_messages.file_json: файл Telegram, который уйдёт вместе с письмом. */
+export interface PeerFileJob {
+  file_id: string;
+  name: string;
+  mime: string | null;
 }
 
 /** peer_messages.status. */

@@ -11,7 +11,7 @@
 // - миграции v7 → v14 (events.media_ref; с 0.3.2 — outbox.from_name; с 0.3.3 — deliveries; с 0.3.4 — пересборка events
 //   с видом reaction и outbox.quote; с 0.3.5 — пересборка events с видом instructions и deletions с причиной topic,
 //   conversations; с 0.3.6 — пересборка events с material_json; с #60 — deliveries.send_as), в db_open — migrated_from 7,
-//   applied [8, 9, 10, 11, 12, 13, 14, 15, 16];
+//   applied [8, 9, 10, 11, 12, 13, 14, 15, 16, 17];
 // - клавиатура снимается один раз строкой «⚙ Кнопки убраны — команды в меню ☰» с remove_keyboard; строка 0.2 о кнопках —
 //   dropped;
 // - ✍ записанному 0.2 с 0.3.2 не ставится (R-1 «б»): до 👀 на сообщениях ничего; нового
@@ -60,7 +60,7 @@ function eventsBackToV7(db: DatabaseSync): void {
 
 describe('M7 · первый старт сведённой версии (0.3 … 0.3.6) на базе 0.2 (схема v7)', () => {
   it('v7 → v16; клавиатура снята один раз; ✍ записанному 0.2 нет (0.3.2); [расшифровка] 0.2 — ответом по 0.3.1 (с 0.3.4 — цитатой); 👀 и 👌 у агента; фото — media', async () => {
-    assert.equal(SCHEMA_VERSION, 16, 'итоговая схема — v16 (0.3.2: outbox.from_name; 0.3.3: deliveries; 0.3.4: events с видом reaction, outbox.quote; 0.3.5: events с видом instructions, deletions.fallback_text, conversations; 0.3.6: events.material_json; #60: deliveries.send_as)');
+    assert.equal(SCHEMA_VERSION, 17, 'итоговая схема — v17 (0.3.2: outbox.from_name; 0.3.3: deliveries; 0.3.4: events с видом reaction, outbox.quote; 0.3.5: events с видом instructions, deletions.fallback_text, conversations; 0.3.6: events.material_json; #60: deliveries.send_as)');
     const s = await voiceSetup({ fake: { transcript: FULL } });
     try {
       const seqOf = (u: Update): number => q1<{ seq: number }>(s.home, 'SELECT seq FROM events WHERE update_id = ?', u.update_id)!.seq;
@@ -118,12 +118,12 @@ describe('M7 · первый старт сведённой версии (0.3 …
       // --- Первый старт сведённой версии ---
       const g1 = await s.start();
       const open = await g1.waitForJournal((l) => l.ev === 'db_open' && l.migrated_from === 7);
-      assert.deepEqual({ applied: open.applied, schema: open.schema }, { applied: [8, 9, 10, 11, 12, 13, 14, 15, 16], schema: 16 });
+      assert.deepEqual({ applied: open.applied, schema: open.schema }, { applied: [8, 9, 10, 11, 12, 13, 14, 15, 16, 17], schema: 17 });
       const start = await g1.waitForJournal((l) => l.ev === 'start' && Number(l.pid) === g1.pid);
       const kr = start.keyboard_removed as { outbox_id: number | null; notes_dropped: number; recorded_backlog?: number };
       assert.equal(typeof kr.outbox_id, 'number', 'строка снятия клавиатуры в очереди');
       assert.deepEqual({ notes: kr.notes_dropped, backlog: kr.recorded_backlog }, { notes: 1, backlog: undefined });
-      assert.equal(meta(s.home, 'schema_version'), '16');
+      assert.equal(meta(s.home, 'schema_version'), '17');
       const removal = await pump(g1, () => s.fake.sentTo(OWNER.id).find((m) => m.text === KEYBOARD_REMOVED_TEXT), { what: 'строки снятия клавиатуры' });
       assert.deepEqual(removal.reply_markup, { remove_keyboard: true });
       for (let i = 0; i < 5; i++) await g1.advance('1s');

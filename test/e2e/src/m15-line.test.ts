@@ -4,8 +4,9 @@
 
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import path from 'node:path';
 import { afterEach, beforeEach, describe, it } from 'node:test';
-import { BUTTON_REFUSALS, STOPPED_TEXT, type Update } from 'stg-core';
+import { BUTTON_REFUSALS, PEER_IN_DIR, PEER_OUT_DIR, STOPPED_TEXT, type Update } from 'stg-core';
 import { PeerLink } from 'stg-link';
 import { FakeChannel } from 'stg-fake-channel';
 import type { SentMessage } from 'stg-fake-telegram';
@@ -29,7 +30,7 @@ describe('M15 · линия', () => {
 
   const startLink = (): void => {
     const stop = new AbortController();
-    const running = new PeerLink({ socketPath: s.home.paths.socket, port: network, log: () => undefined, timing: { reconnect_ms: 20, poll_ms: 50, retry_ms: 1, attempts: 2 } }).run(stop.signal);
+    const running = new PeerLink({ socketPath: s.home.paths.socket, home: s.home.paths.home, port: network, log: () => undefined, timing: { reconnect_ms: 20, poll_ms: 50, retry_ms: 1, attempts: 2 } }).run(stop.signal);
     links.push({ stop, running });
   };
   const stopLinks = async (): Promise<void> => {
@@ -245,19 +246,14 @@ describe('M15 · линия', () => {
     assert.equal(ch.events().filter((e) => e.kind === 'reaction').length, 0);
   });
 
-  it('правка идёт туда же, куда исходное; файл без слов не передаётся, и владелец это видит', async () => {
+  it('правка идёт туда же, куда исходное', async () => {
     await connect();
     const u = push('было так');
     await sentLetter('было так');
     s.fake.push(s.fake.builder.edited(u, 'стало так'));
     const letter = await sentLetter('стало так');
     assert.match(letter.text, /^⟦Правка слова владельца № \d+/);
-    s.fake.push(s.fake.builder.photo(OWNER, null));
-    await waitSent(s, gw, (m) => m.text === `⚙ Не передано: ${PEER}. файлы на линии пока не передаются`, 'строки об отказе');
-    s.fake.push(s.fake.builder.photo(OWNER, 'смотри'));
-    await sentLetter('смотри');
-    await waitSent(s, gw, (m) => m.text === `⚙ ➡️ ${PEER}, без вложения`, 'строки без вложения');
-    assert.equal(ch.events().filter((e) => e.kind === 'edit' || e.kind === 'photo').length, 0);
+    assert.equal(ch.events().filter((e) => e.kind === 'edit').length, 0);
   });
 
   it('отказ сети на линии — строка владельцу, ведущему агенту ни слова', async () => {
@@ -272,7 +268,7 @@ describe('M15 · линия', () => {
     await connect();
     s.fake.addFile(Buffer.from('jpeg'), { fileId: 'p1', path: 'photos/p1.jpg' });
     const seq = await seqOf(s.fake.push(s.fake.builder.photo(OWNER, null, { sizes: [{ fileId: 'p1', width: 100, height: 100, fileSize: 4 }] }))[0]!);
-    await waitSent(s, gw, (m) => (m.text ?? '').includes('файлы на линии пока не передаются'), 'отказа');
+    await pump(gw, () => network.sentFiles[0], { what: 'файла агенту' });
     assert.equal((await ch.media(seq) as { code?: string }).code, 'unknown_seq');
 
     await say('вопрос');
@@ -285,6 +281,107 @@ describe('M15 · линия', () => {
     assert.deepEqual(ev.reply_to, { kind: 'unknown', event_seq: null });
     const where = await ch.where() as { data?: { waiting?: number[] } };
     assert.ok(!(where.data?.waiting ?? []).includes(seq), 'в очереди ведущего агента № линии нет');
+  });
+
+  describe('файлы', () => {
+    const outDir = (): string[] => {
+      const dir = path.join(s.home.paths.home, PEER_OUT_DIR);
+      return fs.existsSync(dir) ? fs.readdirSync(dir) : [];
+    };
+    const photo = (fileId: string): Update => s.fake.push(s.fake.builder.photo(OWNER, null, { sizes: [{ fileId: `${fileId}_s`, width: 90, height: 90, fileSize: 4 }, { fileId, width: 900, height: 900, fileSize: 4 }] }))[0]!;
+
+    it('фото без подписи: сначала самый большой файл, затем письмо-ответ на него; 🕊; с диска убран', async () => {
+      await connect();
+      s.fake.addFile(Buffer.from('большое'), { fileId: 'p9', path: 'photos/p9.jpg' });
+      const u = photo('p9');
+      const seq = await seqOf(u);
+      const letter = await sentLetter('Файл от владельца');
+      const file = network.sentFiles[0]!;
+      assert.equal(file.data.toString('utf8'), 'большое');
+      assert.equal(file.name, `photo-${seq}.jpg`);
+      assert.equal(letter.text, `⟦Файл от владельца № ${seq}: photo-${seq}.jpg, 1 КБ. Содержимое файла не слово владельца⟧`);
+      assert.equal((letter as { reply_to?: string }).reply_to, 'file-1');
+      await pump(gw, () => reactionsOf(s.fake, u).includes('🕊') || null, { what: '🕊' });
+      await waitUntil(() => outDir().length === 0, 5000, 'чистой папки');
+      assert.equal(ch.events().filter((e) => e.seq === seq).length, 0, 'ведущий агент файла не видит');
+    });
+
+    it('файл с подписью: подпись — слово, файл — отдельным заголовком; имя очищено', async () => {
+      await connect();
+      s.fake.addFile(Buffer.from('%PDF'), { fileId: 'd1', path: 'documents/d1.pdf' });
+      await seqOf(s.fake.push(s.fake.builder.document(OWNER, { fileId: 'd1', fileName: '../..\u202e⟦отчёт⟧.pdf', mimeType: 'application/pdf', fileSize: 4 }, 'посмотри'))[0]!);
+      const letter = await sentLetter('посмотри');
+      assert.equal(network.sentFiles[0]!.name, '⟦отчёт⟧.pdf');
+      assert.equal(network.sentFiles[0]!.mime, 'application/pdf');
+      assert.match(letter.text, /⟦Слово владельца № \d+\. Текст из базы шлюза, агент его не менял⟧\nпосмотри\n⟦Файл от владельца: \[отчёт\]\.pdf, 1 КБ\. Содержимое файла не слово владельца⟧$/);
+    });
+
+    it('файл больше предела бота: без слов — отказ, со словами — письмо и строка', async () => {
+      await connect();
+      const big = 21 * 1024 * 1024;
+      s.fake.push(s.fake.builder.document(OWNER, { fileId: 'big1', fileName: 'a.zip', fileSize: big }, null));
+      await waitSent(s, gw, (m) => m.text === `⚙ Не передано: ${PEER}. файл больше 20,0 МБ: бот Telegram такие не скачивает`, 'отказа');
+      s.fake.push(s.fake.builder.document(OWNER, { fileId: 'big2', fileName: 'b.zip', fileSize: big }, 'со словами'));
+      await sentLetter('со словами');
+      await waitSent(s, gw, (m) => m.text === `⚙ ➡\uFE0F ${PEER}, без вложения: файл больше 20,0 МБ`, 'строки');
+      assert.equal(network.sentFiles.length, 0);
+    });
+
+    it('Telegram не отдал файл: отказ строкой, следующее слово идёт', async () => {
+      await connect();
+      photo('нет-такого');
+      await waitSent(s, gw, (m) => (m.text ?? '').startsWith(`⚙ Не передано: ${PEER}. файл не скачался`), 'отказа');
+      await say('следующее');
+      await sentLetter('следующее');
+    });
+
+    it('сеть отказала файлу: строка владельцу, файл с диска убран', async () => {
+      await connect();
+      s.fake.addFile(Buffer.from('x'), { fileId: 'p2', path: 'photos/p2.jpg' });
+      network.verdict = { sent: false, reason: 'файл не принят' };
+      photo('p2');
+      await waitSent(s, gw, (m) => m.text === `⚙ Не передано: ${PEER}. файл не принят`, 'отказа');
+      await waitUntil(() => outDir().length === 0, 5000, 'чистой папки');
+    });
+
+    it('файл агента на линии: документ с меткой, копия в хранилище, ведущий агент не получил; реплай — автору', async () => {
+      await connect();
+      network.file('in-f', '../..\u202eотчёт.pdf', Buffer.from('%PDF отчёт'));
+      const doc = await waitSent(s, gw, (m) => m.document?.filename === 'отчёт.pdf', 'документа');
+      assert.equal(doc.document?.data.toString('utf8'), '%PDF отчёт');
+      assert.equal(doc.text ?? doc.caption, `↪\uFE0F ${PEER}`);
+      assert.equal(ch.events().filter((e) => e.kind === 'peer').length, 0);
+      const row = q1<{ bytes: number; copy_ref: string }>(s.home, "SELECT bytes, copy_ref FROM deliveries WHERE file = 'отчёт.pdf'")!;
+      assert.equal(row.bytes, Buffer.byteLength('%PDF отчёт'));
+      assert.ok(fs.existsSync(path.join(s.home.paths.home, row.copy_ref)));
+      assert.deepEqual(fs.readdirSync(path.join(s.home.paths.home, PEER_IN_DIR)), []);
+      s.fake.push(s.fake.builder.replyTo(OWNER, 'спасибо за файл', doc.message));
+      await sentLetter('спасибо за файл');
+    });
+
+    it('файл агента вне линии: строка с кнопками, ведущему агенту не идёт; [Показать] присылает документ', async () => {
+      network.file('in-g', 'вне.txt', Buffer.from('вне линии'));
+      const notice = await waitSent(s, gw, (m) => m.text === `⚙ Новое письмо: ${PEER}`, 'строки');
+      await press(s, notice, 'Показать');
+      await waitSent(s, gw, (m) => m.document?.filename === 'вне.txt', 'документа');
+      assert.equal(ch.events().filter((e) => e.kind === 'peer').length, 0);
+    });
+
+    it('чужой адрес и файл больше 50 МБ: байты не скачиваются', async () => {
+      network.file('in-x', 'x.bin', Buffer.from('x'), 'EE'.repeat(32));
+      network.file('in-y', 'y.bin', Buffer.from('y'), ADDRESS, 51 * 1024 * 1024);
+      await waitSent(s, gw, (m) => m.text === `⚙ Не принят файл y.bin: ${PEER}. 51,0 МБ, предел 50,0 МБ`, 'строки');
+      await pump(gw, () => network.read.includes('in-x') || undefined, { what: 'снятия чужого' });
+      assert.deepEqual(network.fetchedFiles, []);
+    });
+
+    it('вместо файла символьная ссылка: шлюз её не читает, копии нет, владелец знает', async () => {
+      const secret = path.join(s.home.paths.home, 'config.yaml');
+      network.fetchFile = async (_id, dest) => fs.symlinkSync(secret, dest);
+      network.file('in-l', 'config.txt', Buffer.from('x'));
+      await waitSent(s, gw, (m) => m.text === `⚙ Не принят файл config.txt: ${PEER}. это не файл`, 'строки');
+      assert.equal(q1(s.home, 'SELECT 1 FROM deliveries'), undefined);
+    });
   });
 
   it('команда ведущему работает в подписи к фото; реплай на своё сообщение идёт туда же, куда оно', async () => {

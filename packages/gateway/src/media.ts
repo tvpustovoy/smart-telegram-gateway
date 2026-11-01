@@ -125,6 +125,17 @@ export class MediaService {
     await Promise.allSettled([...this.inflight.values()]);
   }
 
+  /** Файл Telegram целиком для другого агента (5.20): без показа и без raw/. Шлюз останавливается — null. */
+  async bytes(fileId: string): Promise<Buffer | null> {
+    try {
+      return await this.download(fileId);
+    } catch (err) {
+      if (this.stopCtl.signal.aborted) return null;
+      if (err instanceof TooBigForBot) throw new Error(`файл больше ${formatBytes(BOT_API_FILE_LIMIT)}: бот Telegram такие не скачивает`);
+      throw err;
+    }
+  }
+
   /** Картинка события № seq (проверки аренды — у вызывающего). */
   view(seq: number): Promise<MediaOutcome> {
     const cur = this.inflight.get(seq);

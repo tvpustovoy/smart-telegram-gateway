@@ -562,8 +562,7 @@ export function resetWhen(at: number, tz: string, now: number): string {
   return at - now <= RESET_TIME_WITHIN_MS ? localTime(at, tz) : weekdayShort(at, tz);
 }
 
-function limitText(w: LimitView | null, tz: string, now: number): string {
-  if (!w) return '—';
+function limitText(w: LimitView, tz: string, now: number): string {
   if (w.pct > LIMIT_WARN_PCT) return `⚠${w.pct}%${w.resets_at !== null ? ` до ${resetWhen(w.resets_at, tz, now)}` : ''}`;
   return `${w.pct}%`;
 }
@@ -576,7 +575,9 @@ export function agentIndicatorParts(v: AgentView, tz: string, now: number): stri
   const parts: string[] = [];
   if (v.compacting) parts.push('🌀');
   else if (v.context !== null) parts.push(`🧠 ${v.context}%`);
-  if (v.five || v.week) parts.push(`🕐 ${limitText(v.five, tz, now)} · 📅 ${limitText(v.week, tz, now)}`);
+  // Значения нет — значка нет: чёрточка владельцу ничего не говорит.
+  const limits = [v.five ? `🕐 ${limitText(v.five, tz, now)}` : null, v.week ? `📅 ${limitText(v.week, tz, now)}` : null].filter((x) => x !== null);
+  if (limits.length) parts.push(limits.join(' · '));
   return parts;
 }
 

@@ -317,10 +317,10 @@ describe('состояние агента: что показывать (J-4: `�
     assert.deepEqual(agentIndicatorParts(v, TZ, NOW), ['🧠 16%', '🕐 ⚠85% до 11:00 · 📅 ⚠91% до ср']);
     // 80% ровно — ещё без ⚠.
     const edge = applyStatusline(emptyAgentState(), input({ rate_limits: { five_hour: { used_percentage: 80.2, resets_at: Math.round((NOW + H) / 1000) } } }), NOW);
-    assert.deepEqual(agentIndicatorParts(agentView(edge, live), TZ, NOW), ['🧠 16%', '🕐 80% · 📅 —']);
-    // Сброс 5-часового прошёл — «—» (лимит общий на подписку: после сброса число неизвестно).
+    assert.deepEqual(agentIndicatorParts(agentView(edge, live), TZ, NOW), ['🧠 16%', '🕐 80%']);
+    // Сброс 5-часового прошёл — значка нет (лимит общий на подписку: после сброса число неизвестно).
     const later = NOW + 3 * H + 1;
-    assert.deepEqual(agentIndicatorParts(agentView(base, { ...live, now: later }), TZ, later), ['🧠 16%', '🕐 — · 📅 64%']);
+    assert.deepEqual(agentIndicatorParts(agentView(base, { ...live, now: later }), TZ, later), ['🧠 16%', '📅 64%']);
     const gone = NOW + 5 * 24 * H;
     assert.deepEqual(agentIndicatorParts(agentView(base, { ...live, now: gone }), TZ, gone).filter((p) => p.startsWith('🕐')), []);
   });

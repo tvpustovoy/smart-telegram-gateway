@@ -7,7 +7,7 @@ import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import { after, describe, it } from 'node:test';
-import { FrameDecoder, MAX_REPLY_TEXT, encodeFrame } from 'stg-core';
+import { FrameDecoder, MAX_REPLY_TEXT, encodeFrame, PEER_IN_DIR, PEER_OUT_DIR } from 'stg-core';
 import { PeerLink, letterText } from './link.js';
 import { loadPort, type Letter, type NetworkPort, type SendVerdict } from './port.js';
 
@@ -19,7 +19,11 @@ after(() => {
 class FakeNetwork implements NetworkPort {
   inbox: Letter[] = [];
   read: string[] = [];
-  sent: Array<{ address: string; text: string }> = [];
+  sent: Array<{ address: string; text: string; reply_to?: string }> = [];
+  sentFiles: Array<{ name: string; mime: string | null; data: string }> = [];
+  fileVerdicts: Array<SendVerdict | Error> = [];
+  fetched: string[] = [];
+  fetchFails = 0;
   verdicts: Array<SendVerdict | Error> = [];
   hangUnread = false;
   hangSend = false;
@@ -34,12 +38,25 @@ class FakeNetwork implements NetworkPort {
     this.read.push(...ids);
   }
 
-  async send(address: string, text: string): Promise<SendVerdict> {
+  async send(address: string, text: string, reply_to?: string): Promise<SendVerdict> {
     if (this.hangSend) return new Promise(() => undefined);
     const v = this.verdicts.shift() ?? { sent: true as const, wire_id: `wire-${this.sent.length + 1}` };
     if (v instanceof Error) throw v;
-    this.sent.push({ address, text });
+    this.sent.push({ address, text, ...(reply_to ? { reply_to } : {}) });
     return v;
+  }
+
+  async sendFile(_address: string, file: string, name: string, mime: string | null): Promise<SendVerdict> {
+    const v = this.fileVerdicts.shift() ?? { sent: true as const, wire_id: `file-${this.sentFiles.length + 1}` };
+    if (v instanceof Error) throw v;
+    this.sentFiles.push({ name, mime, data: fs.readFileSync(file, 'utf8') });
+    return v;
+  }
+
+  async fetchFile(wireId: string, dest: string): Promise<void> {
+    this.fetched.push(wireId);
+    if (this.fetchFails-- > 0) throw new Error('сеть не отдала файл');
+    fs.writeFileSync(dest, 'байты');
   }
 
   async *wakes(signal: AbortSignal): AsyncIterable<void> {
@@ -54,6 +71,11 @@ class FakeNetwork implements NetworkPort {
 
   async close(): Promise<void> {}
 
+  file(wire_id: string, name = 'отчёт.pdf', bytes = 5): void {
+    this.inbox.push({ wire_id, from: 'ADDR', kind: 'file', text: null, reply_to: null, file: { name, mime: null, bytes } });
+    this.ring?.();
+  }
+
   letter(wire_id: string, text = 'текст'): void {
     this.inbox.push({ wire_id, from: 'ADDR', kind: 'text', text, reply_to: null });
     this.ring?.();
@@ -67,6 +89,7 @@ class FakeGateway {
   refuse = false;
   badRequest: string | null = null;
   unavailable = 0;
+  offer = 'wanted';
   private constructor(private readonly server: net.Server) {}
 
   static async start(file: string): Promise<FakeGateway> {
@@ -90,7 +113,7 @@ class FakeGateway {
           this.unavailable--;
           sock.write(encodeFrame({ type: 'error', req_id: m.req_id, code: 'unavailable', text: 'диск полон' }));
         }
-        else sock.write(encodeFrame({ type: 'ack', req_id: m.req_id, result: 'ok' }));
+        else sock.write(encodeFrame({ type: 'ack', req_id: m.req_id, result: m.type === 'peer_file' ? this.offer : 'ok' }));
       }
     });
   }
@@ -125,10 +148,11 @@ async function rig(timing = {}) {
   const network = new FakeNetwork();
   const stop = new AbortController();
   const logs: string[] = [];
-  const running = new PeerLink({ socketPath: file, port: network, log: (l) => logs.push(l), timing: { reconnect_ms: 10, poll_ms: 20, retry_ms: 1, attempts: 2, ...timing } }).run(stop.signal);
+  const running = new PeerLink({ socketPath: file, home: dir, port: network, log: (l) => logs.push(l), timing: { reconnect_ms: 10, poll_ms: 20, retry_ms: 1, attempts: 2, ...timing } }).run(stop.signal);
   await until(() => gw.of('hello').length > 0, 'hello');
   return {
     gw,
+    dir,
     network: network,
     logs,
     async close() {
@@ -138,6 +162,79 @@ async function rig(timing = {}) {
     },
   };
 }
+
+describe('stg-link: файлы', () => {
+  const out = (dir: string, id: number): void => {
+    fs.mkdirSync(path.join(dir, PEER_OUT_DIR), { recursive: true });
+    fs.writeFileSync(path.join(dir, PEER_OUT_DIR, String(id)), 'байты');
+  };
+  const send = { type: 'peer_send', id: 7, address: 'ADDR', text: 'слово', file: { name: 'a.pdf', mime: 'application/pdf' } };
+
+  it('шлюз ждёт файл: скачан в папку связи, передан, папка чиста, письмо прочитано', async () => {
+    const r = await rig();
+    r.network.file('f1');
+    await until(() => r.network.read.includes('f1'), 'прочтения');
+    assert.deepEqual(r.gw.of('peer_file').map((f) => [f.wire_id, f.name, f.bytes]), [['f1', 'отчёт.pdf', 5]]);
+    assert.equal(r.gw.of('peer_in')[0]?.file.name, 'отчёт.pdf');
+    assert.deepEqual(fs.readdirSync(path.join(r.dir, PEER_IN_DIR)), []);
+    await r.close();
+  });
+
+  it('шлюз файл не ждёт: байты не скачиваются, письмо снимается', async () => {
+    const r = await rig();
+    r.gw.offer = 'unknown_peer';
+    r.network.file('f1');
+    await until(() => r.network.read.includes('f1'), 'прочтения');
+    assert.deepEqual(r.network.fetched, []);
+    assert.equal(r.gw.of('peer_in').length, 0);
+    await r.close();
+  });
+
+  it('файл не скачался: письмо остаётся, письмо за ним проходит, файл приходит следующим проходом', async () => {
+    const r = await rig();
+    r.network.fetchFails = 1;
+    r.network.file('f1');
+    r.network.letter('w2', 'следом');
+    await until(() => r.network.read.includes('w2'), 'письма за файлом');
+    await until(() => r.network.read.includes('f1'), 'файла повтором');
+    await r.close();
+  });
+
+  it('исходящий: сначала файл, письмо отвечает на него', async () => {
+    const r = await rig();
+    out(r.dir, 7);
+    r.gw.push(send);
+    await until(() => r.gw.of('peer_sent').length === 1, 'peer_sent');
+    assert.deepEqual(r.network.sentFiles, [{ name: 'a.pdf', mime: 'application/pdf', data: 'байты' }]);
+    assert.equal(r.network.sent[0]?.reply_to, 'file-1');
+    assert.equal(r.gw.of('peer_sent')[0]?.wire_id, 'wire-1');
+    await r.close();
+  });
+
+  it('файл не ушёл: письма нет, peer_failed с причиной', async () => {
+    const r = await rig();
+    out(r.dir, 7);
+    r.network.fileVerdicts = [{ sent: false, reason: 'слишком большой' }];
+    r.gw.push(send);
+    await until(() => r.gw.of('peer_failed').length === 1, 'peer_failed');
+    assert.equal(r.gw.of('peer_failed')[0]?.reason, 'слишком большой');
+    assert.equal(r.network.sent.length, 0);
+    await r.close();
+  });
+
+  it('файл ушёл, письмо нет: повтор не шлёт файл второй раз', async () => {
+    const r = await rig();
+    out(r.dir, 7);
+    r.network.verdicts = [{ sent: false, reason: 'нет' }];
+    r.gw.push(send);
+    await until(() => r.gw.of('peer_failed').length === 1, 'peer_failed');
+    r.gw.push(send);
+    await until(() => r.gw.of('peer_sent').length === 1, 'peer_sent');
+    assert.equal(r.network.sentFiles.length, 1);
+    assert.equal(r.network.sent[0]?.reply_to, 'file-1');
+    await r.close();
+  });
+});
 
 describe('stg-link: входящие', () => {
   it('hello с ролью peer_link', async () => {

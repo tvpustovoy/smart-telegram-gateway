@@ -24,7 +24,7 @@ describe('M14 · связь с другими агентами', () => {
 
   const startLink = (): void => {
     const stop = new AbortController();
-    const running = new PeerLink({ socketPath: s.home.paths.socket, port: network, log: () => undefined, timing: { reconnect_ms: 20, poll_ms: 50, retry_ms: 1, attempts: 1 } }).run(stop.signal);
+    const running = new PeerLink({ socketPath: s.home.paths.socket, home: s.home.paths.home, port: network, log: () => undefined, timing: { reconnect_ms: 20, poll_ms: 50, retry_ms: 1, attempts: 1 } }).run(stop.signal);
     links.push({ stop, running });
   };
   const stopLinks = async (): Promise<void> => {
@@ -166,7 +166,7 @@ describe('M14 · связь с другими агентами', () => {
     await linked();
     const other = new FakeNetwork();
     const stop = new AbortController();
-    const running = new PeerLink({ socketPath: s.home.paths.socket, port: other, log: () => undefined, timing: { reconnect_ms: 20, poll_ms: 50, retry_ms: 1, attempts: 1 } }).run(stop.signal);
+    const running = new PeerLink({ socketPath: s.home.paths.socket, home: s.home.paths.home, port: other, log: () => undefined, timing: { reconnect_ms: 20, poll_ms: 50, retry_ms: 1, attempts: 1 } }).run(stop.signal);
     links.push({ stop, running });
     await sleep(100);
     const seq = await say('Слово при двух связях');

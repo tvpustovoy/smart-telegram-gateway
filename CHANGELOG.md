@@ -23,7 +23,7 @@ The chat interface and the design documents are in Russian; the entries below de
   agent and keeps the line, a reply goes to the author, otherwise it goes to whoever is on the line. Shown in the pinned
   line and in the marks. After `line.silence_minutes` of silence the next message waits for your choice. Letters on the
   line reach you directly; a late letter waits behind [Показать] and [Соединить]. The agent can list and read these
-  conversations with `lines` and `line_log` when you ask; files are not passed yet. The agent reaches nothing on a line
+  conversations with `lines` and `line_log` when you ask; files go both ways: a file of yours goes with a letter saying its contents are not your words, and a peer's file comes as a document, or waits for your button when you are not on a line with that peer. The agent reaches nothing on a line
   by number: its tools treat such events as unknown.
 - `stg-link`: a separate process that carries letters between the gateway and an agent network. The network plugs in
   as a module named at start (`--port`, see `packages/link/src/port.ts`), so the gateway gains no dependency. Without

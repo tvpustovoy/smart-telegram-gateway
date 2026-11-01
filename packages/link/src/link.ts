@@ -6,9 +6,15 @@
 //   Сбой сети — несколько попыток, затем peer_failed: шлюз скажет агенту и владельцу. Отказ сети — peer_failed сразу. Сеть не
 //   ответила в срок — тоже peer_failed, без повтора: письмо могло уйти. Шлюз не смог записать исход — повтор, пока не запишет.
 // - Шлюз недоступен — подключается заново; письма ждут: входящие в сети, исходящие в базе шлюза.
+// - Файлы: в сети файл и текст — разные сообщения. Исходящий лежит в папке шлюза и уходит перед письмом, письмо отвечает на него. Входящий
+//   скачивается, только если шлюз его ждёт (peer_file); передаётся папкой, кадры связи для него слишком малы. Файл не скачался — письмо
+//   остаётся в сети до следующего прохода, а письма за ним идут дальше.
 
+import crypto from 'node:crypto';
+import fs from 'node:fs';
 import net from 'node:net';
-import { FrameDecoder, MAX_REPLY_TEXT, PEER_ID_MAX, PROTOCOL_VERSION, encodeFrame, parseGatewayLine, type GatewayMessage } from 'stg-core';
+import path from 'node:path';
+import { FrameDecoder, MAX_REPLY_TEXT, PEER_ID_MAX, PEER_IN_DIR, PEER_OUT_DIR, PROTOCOL_VERSION, encodeFrame, ensureDir, parseGatewayLine, type GatewayMessage } from 'stg-core';
 import type { Letter, NetworkPort, SendVerdict } from './port.js';
 
 export const LINK_ADAPTER = 'stg-link';
@@ -20,12 +26,15 @@ export interface LinkTiming {
   attempts: number;
   answer_ms: number;
   network_ms: number;
+  file_ms: number;
 }
 
-export const DEFAULT_LINK_TIMING: LinkTiming = { reconnect_ms: 2_000, poll_ms: 60_000, retry_ms: 5_000, attempts: 3, answer_ms: 10_000, network_ms: 30_000 };
+export const DEFAULT_LINK_TIMING: LinkTiming = { reconnect_ms: 2_000, poll_ms: 60_000, retry_ms: 5_000, attempts: 3, answer_ms: 10_000, network_ms: 30_000, file_ms: 180_000 };
 
 export interface LinkOptions {
   socketPath: string;
+  /** Каталог бота: папки файлов в пути. */
+  home: string;
   port: NetworkPort;
   log: (line: string) => void;
   timing?: Partial<LinkTiming>;
@@ -75,6 +84,8 @@ export class PeerLink {
   private nextReq = 0;
   private readonly pending = new Map<string, { resolve: (m: GatewayMessage) => void; reject: (e: Error) => void; timer: NodeJS.Timeout }>();
   private readonly sent = new Map<number, string>();
+  /** Файл письма ушёл, письмо ещё нет: повтор не шлёт файл второй раз. */
+  private readonly filesSent = new Map<number, string>();
   private sending: Promise<void> = Promise.resolve();
   private draining = false;
   private again = false;
@@ -210,7 +221,23 @@ export class PeerLink {
         try {
           for (const l of await within(this.opts.port.unread(), this.timing.network_ms)) {
             const reply = l.reply_to && l.reply_to.length <= PEER_ID_MAX ? { reply_to: l.reply_to } : {};
-            const r = await this.ask('peer_in', { address: l.from, wire_id: l.wire_id, text: letterText(l), ...reply });
+            let file: { drop: string; name: string } | null = null;
+            if (l.file) {
+              try {
+                file = await this.fetchFile(l);
+              } catch (err) {
+                this.opts.log(`файл ${l.wire_id.slice(0, 12)}: ${(err as Error).message}`);
+                continue;
+              }
+              if (!file) {
+                taken.push(l.wire_id);
+                continue;
+              }
+            }
+            const drop = file ? path.join(this.opts.home, PEER_IN_DIR, file.drop) : null;
+            const r = await this.ask('peer_in', { address: l.from, wire_id: l.wire_id, text: letterText(l), ...reply, ...(file ? { file } : {}) }).finally(() => {
+              if (drop) fs.rmSync(drop, { force: true });
+            });
             if (r.type === 'error' && r.code !== 'bad_request') {
               this.opts.log(`шлюз не принял письмо ${l.wire_id.slice(0, 12)}: ${r.text}`);
               break;
@@ -228,6 +255,25 @@ export class PeerLink {
     } finally {
       this.draining = false;
     }
+  }
+
+  /** Спросить шлюз и скачать файл письма в папку связи. null — файл не нужен, письмо снимается. */
+  private async fetchFile(l: Letter): Promise<{ drop: string; name: string } | null> {
+    const file = l.file!;
+    const name = file.name.slice(0, 1024) || 'файл';
+    const offer = await this.ask('peer_file', { address: l.from, wire_id: l.wire_id, name, bytes: file.bytes });
+    if (offer.type === 'error') throw new Error(offer.text);
+    if (offer.type !== 'ack' || offer.result !== 'wanted') return null;
+    const drop = crypto.randomUUID();
+    const full = path.join(this.opts.home, PEER_IN_DIR, drop);
+    ensureDir(path.dirname(full));
+    try {
+      await within(this.opts.port.fetchFile(l.wire_id, full), this.timing.file_ms);
+    } catch (err) {
+      fs.rmSync(full, { force: true });
+      throw err;
+    }
+    return { drop, name };
   }
 
   private async deliver(m: PeerSend): Promise<void> {
@@ -255,12 +301,15 @@ export class PeerLink {
   private async sendOnce(m: PeerSend): Promise<SendVerdict> {
     const known = this.sent.get(m.id);
     if (known !== undefined) return { sent: true, wire_id: known };
+    const file = await this.sendFile(m);
+    if (typeof file === 'object') return file;
     let last = '';
     for (let attempt = 1; attempt <= this.timing.attempts; attempt++) {
       try {
-        const v = await within(this.opts.port.send(m.address, m.text), this.timing.network_ms);
+        const v = await within(this.opts.port.send(m.address, m.text, file), this.timing.network_ms);
         if (v.sent) {
           this.sent.set(m.id, v.wire_id);
+          this.filesSent.delete(m.id);
           if (this.sent.size > SENT_MEMORY) this.sent.delete(this.sent.keys().next().value!);
         }
         return v;
@@ -272,5 +321,21 @@ export class PeerLink {
       }
     }
     return { sent: false, reason: `сеть недоступна: ${last}` };
+  }
+
+  /** Файл письма: номер ушедшего файла, undefined — файла нет, объект — отказ. Срок один: файл большой, а повтор мог бы дать второй файл. */
+  private async sendFile(m: PeerSend): Promise<string | undefined | SendVerdict> {
+    if (!m.file) return undefined;
+    const known = this.filesSent.get(m.id);
+    if (known !== undefined) return known;
+    try {
+      const full = path.join(this.opts.home, PEER_OUT_DIR, String(m.id));
+      const v = await within(this.opts.port.sendFile(m.address, full, m.file.name, m.file.mime), this.timing.file_ms);
+      if (!v.sent) return v;
+      this.filesSent.set(m.id, v.wire_id);
+      return v.wire_id;
+    } catch (err) {
+      return { sent: false, reason: err instanceof NetworkTimeout ? `${err.message}: файл мог уйти` : `файл не ушёл: ${(err as Error).message}` };
+    }
   }
 }

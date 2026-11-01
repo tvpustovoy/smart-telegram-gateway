@@ -104,6 +104,50 @@ export function viewableOf(attachments: readonly Attachment[] | null | undefined
   return null;
 }
 
+/** Предел имени файла в письме и в строке владельцу, знаков. */
+export const PEER_FILE_NAME_MAX = 128;
+
+/** Имя файла из чужих рук: последний сегмент, без управляющих и невидимых знаков, без точек в начале. Расширение сохраняется. */
+export function safeFileName(name: string): string {
+  const last = name.replace(/[\p{Cc}\p{Cf}\u2028\u2029]/gu, '').split(/[/\\]/).pop() ?? '';
+  const clean = [...last.trim().replace(/^\.+/, '')].slice(-PEER_FILE_NAME_MAX).join('');
+  return clean || 'файл';
+}
+
+/** Файл вложения для другого агента. */
+export interface PeerAttachment {
+  fileId: string;
+  name: string;
+  mime: string | null;
+  size: number | null;
+}
+
+/**
+ * Что из вложений события можно передать другому агенту: фото — самое большое, файл — как есть. Голос идёт словами, а геопозиция,
+ * контакт и опрос файла не имеют: null. Имени нет — вид и № события.
+ */
+export function peerAttachmentOf(attachments: readonly Attachment[] | null | undefined, seq: number): PeerAttachment | null {
+  for (const a of attachments ?? []) {
+    const ref = a.ref ?? {};
+    if (a.kind === 'photo') {
+      const listed = Array.isArray(ref.sizes) ? (ref.sizes as unknown[]).map(fileRef).filter((x): x is FileRef => x !== null) : [];
+      const sizes = listed.length ? listed : [fileRef(ref)].filter((x): x is FileRef => x !== null);
+      const side = (s: FileRef): number => Math.max(s.width ?? 0, s.height ?? 0);
+      const pick = [...sizes].sort((x, y) => side(y) - side(x))[0];
+      if (pick) return { fileId: pick.fileId, name: `photo-${seq}.jpg`, mime: 'image/jpeg', size: pick.size };
+      continue;
+    }
+    if (a.kind !== 'document') continue;
+    const file = fileRef(ref);
+    if (!file) continue;
+    const mime = str(ref.mime_type)?.toLowerCase() ?? null;
+    const ext = mime?.split('/')[1];
+    const name = str(ref.file_name) ?? `${str(ref.type) ?? 'file'}-${seq}${ext && /^[a-z0-9]{2,5}$/.test(ext) ? `.${ext}` : ''}`;
+    return { fileId: file.fileId, name: safeFileName(name), mime, size: file.size };
+  }
+  return null;
+}
+
 export interface ImageInfo {
   format: 'png' | 'jpeg' | 'gif' | 'webp';
   mime: ImageMime;

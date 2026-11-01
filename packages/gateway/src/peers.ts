@@ -11,20 +11,30 @@
 // - Правда о передаче — у шлюза: строку владельцу ставит код, когда связь подтвердила отправку или отказала; в ней видно,
 //   что ушёл отрывок и что была записка.
 
-import { MAX_FRAME_BYTES, ROUTE_ASK, readTurn, LEASE_PONG_TIMEOUT_MS, MAX_REPLY_TEXT, MESSAGE_EVENT_KINDS, cutGraphemes, sql, transaction, type AdapterMessage, type AgentsResult, type ErrorCode, type Mode, type PeerEventInfo, type RelayResult, type EventStatus, type LineLogResult, type LinesResult } from 'stg-core';
+import crypto from 'node:crypto';
+import fs from 'node:fs';
+import path from 'node:path';
+import { BOT_API_FILE_LIMIT, MAX_FRAME_BYTES, PARCEL_MAX_BYTES, PARCEL_STORE_DIR, PEER_IN_DIR, PEER_OUT_DIR, ROUTE_ASK, readTurn, LEASE_PONG_TIMEOUT_MS, MAX_REPLY_TEXT, MESSAGE_EVENT_KINDS, cutGraphemes, ensureDir, formatBytes, peerAttachmentOf, safeFileName, sql, transaction, writeFileAtomicSync, type AdapterMessage, type AgentsResult, type Attachment, type ErrorCode, type Mode, type PeerEventInfo, type PeerFileInfo, type PeerFileJob, type RelayResult, type EventStatus, type LineLogResult, type LinesResult } from 'stg-core';
 import { enqueueServiceLine, type Ctx } from './context.js';
-import { noticeLetters, openLine, showLetter } from './lines.js';
+import { noticeLetters, openLine, peerFileOfEvent, showLetter } from './lines.js';
 import { requestSent } from './reactions.js';
 import type { GatewayConnection } from './socket-server.js';
 
 // Линия (сценарий 2, 5.20): слово владельца на линии уходит кодом, мимо ведущего агента; письмо агента на линии — прямо
 // владельцу, ведущий агент его не получает. Письмо с линии, пришедшее вне её, ждёт кнопки владельца.
+//
+// Файлы на линии: в сети файл и текст — разные сообщения. Шлюз скачивает файл Telegram перед отправкой и кладёт в папку исходящих,
+// связь отдаёт сначала файл, затем письмо: заголовок говорит, что содержимое файла не слово владельца. Файл уходит и пропадает
+// с диска. Файл агента шлюз сначала оценивает по адресу и размеру, а скачивает связь только нужный; в чат он приходит документом, как
+// посылка. Вне линии такой файл ждёт кнопки владельца: в разговор ведущего агента чужие байты не попадают.
 
 export interface PeerHooks {
   /** Новое событие для агента (письмо или сбой передачи). */
   onEvent(): void;
   /** Владельцу поставлена строка. */
   onQueued(): void;
+  /** Байты файла Telegram; null — шлюз останавливается, письмо подождёт. */
+  fetchFile(fileId: string): Promise<Buffer | null>;
 }
 
 interface PeerRow {
@@ -37,6 +47,8 @@ interface PeerRow {
   error: string | null;
   origin: 'relay' | 'line';
   line_id: number | null;
+  file_json: string | null;
+  file_ref: string | null;
 }
 
 interface WordRow {
@@ -56,6 +68,7 @@ interface LineEvent extends WordRow {
   edit_of: number | null;
   message_id: number | null;
   chat_id: number;
+  peer_json: string | null;
 }
 
 interface LinkedOut {
@@ -68,7 +81,10 @@ interface LinkedOut {
 
 export type RelayOutcome = { ok: true; result: RelayResult } | { ok: false; code: ErrorCode; text: string };
 
-export type PeerInResult = { status: 'accepted'; seq: number } | { status: 'duplicate' | 'unknown_peer' };
+export type PeerInResult = { status: 'accepted'; seq: number } | { status: 'duplicate' | 'unknown_peer' | 'refused' };
+
+/** Ответ на peer_file. */
+export type PeerFileOffer = 'wanted' | 'duplicate' | 'unknown_peer' | 'refused';
 
 /** Настоящее время на ответ, как у аренды: часы могли прыгнуть, а связь не успела ответить. */
 const LEASE_REAL_GRACE_MS = 1_000;
@@ -124,10 +140,19 @@ export function peerLetter(seq: number, words: string, excerpted: boolean, note:
   return parts.join('\n');
 }
 
+/** Заголовок файла в письме. Содержимое файла — материал, даже если файл прислал владелец. */
+export function peerFileHead(seq: number, name: string, bytes: number | null, forwarded: boolean, withWords: boolean): string {
+  const who = forwarded ? 'Файл переслал владелец' : 'Файл от владельца';
+  const shown = name.replaceAll(HEAD_OPEN, '[').replaceAll(HEAD_CLOSE, ']');
+  return `${HEAD_OPEN}${who}${withWords ? '' : ` № ${seq}`}: ${shown}${bytes !== null ? `, ${formatBytes(bytes)}` : ''}. Содержимое файла не слово владельца${HEAD_CLOSE}`;
+}
+
 export class PeerService {
   private link: GatewayConnection | null = null;
   /** Письмо в пути: отдано связи, исхода ещё нет. */
   private inflight: number | null = null;
+  /** Письмо, чей файл скачивается из Telegram: пока идёт, следующее не начинается. */
+  private fetching: number | null = null;
   /** ping связи без ответа: время по часам шлюза и настоящее. */
   private ping: { at: number; real: number } | null = null;
 
@@ -155,6 +180,7 @@ export class PeerService {
     this.ping = null;
     conn.role = 'peer_link';
     this.ctx.journal.write('peer_link_up', {});
+    this.sweep();
     this.next();
   }
 
@@ -238,13 +264,13 @@ export class PeerService {
     // Голосовое в распознавании держит следующих, как у ведущего агента: текст не обгоняет сказанное раньше.
     const barrier = sql(this.ctx.db, "SELECT min(seq) AS s FROM events WHERE status = 'transcribing' AND route IS NOT NULL AND created_at > ?").get(this.ctx.clock.now() - voiceHoldMs) as { s: number | null };
     const rows = sql(this.ctx.db,
-      `SELECT seq, route, kind, trust, text, transcript, attachments_json, forward_json, edit_of, message_id, chat_id FROM events
+      `SELECT seq, route, kind, trust, text, transcript, attachments_json, forward_json, edit_of, message_id, chat_id, peer_json FROM events
        WHERE status = 'new' AND route IS NOT NULL AND route <> ? AND seq < ? ORDER BY seq LIMIT ${ROUTE_BATCH}`,
     ).all(ROUTE_ASK, barrier.s ?? Number.MAX_SAFE_INTEGER) as unknown as LineEvent[];
     if (!rows.length) return;
     for (const ev of rows) {
       transaction(this.ctx.db, () => {
-        if (ev.kind === 'peer') showLetter(this.ctx, ev.seq, ev.chat_id, ev.route, ev.text ?? '', readTurn(this.ctx.db));
+        if (ev.kind === 'peer') showLetter(this.ctx, ev.seq, ev.chat_id, ev.route, ev.text ?? '', readTurn(this.ctx.db), peerFileOfEvent(ev.peer_json));
         else this.sendOnLine(ev);
         sql(this.ctx.db, "UPDATE events SET status = 'processed', processed_at = ?, processed_silent = 0 WHERE seq = ?").run(this.ctx.clock.now(), ev.seq);
       });
@@ -260,20 +286,75 @@ export class PeerService {
       enqueueServiceLine(this.ctx, `⚙ Не передано: ${ev.route}. ${why}`, { replyToMessageId: ev.message_id });
     };
     if (!this.ctx.config.peers.some((p) => p.name === ev.route)) return refuse('агента нет в списке шлюза');
-    const attachments = ev.attachments_json ? (JSON.parse(ev.attachments_json) as Array<{ kind: string }>) : [];
-    const files = attachments.some((a) => a.kind === 'photo' || a.kind === 'document');
     const words = ownerWords(ev);
     // Правка без слов (живое место шлёт их потоком) — не повод для строки на каждую.
     if (!words && ev.kind === 'edit') return;
-    if (!words) return refuse(files ? 'файлы на линии пока не передаются' : 'нет текста: голос не распознан');
-    const title = ev.kind === 'edit' ? `Правка слова владельца № ${ev.edit_of ?? '?'}` : ev.forward_json !== null || ev.trust !== 'owner' ? `Переслал владелец, это не его слово, № ${ev.seq}` : undefined;
-    const text = peerLetter(ev.seq, words, false, null, title);
+    // Правка меняет слова: файл ушёл с исходным сообщением.
+    const attachments = ev.attachments_json && ev.kind !== 'edit' ? (JSON.parse(ev.attachments_json) as Attachment[]) : [];
+    const found = peerAttachmentOf(attachments, ev.seq);
+    const tooBig = found !== null && (found.size ?? 0) > BOT_API_FILE_LIMIT;
+    const file = tooBig ? null : found;
+    if (!words && !file) return refuse(tooBig ? `файл больше ${formatBytes(BOT_API_FILE_LIMIT)}: бот Telegram такие не скачивает` : 'нет текста: голос не распознан');
+    const forwarded = ev.forward_json !== null || ev.trust !== 'owner';
+    const title = ev.kind === 'edit' ? `Правка слова владельца № ${ev.edit_of ?? '?'}` : forwarded ? `Переслал владелец, это не его слово, № ${ev.seq}` : undefined;
+    const head = file ? peerFileHead(ev.seq, file.name, file.size, forwarded, !!words) : null;
+    const text = [words ? peerLetter(ev.seq, words, false, null, title) : null, head].filter((x) => x !== null).join('\n');
     if (text.length > MAX_REPLY_TEXT) return refuse(`письмо длиннее ${MAX_REPLY_TEXT} знаков`);
     const line = openLine(this.ctx);
+    const job: PeerFileJob | null = file ? { file_id: file.fileId, name: file.name, mime: file.mime } : null;
     sql(this.ctx.db,
-      `INSERT INTO peer_messages(direction, peer, event_seq, text, detail, status, created_at, origin, line_id) VALUES ('out', ?, ?, ?, ?, 'pending', ?, 'line', ?)`,
-    ).run(ev.route, ev.seq, text, files ? 'без вложения' : null, this.ctx.clock.now(), line?.peer === ev.route ? line.id : null);
-    this.ctx.journal.write('line_out', { seq: ev.seq, to: ev.route, link: this.linked });
+      `INSERT INTO peer_messages(direction, peer, event_seq, text, detail, status, created_at, origin, line_id, file_json) VALUES ('out', ?, ?, ?, ?, 'pending', ?, 'line', ?, ?)`,
+    ).run(ev.route, ev.seq, text, tooBig ? `без вложения: файл больше ${formatBytes(BOT_API_FILE_LIMIT)}` : null, this.ctx.clock.now(), line?.peer === ev.route ? line.id : null, job ? JSON.stringify(job) : null);
+    this.ctx.journal.write('line_out', { seq: ev.seq, to: ev.route, link: this.linked, file: job !== null });
+  }
+
+  /**
+   * Связь спрашивает про файл письма до скачивания: чужому адресу и повтору байты не нужны. Файл больше предела Telegram
+   * владелец получить всё равно не сможет: строка один раз, письмо снимается.
+   */
+  fileOffer(msg: Extract<AdapterMessage, { type: 'peer_file' }>): { ok: true; result: PeerFileOffer } | { ok: false; code: ErrorCode; text: string } {
+    const peer = this.ctx.config.peers.find((p) => p.address === msg.address);
+    if (!peer) {
+      this.ctx.journal.write('peer_refused', { address: msg.address.slice(0, 12), wire_id: msg.wire_id.slice(0, 12) });
+      return { ok: true, result: 'unknown_peer' };
+    }
+    if (sql(this.ctx.db, "SELECT 1 FROM peer_messages WHERE direction = 'in' AND peer = ? AND wire_id = ?").get(peer.name, msg.wire_id)) return { ok: true, result: 'duplicate' };
+    if (this.ctx.config.owner_id === null) return { ok: false, code: 'unavailable', text: 'владелец не задан (первая настройка)' };
+    if (msg.bytes === 0 || msg.bytes > PARCEL_MAX_BYTES) {
+      this.refuseFile(peer.name, msg, msg.bytes === 0 ? 'файл пустой' : `${formatBytes(msg.bytes)}, предел ${formatBytes(PARCEL_MAX_BYTES)}`);
+      return { ok: true, result: 'refused' };
+    }
+    return { ok: true, result: 'wanted' };
+  }
+
+  /** Файл агента не принят: письмо закрыто, владелец знает, повтора нет. */
+  private refuseFile(peer: string, msg: { wire_id: string; name: string }, why: string): void {
+    const name = safeFileName(msg.name);
+    transaction(this.ctx.db, () => {
+      sql(this.ctx.db, `INSERT INTO peer_messages(direction, peer, wire_id, status, created_at, origin) VALUES ('in', ?, ?, 'received', ?, 'line')`).run(peer, msg.wire_id, this.ctx.clock.now());
+      enqueueServiceLine(this.ctx, `⚙ Не принят файл ${name}: ${peer}. ${why}`);
+    });
+    this.ctx.journal.write('peer_file_refused', { from: peer, wire_id: msg.wire_id.slice(0, 12), why });
+    this.hooks.onQueued();
+  }
+
+  /**
+   * Файл из папки связи — в хранилище посылок. Имя, размер и хэш считает шлюз: связи и чужому имени на слово не верим.
+   * Символьная ссылка и не обычный файл — отказ. Копия с тем же хэшем уже есть — лишнее убирается.
+   */
+  private takeFile(file: { drop: string; name: string }): PeerFileInfo | string {
+    const full = path.join(this.ctx.paths.home, PEER_IN_DIR, file.drop);
+    const st = fs.lstatSync(full);
+    if (!st.isFile()) return 'это не файл';
+    if (st.size === 0) return 'файл пустой';
+    if (st.size > PARCEL_MAX_BYTES) return `${formatBytes(st.size)}, предел ${formatBytes(PARCEL_MAX_BYTES)}`;
+    const sha256 = crypto.createHash('sha256').update(fs.readFileSync(full)).digest('hex');
+    const copyRef = path.posix.join('raw', PARCEL_STORE_DIR, sha256);
+    const copy = path.join(this.ctx.paths.home, copyRef);
+    ensureDir(path.dirname(copy));
+    if (fs.existsSync(copy)) fs.rmSync(full, { force: true });
+    else fs.renameSync(full, copy);
+    return { name: safeFileName(file.name), bytes: st.size, sha256, copy_ref: copyRef };
   }
 
   /** Письмо от связи. Вне списка — отказ и запись в журнал; письмо дальше не идёт. */
@@ -286,20 +367,30 @@ export class PeerService {
     if (sql(this.ctx.db, "SELECT 1 FROM peer_messages WHERE direction = 'in' AND peer = ? AND wire_id = ?").get(peer.name, msg.wire_id)) return { ok: true, result: { status: 'duplicate' } };
     const owner = this.ctx.config.owner_id;
     if (owner === null) return { ok: false, code: 'unavailable', text: 'владелец не задан (первая настройка)' };
+    let file: PeerFileInfo | null = null;
+    if (msg.file) {
+      const taken = this.takeFile(msg.file);
+      if (typeof taken === 'string') {
+        this.refuseFile(peer.name, { wire_id: msg.wire_id, name: msg.file.name }, taken);
+        return { ok: true, result: { status: 'refused' } };
+      }
+      file = taken;
+    }
     const linked = this.linkedOut(peer.name, msg.reply_to ?? null);
-    const info: PeerEventInfo = { name: peer.name, relay_seq: linked?.event_seq ?? null };
+    const info: PeerEventInfo = { name: peer.name, relay_seq: linked?.event_seq ?? null, ...(file ? { file } : {}) };
+    const text = file ? `(файл ${file.name}, ${formatBytes(file.bytes)})` : msg.text;
     const seq = transaction(this.ctx.db, () => {
       const now = this.ctx.clock.now();
       const line = openLine(this.ctx);
       // Ответ именно на передачу ведущего агента — ему, с кем бы владелец ни был на линии: он этого ответа ждёт.
-      const forMain = linked?.exact === true && linked.origin === 'relay';
+      const forMain = file === null && linked?.exact === true && linked.origin === 'relay';
       const onLine = !forMain && line?.peer === peer.name;
-      // Ответ на слово с линии, а линии с ним уже нет: ведущему агенту его читать нельзя, владелец посмотрит кнопкой.
-      const aside = !forMain && !onLine && linked?.origin === 'line';
-      const s = this.insertEvent(owner, 'untrusted', msg.text, info, aside ? 'handled' : 'new', onLine || aside ? peer.name : null);
+      // Ответ на слово с линии, а линии с ним уже нет: ведущему агенту его читать нельзя, владелец посмотрит кнопкой. Файл — так же.
+      const aside = !forMain && !onLine && (file !== null || linked?.origin === 'line');
+      const s = this.insertEvent(owner, 'untrusted', text, info, aside ? 'handled' : 'new', onLine || aside ? peer.name : null);
       sql(this.ctx.db,
         `INSERT INTO peer_messages(direction, peer, event_seq, wire_id, reply_to, status, created_at, origin, line_id, unseen) VALUES ('in', ?, ?, ?, ?, 'received', ?, ?, ?, ?)`,
-      ).run(peer.name, s, msg.wire_id, msg.reply_to ?? null, now, onLine || aside ? 'line' : 'relay', onLine ? line!.id : aside ? linked!.line_id : null, aside ? 1 : 0);
+      ).run(peer.name, s, msg.wire_id, msg.reply_to ?? null, now, onLine || aside ? 'line' : 'relay', onLine ? line!.id : aside ? (linked?.line_id ?? null) : null, aside ? 1 : 0);
       if (aside) noticeLetters(this.ctx, peer.name, now);
       return s;
     });
@@ -314,7 +405,7 @@ export class PeerService {
     const row = this.row(msg.id);
     if (row && (row.status === 'pending' || row.status === 'dropped')) {
       transaction(this.ctx.db, () => {
-        sql(this.ctx.db, "UPDATE peer_messages SET status = 'sent', wire_id = ?, text = NULL, detail = NULL, sent_at = ? WHERE id = ?").run(msg.wire_id, this.ctx.clock.now(), msg.id);
+        sql(this.ctx.db, "UPDATE peer_messages SET status = 'sent', wire_id = ?, text = NULL, detail = NULL, file_json = NULL, file_ref = NULL, sent_at = ? WHERE id = ?").run(msg.wire_id, this.ctx.clock.now(), msg.id);
         // На линии строка на каждое сообщение была бы шумом: 🕊 на самом сообщении. Что-то ушло не целиком — строкой.
         if (row.origin === 'line' && !row.detail && row.event_seq !== null) requestSent(this.ctx, [row.event_seq]);
         else this.ownerLine(row, `⚙ ➡\uFE0F ${row.peer}${row.detail ? `, ${row.detail}` : ''}`);
@@ -392,7 +483,7 @@ export class PeerService {
   private fail(row: PeerRow, reason: string): void {
     const owner = this.ctx.config.owner_id;
     transaction(this.ctx.db, () => {
-      sql(this.ctx.db, "UPDATE peer_messages SET status = 'failed', error = ?, text = NULL, detail = NULL WHERE id = ?").run(reason, row.id);
+      sql(this.ctx.db, "UPDATE peer_messages SET status = 'failed', error = ?, text = NULL, detail = NULL, file_json = NULL, file_ref = NULL WHERE id = ?").run(reason, row.id);
       if (owner === null) return;
       // Ведущий агент о линии не знает: об отказе на ней говорим только владельцу.
       if (row.origin !== 'line') this.insertEvent(owner, null, null, { name: row.peer, relay_seq: row.event_seq, failed: reason });
@@ -405,12 +496,48 @@ export class PeerService {
 
   private settled(id: number): void {
     if (this.inflight === id) this.inflight = null;
+    this.sweep();
+    this.next();
+  }
+
+  /** Папки файлов в пути: исходящий лежит, только пока письмо ждёт; в папке связи при подключении ничего нужного нет. */
+  private sweep(): void {
+    const out = path.join(this.ctx.paths.home, PEER_OUT_DIR);
+    try {
+      for (const name of fs.readdirSync(out)) {
+        const id = Number(name);
+        if (id === this.inflight || id === this.fetching) continue;
+        if (!sql(this.ctx.db, "SELECT 1 FROM peer_messages WHERE id = ? AND status = 'pending'").get(id)) fs.rmSync(path.join(out, name), { force: true });
+      }
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== 'ENOENT') this.ctx.journal.write('peer_sweep_failed', { error: (err as Error).message });
+    }
+  }
+
+  /** Скачать файл письма. Письмо уже бросили — файл не нужен; не вышло — отказ, как у сети. Письмо следующее — только после исхода. */
+  private async prepare(row: PeerRow, job: PeerFileJob): Promise<void> {
+    this.fetching = row.id;
+    try {
+      const data = await this.hooks.fetchFile(job.file_id);
+      // Шлюз останавливается: письмо ждёт, файл скачается при следующем запуске.
+      if (data === null) return;
+      const ref = path.posix.join(PEER_OUT_DIR, String(row.id));
+      const full = path.join(this.ctx.paths.home, ref);
+      ensureDir(path.dirname(full));
+      writeFileAtomicSync(full, data);
+      sql(this.ctx.db, "UPDATE peer_messages SET file_ref = ? WHERE id = ? AND status = 'pending'").run(ref, row.id);
+    } catch (err) {
+      this.fail(row, `файл не скачался: ${(err as Error).message}`);
+    } finally {
+      this.fetching = null;
+    }
+    this.sweep();
     this.next();
   }
 
   /** Отдать связи следующее письмо, если в пути нет другого. Агента убрали из настроек — письмо закрывается с отказом. */
   private next(): void {
-    while (this.inflight === null && this.link?.alive) {
+    while (this.inflight === null && this.fetching === null && this.link?.alive) {
       const row = sql(this.ctx.db, "SELECT * FROM peer_messages WHERE status = 'pending' AND direction = 'out' ORDER BY id LIMIT 1").get() as PeerRow | undefined;
       if (!row) return;
       const address = this.ctx.config.peers.find((p) => p.name === row.peer)?.address;
@@ -418,8 +545,13 @@ export class PeerService {
         this.fail(row, 'агента нет в списке шлюза');
         continue;
       }
+      const job = row.file_json ? (JSON.parse(row.file_json) as PeerFileJob) : null;
+      if (job && row.file_ref === null) {
+        void this.prepare(row, job).catch((err: unknown) => this.ctx.journal.write('peer_file_failed', { id: row.id, error: (err as Error).message }));
+        return;
+      }
       this.inflight = row.id;
-      this.link.send({ type: 'peer_send', id: row.id, address, text: row.text });
+      this.link.send({ type: 'peer_send', id: row.id, address, text: row.text, ...(job ? { file: { name: job.name, mime: job.mime } } : {}) });
     }
   }
 

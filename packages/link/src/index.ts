@@ -43,7 +43,7 @@ async function main(): Promise<void> {
   process.once('SIGTERM', () => stop.abort());
   process.once('SIGINT', () => stop.abort());
   log(`имя ${values.identity} занято, сокет ${paths.socket}`);
-  await new PeerLink({ socketPath: paths.socket, port, log }).run(stop.signal);
+  await new PeerLink({ socketPath: paths.socket, home: paths.home, port, log }).run(stop.signal);
   await port.close();
 }
 

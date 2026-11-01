@@ -23,6 +23,7 @@ function fresh() {
   dirs.push(home);
   const { db } = openForGateway(path.join(home, 'gateway.db'));
   const ctx = {
+    paths: { home },
     db,
     clock: { now: () => 1_000_000 },
     config: { owner_id: 1001, peers: [{ name: 'Исследователь', address: ADDRESS }] },
@@ -30,7 +31,7 @@ function fresh() {
   } as unknown as Ctx;
   const word = (kind: string, trust: string | null, text: string | null, transcript: string | null = null, attachments: string | null = null): number =>
     Number(sql(db, "INSERT INTO events(chat_id, kind, trust, text, transcript, attachments_json, status, created_at) VALUES (1001, ?, ?, ?, ?, ?, 'delivered', 1)").run(kind, trust, text, transcript, attachments).lastInsertRowid);
-  const service = new PeerService(ctx, { onEvent: () => undefined, onQueued: () => undefined });
+  const service = new PeerService(ctx, { onEvent: () => undefined, onQueued: () => undefined, fetchFile: async () => null });
   const relay = (seq: number, more: Partial<Extract<AdapterMessage, { type: 'relay' }>> = {}) =>
     service.relay({ type: 'relay', req_id: 'r', seq, to: 'Исследователь', turn: 1, ...more }, 'running', 1);
   const letter = (id: number): string => (sql(db, 'SELECT text FROM peer_messages WHERE id = ?').get(id) as { text: string }).text;
@@ -280,7 +281,7 @@ describe('чистка чужого текста', () => {
     const old = now - 30 * DAY;
     const clock = { now: () => old };
     const ctx = { db, clock, paths, config: { owner_id: 1001, timezone: 'UTC', peers: [{ name: 'А', address: 'addr' }], retention: { owner_voice_days: 30, untrusted_days: 14, closed_days: 30, logs_days: 90 } }, journal: { write: () => undefined } } as unknown as Ctx;
-    const r = new PeerService(ctx, { onEvent: () => undefined, onQueued: () => undefined }).incoming({ type: 'peer_in', req_id: 'r', address: 'addr', wire_id: 'w', text: 'чужой текст' });
+    const r = new PeerService(ctx, { onEvent: () => undefined, onQueued: () => undefined, fetchFile: async () => null }).incoming({ type: 'peer_in', req_id: 'r', address: 'addr', wire_id: 'w', text: 'чужой текст' });
     const seq = r.ok && r.result.status === 'accepted' ? r.result.seq : 0;
     sql(db, "UPDATE events SET status = 'processed' WHERE seq = ?").run(seq);
     sql(db, "INSERT INTO outbox(event_seq, chat_id, kind, text, origin, status, attempts, created_at, from_name, plain) VALUES (?, 1001, 'agent', 'чужой текст', 'agent', 'sent', 1, ?, 'А', 1)").run(seq, old);

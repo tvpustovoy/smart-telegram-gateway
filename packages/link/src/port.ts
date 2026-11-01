@@ -11,6 +11,14 @@ export interface Letter {
   kind: string;
   text: string | null;
   reply_to: string | null;
+  /** Файл письма: что заявил отправитель, байты — по запросу. */
+  file?: LetterFile;
+}
+
+export interface LetterFile {
+  name: string;
+  mime: string | null;
+  bytes: number;
 }
 
 export type SendVerdict = { sent: true; wire_id: string } | { sent: false; reason: string };
@@ -20,7 +28,12 @@ export interface NetworkPort {
   unread(): Promise<Letter[]>;
   /** Отметить прочитанными: только после того, как шлюз их принял. */
   consume(wireIds: string[]): Promise<void>;
-  send(address: string, text: string): Promise<SendVerdict>;
+  /** reply_to — письмо или файл, на которое это ответ. */
+  send(address: string, text: string, reply_to?: string): Promise<SendVerdict>;
+  /** В сети файл и текст — разные сообщения. Подпись к файлу — отдельным письмом. */
+  sendFile(address: string, file: string, name: string, mime: string | null): Promise<SendVerdict>;
+  /** Записать байты файла письма wire_id в dest. Прочитанным письмо не становится. */
+  fetchFile(wireId: string, dest: string): Promise<void>;
   /** Срабатывает на новое письмо. Ошибка потока — исключение: вызывающий подпишется снова. */
   wakes(signal: AbortSignal): AsyncIterable<void>;
   close(): Promise<void>;

@@ -237,6 +237,18 @@ export const PeerInSchema = z.strictObject({
   wire_id: z.string().min(1).max(PEER_ID_MAX),
   text: z.string().min(1).max(MAX_REPLY_TEXT),
   reply_to: z.string().min(1).max(PEER_ID_MAX).optional(),
+  /** Файл уже лежит в папке связи под именем drop; размер и хэш считает шлюз. */
+  file: z.strictObject({ drop: z.string().regex(/^[A-Za-z0-9-]{1,64}$/), name: z.string().min(1).max(1024) }).optional(),
+});
+
+/** Связь → шлюз: у письма wire_id есть файл. Ответ: wanted — скачать, остальное — снять письмо, байты не нужны. */
+export const PeerFileSchema = z.strictObject({
+  type: z.literal('peer_file'),
+  req_id: reqId,
+  address: z.string().min(1).max(PEER_ID_MAX),
+  wire_id: z.string().min(1).max(PEER_ID_MAX),
+  name: z.string().min(1).max(1024),
+  bytes: z.int().nonnegative(),
 });
 
 /** Связь → шлюз: письмо id ушло. */
@@ -306,6 +318,7 @@ export const AdapterMessageSchema = z.discriminatedUnion('type', [
   LinesSchema,
   LineLogSchema,
   PeerInSchema,
+  PeerFileSchema,
   PeerSentSchema,
   PeerFailedSchema,
   PingSchema,
@@ -334,6 +347,7 @@ export const ADAPTER_MESSAGE_TYPES: readonly AdapterMessageType[] = [
   'lines',
   'line_log',
   'peer_in',
+  'peer_file',
   'peer_sent',
   'peer_failed',
 ];
@@ -624,6 +638,8 @@ export const PeerSendSchema = z.object({
   id: z.int().positive(),
   address: z.string(),
   text: z.string(),
+  /** Файл лежит в папке исходящих под номером письма и уходит перед текстом. */
+  file: z.object({ name: z.string(), mime: z.string().nullable() }).optional(),
 });
 
 export const GatewayMessageSchema = z.discriminatedUnion('type', [

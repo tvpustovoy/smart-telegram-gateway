@@ -262,7 +262,7 @@ class Gateway {
     // Посылки (0.3.3, 5.16): send_file — копия в raw/parcels и доставка в очередь отправителя.
     adapter.setParcels(new ParcelService(ctx, hooks));
     // Связь с другими агентами (сценарий 1): письмо агента — событие для аренды, строка о передаче — владельцу.
-    adapter.setPeers(new PeerService(ctx, { onEvent: () => adapter.pump(), onQueued: () => sender.kick() }));
+    adapter.setPeers(new PeerService(ctx, { onEvent: () => adapter.pump(), onQueued: () => sender.kick(), fetchFile: (id) => media.bytes(id) }));
     agentState.bindLive({ online: () => adapter.hasLease, leaseCwd: () => adapter.leaseInfo()?.cwd ?? null });
     // Закреплённая строка (5.7): на связи ли агент — знает только аренда; идёт ли ход (working, #55) — «печатает…»;
     // значки агента — agent-state.json.

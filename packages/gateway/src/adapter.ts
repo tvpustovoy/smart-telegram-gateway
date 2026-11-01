@@ -663,6 +663,7 @@ export class AdapterService {
         this.onLineLog(msg, conn);
         return true;
       case 'peer_in':
+      case 'peer_file':
       case 'peer_sent':
       case 'peer_failed':
         this.onPeerLink(msg, conn);
@@ -1796,14 +1797,14 @@ export class AdapterService {
   }
 
   /** Кадры связи: только соединению hello role peer_link. */
-  private onPeerLink(msg: Extract<AdapterMessage, { type: 'peer_in' | 'peer_sent' | 'peer_failed' }>, conn: GatewayConnection): void {
+  private onPeerLink(msg: Extract<AdapterMessage, { type: 'peer_in' | 'peer_file' | 'peer_sent' | 'peer_failed' }>, conn: GatewayConnection): void {
     const peers = this.peers;
     if (!peers || conn.role !== 'peer_link') {
       conn.send({ type: 'error', req_id: msg.req_id, code: 'not_your_lease', text: 'это соединение не связь с агентами' });
       return;
     }
-    if (msg.type === 'peer_in') {
-      const r = peers.incoming(msg);
+    if (msg.type === 'peer_in' || msg.type === 'peer_file') {
+      const r = msg.type === 'peer_in' ? peers.incoming(msg) : peers.fileOffer(msg);
       if (r.ok) conn.send({ type: 'ack', req_id: msg.req_id, result: r.result });
       else conn.send({ type: 'error', req_id: msg.req_id, code: r.code, text: r.text });
       return;

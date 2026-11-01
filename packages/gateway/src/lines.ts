@@ -8,7 +8,7 @@
 //   Письма агента тишину не прерывают: разговорчивый агент не должен отключать вопрос.
 // - Линию меняет только владелец: командой или кнопкой. Письмо агента и ведущий агент этого не могут.
 
-import { ROUTE_ASK, peerNoticeText, sql } from 'stg-core';
+import { DEFAULT_PARCEL_TARGET, ROUTE_ASK, peerNoticeText, sql, type PeerEventInfo, type PeerFileInfo } from 'stg-core';
 import { createButton, newGroup } from './buttons.js';
 import { enqueueServiceLine, insertOutbox, type Ctx } from './context.js';
 
@@ -106,8 +106,19 @@ export function noticeLetters(ctx: Ctx, peer: string, now: number): void {
 }
 
 /** Письмо агента владельцу дословно, как show: простым текстом, с меткой, ведущий агент его не видит. Внутри транзакции. */
-export function showLetter(ctx: Ctx, seq: number, chatId: number, peer: string, text: string, turn: number): void {
-  insertOutbox(ctx, { eventSeq: seq, chatId, threadId: null, kind: 'agent', text, origin: 'agent', turn, plain: true, fromName: peer });
+export function showLetter(ctx: Ctx, seq: number, chatId: number, peer: string, text: string, turn: number, file: PeerFileInfo | null = null): void {
+  const outboxId = insertOutbox(ctx, { eventSeq: seq, chatId, threadId: null, kind: 'agent', text: file ? '' : text, origin: 'agent', turn, plain: true, fromName: peer });
+  if (!file) return;
+  // Файл агента идёт документом, как посылка: очередь отправки, стоп и повторы те же.
+  sql(ctx.db,
+    `INSERT INTO deliveries(parcel, file, bytes, sha256, copy_ref, target, chat_id, event_seq, outbox_id, status, updated, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 0, ?)`,
+  ).run(peer, file.name, file.bytes, file.sha256, file.copy_ref, DEFAULT_PARCEL_TARGET, chatId, seq, outboxId, ctx.clock.now());
+}
+
+/** Файл письма по peer_json события. */
+export function peerFileOfEvent(peerJson: string | null): PeerFileInfo | null {
+  return peerJson ? ((JSON.parse(peerJson) as PeerEventInfo).file ?? null) : null;
 }
 
 /** Показать письма агента, пришедшие вне линии. Внутри транзакции. */
@@ -115,11 +126,11 @@ export function showUnseen(ctx: Ctx, peer: string, turn: number): number {
   const owner = ctx.config.owner_id;
   if (owner === null) return 0;
   const rows = sql(ctx.db,
-    `SELECT pm.id, pm.event_seq, e.text FROM peer_messages pm JOIN events e ON e.seq = pm.event_seq
+    `SELECT pm.id, pm.event_seq, e.text, e.peer_json FROM peer_messages pm JOIN events e ON e.seq = pm.event_seq
      WHERE pm.direction = 'in' AND pm.peer = ? AND pm.unseen = 1 ORDER BY pm.id`,
-  ).all(peer) as Array<{ id: number; event_seq: number; text: string | null }>;
+  ).all(peer) as Array<{ id: number; event_seq: number; text: string | null; peer_json: string | null }>;
   for (const r of rows) {
-    if (r.text !== null) showLetter(ctx, r.event_seq, owner, peer, r.text, turn);
+    if (r.text !== null) showLetter(ctx, r.event_seq, owner, peer, r.text, turn, peerFileOfEvent(r.peer_json));
     sql(ctx.db, 'UPDATE peer_messages SET unseen = 0 WHERE id = ?').run(r.id);
   }
   return rows.length;
