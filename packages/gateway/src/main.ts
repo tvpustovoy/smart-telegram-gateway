@@ -292,7 +292,7 @@ class Gateway {
       agent: () => ({ state: agentState.snapshot(), view: agentState.view() }),
       peerLink: () => adapter.peerLinked,
     });
-    control.reconcileLine();
+    diskSafe('reconcile_line', () => control.reconcileLine(), undefined);
     this.socket.setHandlers({
       onMessage: (msg, conn) => (this.db ? adapter.handle(msg, conn) : false),
       onClose: (conn) => {

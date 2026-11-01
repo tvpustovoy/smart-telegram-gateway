@@ -59,6 +59,7 @@ interface LineEvent extends WordRow {
 }
 
 interface LinkedOut {
+  id: number;
   event_seq: number | null;
   origin: 'relay' | 'line';
   line_id: number | null;
@@ -262,6 +263,8 @@ export class PeerService {
     const attachments = ev.attachments_json ? (JSON.parse(ev.attachments_json) as Array<{ kind: string }>) : [];
     const files = attachments.some((a) => a.kind === 'photo' || a.kind === 'document');
     const words = ownerWords(ev);
+    // Правка без слов (живое место шлёт их потоком) — не повод для строки на каждую.
+    if (!words && ev.kind === 'edit') return;
     if (!words) return refuse(files ? 'файлы на линии пока не передаются' : 'нет текста: голос не распознан');
     const title = ev.kind === 'edit' ? `Правка слова владельца № ${ev.edit_of ?? '?'}` : ev.forward_json !== null || ev.trust !== 'owner' ? `Переслал владелец, это не его слово, № ${ev.seq}` : undefined;
     const text = peerLetter(ev.seq, words, false, null, title);
@@ -302,6 +305,7 @@ export class PeerService {
     });
     this.ctx.journal.write('peer_in', { seq, from: peer.name, wire_id: msg.wire_id.slice(0, 12), relay_seq: info.relay_seq });
     this.hooks.onEvent();
+    this.hooks.onQueued();
     return { ok: true, result: { status: 'accepted', seq } };
   }
 
@@ -366,7 +370,8 @@ export class PeerService {
     let bytes = 0;
     for (const r of rows) {
       const text = r.direction === 'in' ? r.text : ownerWords(r) || null;
-      bytes += Buffer.byteLength(text ?? '') + LINE_LOG_ROW_BYTES;
+      // Считается как в кадре: JSON раздувает кавычки и управляющие знаки.
+      bytes += Buffer.byteLength(JSON.stringify(text)) + LINE_LOG_ROW_BYTES;
       if (bytes > MAX_FRAME_BYTES / 2) break;
       messages.unshift({ at: r.created_at, from: r.direction === 'in' ? line.peer : null, forwarded: r.direction === 'out' && (r.forward_json !== null || r.trust !== 'owner'), text });
     }
@@ -418,12 +423,19 @@ export class PeerService {
     }
   }
 
-  /** К какому письму ответ: на которое агент ответил (exact), иначе последнее ему. */
+  /**
+   * К какому письму ответ: на которое агент ответил (exact), иначе последнее ему. Без reply_to и при слове с линии, на
+   * которое он ещё не писал, письмо считается ответом на него: ошибка в эту сторону покажет письмо кнопкой владельцу, а в
+   * другую отдала бы разговор на линии ведущему агенту.
+   */
   private linkedOut(peer: string, replyTo: string | null): LinkedOut | null {
-    const fields = 'SELECT event_seq, origin, line_id FROM peer_messages';
-    const exact = replyTo !== null ? (sql(this.ctx.db, `${fields} WHERE direction = 'out' AND peer = ? AND wire_id = ?`).get(peer, replyTo) as Omit<LinkedOut, 'exact'> | undefined) : undefined;
+    const fields = "SELECT id, event_seq, origin, line_id FROM peer_messages WHERE direction = 'out' AND peer = ?";
+    const exact = replyTo !== null ? (sql(this.ctx.db, `${fields} AND wire_id = ?`).get(peer, replyTo) as Omit<LinkedOut, 'exact'> | undefined) : undefined;
     if (exact) return { ...exact, exact: true };
-    const last = sql(this.ctx.db, `${fields} WHERE direction = 'out' AND peer = ? ORDER BY id DESC LIMIT 1`).get(peer) as Omit<LinkedOut, 'exact'> | undefined;
+    const answered = (sql(this.ctx.db, "SELECT max(id) AS id FROM peer_messages WHERE direction = 'in' AND peer = ?").get(peer) as { id: number | null }).id ?? 0;
+    const word = sql(this.ctx.db, `${fields} AND origin = 'line' AND id > ? ORDER BY id DESC LIMIT 1`).get(peer, answered) as Omit<LinkedOut, 'exact'> | undefined;
+    if (word) return { ...word, exact: false };
+    const last = sql(this.ctx.db, `${fields} ORDER BY id DESC LIMIT 1`).get(peer) as Omit<LinkedOut, 'exact'> | undefined;
     return last ? { ...last, exact: false } : null;
   }
 

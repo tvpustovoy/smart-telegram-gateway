@@ -254,8 +254,8 @@ export class AgentStateWatcher {
     try {
       const r = sql(this.ctx.db,
         `SELECT max(t) AS t FROM (
-           SELECT max(processed_at) AS t FROM events WHERE status = 'processed'
-           UNION ALL SELECT max(created_at) FROM outbox WHERE origin = 'agent')`,
+           SELECT max(processed_at) AS t FROM events WHERE status = 'processed' AND route IS NULL
+           UNION ALL SELECT max(created_at) FROM outbox o WHERE origin = 'agent' AND NOT EXISTS (SELECT 1 FROM events e WHERE e.seq = o.event_seq AND e.route IS NOT NULL))`,
       ).get() as { t: number | null };
       return r.t ?? 0;
     } catch {

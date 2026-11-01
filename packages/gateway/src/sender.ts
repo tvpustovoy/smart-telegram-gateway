@@ -897,6 +897,12 @@ export class Sender {
       // в базе не перетирается; что часть всё же ушла, видно в журнале (sent_after_stop) и в messages_out.
       const r = sql(ctx.db, "UPDATE outbox SET status = 'sent', attempts = attempts + 1, next_try_at = NULL WHERE id IN (SELECT value FROM json_each(?)) AND status = 'pending'").run(idsJson);
       afterStop = isAgent && Number(r.changes) < ids.length;
+      // Письмо с линии, отложенное «стопом», уже было в пути и дошло: второй раз после «продолжить» оно не покажется.
+      if (afterStop) {
+        for (const g of group) {
+          if (g.plain && g.event_seq !== null) sql(ctx.db, "UPDATE events SET status = 'processed', processed_at = ? WHERE seq = ? AND route IS NOT NULL AND status = 'new'").run(now, g.event_seq);
+        }
+      }
       for (const g of group) {
         if (g.event_seq === null) continue;
         if (g.kind === 'receipt') {

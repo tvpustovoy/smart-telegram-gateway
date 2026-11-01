@@ -9,7 +9,7 @@ import { BUTTON_REFUSALS, STOPPED_TEXT, type Update } from 'stg-core';
 import { PeerLink } from 'stg-link';
 import { FakeChannel } from 'stg-fake-channel';
 import type { SentMessage } from 'stg-fake-telegram';
-import { connectAdapter, count, pump, q1, sleep, waitUntil, type GatewayProcess } from './harness.js';
+import { connectAdapter, count, pump, q1, runCli, runCliInput, sleep, waitUntil, type GatewayProcess } from './harness.js';
 import { OWNER, reactionsOf, setup, statusLineOf, type Setup } from './m1-common.js';
 import { buttonsOf, press, sentWithText, waitSent } from './m2-common.js';
 import { pushVoice, voiceSetup, type VoiceSetup } from './m4-common.js';
@@ -441,6 +441,90 @@ describe('M15 · линия', () => {
     assert.ok(log.result.omitted > 0, 'часть не вошла');
     assert.ok(log.result.messages.length > 0);
     assert.ok(gw.alive);
+  });
+
+  it('реплай на расшифровку идёт туда же, куда голосовое; «/команда» без текста в реплае с цитатой — команда', async () => {
+    await stopLinks();
+    ch.close();
+    await s.close();
+    s = await voiceSetup({ fake: { transcript: 'напомни про договор' }, extraConfig: CONFIG });
+    await start();
+    const voice = await seqOf(pushVoice(s, 2));
+    const said = await waitSent(s, gw, (m) => (m.text ?? '').includes('напомни про договор'), 'расшифровки');
+    await pump(gw, () => ch.events().find((e) => e.seq === voice), { what: 'голосового' });
+    await connect();
+    const seq = await seqOf(s.fake.push(s.fake.builder.replyTo(OWNER, 'и про баню', said.message))[0]!);
+    assert.equal(q1<{ route: string | null }>(s.home, 'SELECT route FROM events WHERE seq = ?', seq)?.route, null);
+    await pump(gw, () => ch.events().find((e) => e.seq === seq), { what: 'реплая ведущему' });
+    s.fake.push(s.fake.builder.replyTo(OWNER, '/helper', said.message, { quote: 'про договор' }));
+    await waitSent(s, gw, (m) => (m.text ?? '').startsWith('⚙ Линия закрыта'), 'закрытия линии');
+  });
+
+  it('письмо без reply_to после слова с линии ведущему агенту не идёт, даже если потом была передача', async () => {
+    await connect();
+    await say('личное слово');
+    await sentLetter('личное слово');
+    command('/helper');
+    await waitSent(s, gw, (m) => (m.text ?? '').startsWith('⚙ Линия закрыта'), 'закрытия');
+    const seq = await say('передай ему');
+    await pump(gw, () => ch.events().find((e) => e.seq === seq), { what: 'слова' });
+    assert.equal((await ch.relay(seq, PEER, turn) as { type: string }).type, 'ack');
+    await sentLetter('передай ему');
+    network.letter('in-1', 'ОТВЕТ НА ЛИЧНОЕ', ADDRESS);
+    await waitSent(s, gw, (m) => m.text === `⚙ Новое письмо: ${PEER}`, 'строки о письме');
+    assert.equal(ch.events().filter((e) => e.kind === 'peer').length, 0);
+    network.letter('in-2', 'Ответ на передачу', ADDRESS);
+    const ev = await pump(gw, () => ch.events().find((e) => e.kind === 'peer'), { what: 'следующего письма ведущему' });
+    assert.equal(ev.text, 'Ответ на передачу');
+  });
+
+  it('управляющие знаки в письмах: line_log не падает на размере кадра', async () => {
+    await connect();
+    await say('начни');
+    await sentLetter('начни');
+    const big = '\u0001'.repeat(60_000);
+    for (let i = 1; i <= 10; i++) network.letter(`in-${i}`, `${i} ${big}`, ADDRESS, 'out-1');
+    await pump(gw, () => count(s.home, "SELECT count(*) AS n FROM peer_messages WHERE direction = 'in'") === 10 || null, { what: 'писем', timeoutMs: 15000 });
+    const list = await ch.lines() as { result: { lines: Array<{ id: number }> } };
+    const log = await ch.lineLog(list.result.lines[0]!.id) as { type: string; result: { omitted: number } };
+    assert.equal(log.type, 'ack');
+    assert.ok(log.result.omitted > 0);
+    assert.ok(gw.alive);
+  });
+
+  it('работа на линии не снимает отказ модели у ведущего агента; строка о письме не ждёт такта сроков; правка места без слов молчит', async () => {
+    await connect();
+    await gw.advance('2s');
+    const failure = { session_id: 's1', transcript_path: '/t.jsonl', cwd: process.cwd(), hook_event_name: 'StopFailure', error: 'rate_limit', last_assistant_message: 'Rate limit exceeded' };
+    await runCliInput(['agent-state', 'hook'], s.env, JSON.stringify(failure));
+    await sleep(400);
+    await gw.advance('5s');
+    await say('слово');
+    await sentLetter('слово');
+    await sleep(300);
+    const status = await runCli(['status'], s.env);
+    assert.match(status.stdout, /отказ модели[^\n]*действует/, status.stdout);
+
+    command('/helper');
+    await waitSent(s, gw, (m) => (m.text ?? '').startsWith('⚙ Линия закрыта'), 'закрытия');
+    await connect('Дизайнер');
+    network.letter('in-1', 'поздний', ADDRESS, 'out-1');
+    await pump(gw, () => q1(s.home, "SELECT 1 FROM peer_messages WHERE unseen = 1"), { what: 'письма', step: '0s' });
+    // Такт сроков — раз в минуту: 20 секунд часов отличают «разбудили отправителя» от «дождался такта».
+    let waited = 0;
+    while (!sentWithText(s, `⚙ Новое письмо: ${PEER}`).length && waited < 20) {
+      await gw.advance('1s');
+      await sleep(100);
+      waited++;
+    }
+    assert.ok(waited < 20, 'строка не ждёт такта сроков');
+
+    const u = s.fake.push(s.fake.builder.location(OWNER, { latitude: 55.75, longitude: 37.61, livePeriod: 600 }))[0]!;
+    await waitSent(s, gw, (m) => (m.text ?? '').startsWith('⚙ Не передано: Дизайнер'), 'отказа');
+    for (let i = 1; i <= 3; i++) s.fake.push(s.fake.builder.editedLocation(u, { latitude: 55.75 + i / 100, longitude: 37.61 }));
+    await pump(gw, () => count(s.home, "SELECT count(*) AS n FROM events WHERE kind = 'edit' AND status = 'processed'") === 3 || null, { what: 'правок' });
+    await sleep(200);
+    assert.equal(s.fake.sentTo(OWNER.id).filter((m) => (m.text ?? '').startsWith('⚙ Не передано')).length, 1);
   });
 
   it('lines и line_log — по запросу, журнал пишет чтение; линия переживает перезапуск шлюза', async () => {

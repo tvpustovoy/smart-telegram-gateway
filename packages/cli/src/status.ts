@@ -85,10 +85,15 @@ function agentLines(home: string, db: ReturnType<typeof openDatabase>, online: b
   } catch (err) {
     return [`агент: agent-state.json не прочитан — ${(err as Error).message}`];
   }
+  // Линия — не работа ведущего агента. База могла ещё не обновиться до v16: тогда столбца route нет.
+  const routed = db.prepare("SELECT 1 FROM pragma_table_info('events') WHERE name = 'route'").get() !== undefined;
   const t = db
     .prepare(
-      `SELECT max(t) AS t FROM (SELECT max(processed_at) AS t FROM events WHERE status = 'processed'
-       UNION ALL SELECT max(created_at) FROM outbox WHERE origin = 'agent')`,
+      routed
+        ? `SELECT max(t) AS t FROM (SELECT max(processed_at) AS t FROM events WHERE status = 'processed' AND route IS NULL
+           UNION ALL SELECT max(created_at) FROM outbox o WHERE origin = 'agent' AND NOT EXISTS (SELECT 1 FROM events e WHERE e.seq = o.event_seq AND e.route IS NOT NULL))`
+        : `SELECT max(t) AS t FROM (SELECT max(processed_at) AS t FROM events WHERE status = 'processed'
+           UNION ALL SELECT max(created_at) FROM outbox WHERE origin = 'agent')`,
     )
     .get() as { t: number | null };
   const view = agentView(state, { now, online, leaseCwd: null, lastAgentActivityAt: t.t ?? 0 });

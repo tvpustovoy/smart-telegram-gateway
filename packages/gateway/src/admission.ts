@@ -724,14 +724,15 @@ export class Admission {
    */
   private replyAuthor(chatId: number, messageId: number): ReplyAuthor {
     const db = this.ctx.db;
-    const mo = sql(db, 'SELECT m.kind, o.from_name, o.plain FROM messages_out m LEFT JOIN outbox o ON o.id = m.outbox_id WHERE m.chat_id = ? AND m.tg_message_id = ?').get(chatId, messageId) as
-      | { kind: string; from_name: string | null; plain: number | null }
+    const mo = sql(db, 'SELECT m.kind, m.event_seq, o.from_name, o.plain FROM messages_out m LEFT JOIN outbox o ON o.id = m.outbox_id WHERE m.chat_id = ? AND m.tg_message_id = ?').get(chatId, messageId) as
+      | { kind: string; event_seq: number | null; from_name: string | null; plain: number | null }
       | undefined;
-    if (mo) {
-      if (mo.kind !== 'agent') return null;
-      return mo.plain === 1 && mo.from_name !== null ? { peer: mo.from_name } : 'main';
-    }
-    const own = sql(db, "SELECT route FROM events WHERE chat_id = ? AND message_id = ? AND update_id IS NOT NULL AND kind NOT IN ('callback', 'edit') ORDER BY seq LIMIT 1").get(chatId, messageId) as
+    if (mo?.kind === 'agent') return mo.plain === 1 && mo.from_name !== null ? { peer: mo.from_name } : 'main';
+    if (mo && mo.kind !== 'receipt') return null;
+    // Своё сообщение или расшифровка своего голосового — туда же, куда ушло оно.
+    const own = (mo
+      ? sql(db, 'SELECT route FROM events WHERE seq = ?').get(mo.event_seq)
+      : sql(db, "SELECT route FROM events WHERE chat_id = ? AND message_id = ? AND update_id IS NOT NULL AND kind NOT IN ('callback', 'edit') ORDER BY seq LIMIT 1").get(chatId, messageId)) as
       | { route: string | null }
       | undefined;
     if (!own || own.route === ROUTE_ASK) return null;
@@ -875,7 +876,7 @@ export class Admission {
     // Подпись к фото и реплай с цитатой — тоже его слова: команда ведущему агенту работает и там, иначе слова уйдут на линию.
     const ownWords = who.isOwner && msg.chat.type === 'private' && labeled.forward === null;
     const mainWord = ownWords && hasPeers ? parseMainCommand(labeled.text, this.ctx.config.line.main_command) : null;
-    if (plain && mainWord?.rest === '') return { ...content, kind: 'command', status: 'handled', editOf: null, episode: 'current', receipt: false, command: 'main' };
+    if (labeled.kind === 'text' && mainWord?.rest === '') return { ...content, kind: 'command', status: 'handled', editOf: null, episode: 'current', receipt: false, command: 'main' };
     if (mainWord) {
       content.text = mainWord.rest || null;
       content.main = true;

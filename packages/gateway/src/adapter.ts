@@ -1312,8 +1312,14 @@ export class AdapterService {
     for (const seq of seqs) if (seq <= lease.cursor) lease.skipped.add(seq);
   }
 
+  /** Диск полон — не падение: события с адресом подождут, как и всё остальное. */
   private routeNew(): void {
-    if (!this.closed) this.peers?.routeNew(this.mode(), VOICE_HOLD_MS);
+    if (this.closed) return;
+    try {
+      this.peers?.routeNew(this.mode(), VOICE_HOLD_MS);
+    } catch (err) {
+      if (!this.ctx.disk.check(err, 'route_new', {})) throw err;
+    }
   }
 
   /** На линии ответ ведущего агента подписывает шлюз: владелец говорит с другим. Только в личке владельца. */
