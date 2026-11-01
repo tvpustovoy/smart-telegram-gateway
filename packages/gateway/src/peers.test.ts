@@ -147,6 +147,15 @@ describe('письмо', () => {
   });
 });
 
+describe('файл агента', () => {
+  it('файла нет в папке связи: отказ без падения, письмо придёт снова', () => {
+    const { service } = fresh();
+    const r = service.incoming({ type: 'peer_in', req_id: 'r', address: ADDRESS, wire_id: 'w-file', text: 'файл', file: { drop: 'no-such-file', name: 'a.txt' } });
+    assert.equal(r.ok, false);
+    assert.equal(r.ok === false && r.code, 'unavailable');
+  });
+});
+
 describe('письмо агента', () => {
   const inMsg = (wire: string, reply?: string): Extract<AdapterMessage, { type: 'peer_in' }> => ({
     type: 'peer_in',

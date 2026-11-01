@@ -369,7 +369,13 @@ export class PeerService {
     if (owner === null) return { ok: false, code: 'unavailable', text: 'владелец не задан (первая настройка)' };
     let file: PeerFileInfo | null = null;
     if (msg.file) {
-      const taken = this.takeFile(msg.file);
+      let taken: PeerFileInfo | string;
+      try {
+        taken = this.takeFile(msg.file);
+      } catch (err) {
+        // Файла нет или диск полон: письмо остаётся в сети, связь принесёт его снова.
+        return { ok: false, code: 'unavailable', text: `файл не принят: ${(err as Error).message}` };
+      }
       if (typeof taken === 'string') {
         this.refuseFile(peer.name, { wire_id: msg.wire_id, name: msg.file.name }, taken);
         return { ok: true, result: { status: 'refused' } };
@@ -527,7 +533,8 @@ export class PeerService {
       writeFileAtomicSync(full, data);
       sql(this.ctx.db, "UPDATE peer_messages SET file_ref = ? WHERE id = ? AND status = 'pending'").run(ref, row.id);
     } catch (err) {
-      this.fail(row, `файл не скачался: ${(err as Error).message}`);
+      // «Стоп» мог бросить письмо, пока файл скачивался: отказывать уже нечему.
+      if (this.row(row.id)?.status === 'pending') this.fail(row, `файл не скачался: ${(err as Error).message}`);
     } finally {
       this.fetching = null;
     }
