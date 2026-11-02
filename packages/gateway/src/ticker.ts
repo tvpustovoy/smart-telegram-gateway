@@ -13,6 +13,7 @@ import { sql, MESSAGE_EVENT_KINDS, META_KEYS, getMeta, offlineNotice, setMeta, t
 import type { AdapterService } from './adapter.js';
 import { enqueueServiceLine, type Ctx } from './context.js';
 import type { Episodes } from './episodes.js';
+import { liveLine, openLine } from './lines.js';
 import type { Reception } from './reception.js';
 import { REACTIONS_KEEP_MS } from './reactions.js';
 import { deferStaleInProgress } from './recovery.js';
@@ -92,6 +93,7 @@ export class Ticker {
     const now = this.ctx.clock.now();
     this.lastDeadlines = now;
     try {
+      if (transaction(this.ctx.db, () => openLine(this.ctx) !== null && liveLine(this.ctx, now) === null)) this.sender.kick();
       const closed = this.episodes.closeIdle(now);
       if (closed.length) this.adapter.pump();
       this.checkOffline(now);

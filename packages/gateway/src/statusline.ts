@@ -43,7 +43,7 @@ import {
   type AgentView,
 } from 'stg-core';
 import type { Ctx } from './context.js';
-import { openLine } from './lines.js';
+import { openLine, unseenCount } from './lines.js';
 
 /** Правка строки — не чаще раза в 3 с. */
 export const STATUS_LINE_MIN_INTERVAL_MS = 3_000;
@@ -145,6 +145,7 @@ export class StatusLine {
       waiting: waitingCount(db),
       mode: readMode(db),
       line: openLine(this.ctx)?.peer ?? null,
+      unseen: unseenCount(this.ctx),
     };
     const parts = view ? agentIndicatorParts(view, this.ctx.config.timezone, now) : [];
     const base = statusLineText(input);

@@ -326,7 +326,7 @@ export const ConfigSchema = z.strictObject({
     }),
   // Линия (сценарий 2): владелец говорит с агентом из peers напрямую. main_name — как подписан ведущий агент, пока идёт
   // линия; main_command — команда ему: без текста возвращает к нему, с текстом пишет ему, не меняя линию;
-  // silence_minutes — после такой тишины шлюз спрашивает, кому сообщение.
+  // silence_minutes — после такой тишины линия закрывается сама.
   line: z
     .strictObject({
       main_name: z
@@ -341,7 +341,7 @@ export const ConfigSchema = z.strictObject({
         .regex(/^[a-z][a-z0-9_]{0,31}$/, { message: 'команда — латиница, цифры и «_», без «/»' })
         .refine((v) => !(COMMANDS as readonly string[]).includes(v), { message: 'такая команда уже есть у шлюза' })
         .default('agent'),
-      silence_minutes: z.number().int().min(1).default(60),
+      silence_minutes: z.number().int().min(1).default(20),
     })
     .prefault({}),
   parcels: z

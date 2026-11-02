@@ -95,7 +95,6 @@ import {
   type User,
   type VoiceInfo,
   MESSAGE_EVENT_KINDS,
-  ROUTE_ASK,
   parseMainCommand,
 } from 'stg-core';
 import type { AdapterService } from './adapter.js';
@@ -735,7 +734,7 @@ export class Admission {
       : sql(db, "SELECT route FROM events WHERE chat_id = ? AND message_id = ? AND update_id IS NOT NULL AND kind NOT IN ('callback', 'edit') ORDER BY seq LIMIT 1").get(chatId, messageId)) as
       | { route: string | null }
       | undefined;
-    if (!own || own.route === ROUTE_ASK) return null;
+    if (!own) return null;
     return own.route === null ? 'main' : { peer: own.route };
   }
 
@@ -1023,7 +1022,6 @@ export class Admission {
           route,
         );
       const seq = Number(r.lastInsertRowid);
-      if (route === ROUTE_ASK) this.control.askLine(seq, d.messageId, d.threadId);
       // Окно материала (0.3.6): материал в окне — окно прочих в этом чате от него; слова — удерживаемый материал с ними;
       // новые слова (не правка, не реплай на материал) — первые после материала, ушедшего без слов: «слова после материала».
       const material: MaterialOutcome = { decision, extended: [], words: null, joined: role === 'edit_material' && decision.material ? d.editOf : null, followup: [] };
@@ -1134,7 +1132,6 @@ export class Admission {
     // Нажатие [разрешить] сменило рабочую копию правил: справочник — по ней, rules.yaml — дописать (5.9).
     if (effects.rules) this.control.refreshRules();
     if (effects.mode) this.adapter.notifyMode();
-    if (effects.released?.length) this.adapter.releaseAsked(effects.released);
     this.sender.kick();
     if (d.status === 'transcribing') this.transcriber?.kick();
     // Материал в окне или слова, которые его отпустили (0.3.6): таймер окна — на новый ближайший срок.

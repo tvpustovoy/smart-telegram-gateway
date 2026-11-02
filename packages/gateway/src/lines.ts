@@ -4,11 +4,13 @@
 //   адресатом, даже если расшифровка пришла после переключения, а повторная доставка адрес не пересчитывает.
 // - Порядок: «/команда текст» — ведущему агенту; правка и реплай на своё сообщение — туда же, куда исходное; реплай на
 //   чужое — автору; иначе — тому, кто на линии. Линии нет — ведущему агенту, как до сценария 2.
-// - Владелец молчал дольше line.silence_minutes — сообщение никуда не уходит: route = ROUTE_ASK, он нажимает, кому оно.
-//   Письма агента тишину не прерывают: разговорчивый агент не должен отключать вопрос.
-// - Линию меняет только владелец: командой или кнопкой. Письмо агента и ведущий агент этого не могут.
+// - Линия — переключатель, куда идут новые сообщения владельца, а разговор живёт в сессии агента и в сети. Владелец молчал дольше
+//   line.silence_minutes — линия закрывается сама: по такту или при приёме следующего сообщения. Заметку из другого приложения он
+//   шлёт, не видя чата, поэтому без живого разговора адресат — ведущий агент. Письма агента тишину не прерывают.
+// - Письмо агента после конца линии в чат само не идёт: владелец видит счётчик и читает, выбрав агента в /agents.
+// - Открывает линию только владелец. Письмо агента и ведущий агент этого не могут.
 
-import { DEFAULT_PARCEL_TARGET, ROUTE_ASK, peerNoticeText, sql, type PeerEventInfo, type PeerFileInfo } from 'stg-core';
+import { DEFAULT_PARCEL_TARGET, ROUTE_ASK, lineIdleText, sql, type PeerEventInfo, type PeerFileInfo } from 'stg-core';
 import { createButton, newGroup } from './buttons.js';
 import { enqueueServiceLine, insertOutbox, type Ctx } from './context.js';
 
@@ -54,14 +56,28 @@ export function connectLine(ctx: Ctx, peer: string, now: number): LineRow {
   return openLine(ctx) ?? { id: Number(r.lastInsertRowid), peer, started_at: now, last_at: now, ended_at: null, end_reason: null };
 }
 
-/** Сообщения, ждущие ответа владельца, кому они. */
+/** Сообщения с адресом «?» из версии с вопросом «кому»: при старте уходят ведущему агенту. */
 export function askedCount(ctx: Ctx): number {
   return (sql(ctx.db, "SELECT count(*) AS n FROM events WHERE route = ? AND status NOT IN ('cancelled', 'processed')").get(ROUTE_ASK) as { n: number }).n;
 }
 
-/** Ждущие сообщения — этому агенту. Внутри транзакции. */
-export function releaseAsked(ctx: Ctx, peer: string): number {
-  return Number(sql(ctx.db, 'UPDATE events SET route = ? WHERE route = ?').run(peer, ROUTE_ASK).changes);
+/** Открытая линия или null. Тишина вышла — закрыть со строкой владельцу и кнопкой вернуться. Внутри транзакции. */
+export function liveLine(ctx: Ctx, now: number): LineRow | null {
+  const line = openLine(ctx);
+  const minutes = ctx.config.line.silence_minutes;
+  if (!line || now - line.last_at <= minutes * 60_000) return line;
+  closeLine(ctx, 'silence', now);
+  enqueueServiceLine(ctx, lineIdleText(line.peer, ctx.config.line.main_name, minutes), {
+    replyMarkup: { inline_keyboard: [[{ text: 'Соединить снова', callback_data: createButton(ctx, 'line_connect', { group: newGroup(), peer: line.peer }) }]] },
+  });
+  return null;
+}
+
+/** Письма агента, которые владелец ещё не читал; без имени — всех. */
+export function unseenCount(ctx: Ctx, peer?: string): number {
+  const where = "direction = 'in' AND unseen = 1";
+  const r = peer === undefined ? sql(ctx.db, `SELECT count(*) AS n FROM peer_messages WHERE ${where}`).get() : sql(ctx.db, `SELECT count(*) AS n FROM peer_messages WHERE ${where} AND peer = ?`).get(peer);
+  return (r as { n: number }).n;
 }
 
 export interface RouteMessage {
@@ -71,38 +87,19 @@ export interface RouteMessage {
   author: ReplyAuthor;
 }
 
-/** Кому сообщение владельца в личке: имя агента, ROUTE_ASK или null — ведущему агенту. Внутри транзакции приёма. */
+/** Кому сообщение владельца в личке: имя агента или null — ведущему агенту. Внутри транзакции приёма. */
 export function routeFor(ctx: Ctx, m: RouteMessage, now: number): string | null {
   if (m.main) return null;
   if (m.editOf !== null) return (sql(ctx.db, 'SELECT route FROM events WHERE seq = ?').get(m.editOf) as { route: string | null } | undefined)?.route ?? null;
   if (m.author === 'main') return null;
-  const line = openLine(ctx);
+  const line = liveLine(ctx, now);
   if (m.author !== null) {
     if (line?.peer === m.author.peer) touchLine(ctx, line.id, now);
     return m.author.peer;
   }
   if (!line) return null;
-  // Уже ждёт ответа — следующее встаёт за ним, порядок не меняется.
-  if (askedCount(ctx) > 0 || now - line.last_at > ctx.config.line.silence_minutes * 60_000) return ROUTE_ASK;
   touchLine(ctx, line.id, now);
   return line.peer;
-}
-
-/** Строка о письмах вне линии: одна на агента, пока её кнопки живы. Внутри транзакции. */
-export function noticeLetters(ctx: Ctx, peer: string, now: number): void {
-  const live = sql(ctx.db, "SELECT 1 FROM buttons WHERE kind = 'peer_show' AND used_at IS NULL AND expires_at > ? AND json_extract(payload_json, '$.peer') = ? LIMIT 1").get(now, peer);
-  if (live) return;
-  const group = newGroup();
-  enqueueServiceLine(ctx, peerNoticeText(peer), {
-    replyMarkup: {
-      inline_keyboard: [
-        [
-          { text: 'Показать', callback_data: createButton(ctx, 'peer_show', { group, peer }) },
-          { text: 'Соединить', callback_data: createButton(ctx, 'line_connect', { group, peer, notice: true }) },
-        ],
-      ],
-    },
-  });
 }
 
 /** Письмо агента владельцу дословно, как show: простым текстом, с меткой, ведущий агент его не видит. Внутри транзакции. */

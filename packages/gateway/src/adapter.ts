@@ -1306,13 +1306,6 @@ export class AdapterService {
     }
   }
 
-  /** Ведущему агенту стали доступны сообщения, ждавшие ответа «кому» (5.20): мимо них курсор уже мог пройти. */
-  releaseAsked(seqs: readonly number[]): void {
-    const lease = this.lease;
-    if (!lease) return;
-    for (const seq of seqs) if (seq <= lease.cursor) lease.skipped.add(seq);
-  }
-
   /** Диск полон — не падение: события с адресом подождут, как и всё остальное. */
   private routeNew(): void {
     if (this.closed) return;

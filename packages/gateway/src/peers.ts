@@ -14,19 +14,19 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
-import { BOT_API_FILE_LIMIT, MAX_FRAME_BYTES, PARCEL_MAX_BYTES, PARCEL_STORE_DIR, PEER_IN_DIR, PEER_OUT_DIR, ROUTE_ASK, readTurn, LEASE_PONG_TIMEOUT_MS, MAX_REPLY_TEXT, MESSAGE_EVENT_KINDS, cutGraphemes, ensureDir, formatBytes, peerAttachmentOf, safeFileName, sql, transaction, writeFileAtomicSync, type AdapterMessage, type AgentsResult, type Attachment, type ErrorCode, type Mode, type PeerEventInfo, type PeerFileInfo, type PeerFileJob, type RelayResult, type EventStatus, type LineLogResult, type LinesResult } from 'stg-core';
+import { BOT_API_FILE_LIMIT, MAX_FRAME_BYTES, PARCEL_MAX_BYTES, PARCEL_STORE_DIR, PEER_IN_DIR, PEER_OUT_DIR, readTurn, LEASE_PONG_TIMEOUT_MS, MAX_REPLY_TEXT, MESSAGE_EVENT_KINDS, cutGraphemes, ensureDir, formatBytes, peerAttachmentOf, safeFileName, sql, transaction, writeFileAtomicSync, type AdapterMessage, type AgentsResult, type Attachment, type ErrorCode, type Mode, type PeerEventInfo, type PeerFileInfo, type PeerFileJob, type RelayResult, type EventStatus, type LineLogResult, type LinesResult } from 'stg-core';
 import { enqueueServiceLine, type Ctx } from './context.js';
-import { noticeLetters, openLine, peerFileOfEvent, showLetter } from './lines.js';
+import { openLine, peerFileOfEvent, showLetter } from './lines.js';
 import { requestSent } from './reactions.js';
 import type { GatewayConnection } from './socket-server.js';
 
 // Линия (сценарий 2, 5.20): слово владельца на линии уходит кодом, мимо ведущего агента; письмо агента на линии — прямо
-// владельцу, ведущий агент его не получает. Письмо с линии, пришедшее вне её, ждёт кнопки владельца.
+// владельцу, ведущий агент его не получает. Письмо с линии, пришедшее вне её, ждёт в непрочитанном, владелец читает его в /agents.
 //
 // Файлы на линии: в сети файл и текст — разные сообщения. Шлюз скачивает файл Telegram перед отправкой и кладёт в папку исходящих,
 // связь отдаёт сначала файл, затем письмо: заголовок говорит, что содержимое файла не слово владельца. Файл уходит и пропадает
 // с диска. Файл агента шлюз сначала оценивает по адресу и размеру, а скачивает связь только нужный; в чат он приходит документом, как
-// посылка. Вне линии такой файл ждёт кнопки владельца: в разговор ведущего агента чужие байты не попадают.
+// посылка. Вне линии такой файл ждёт в непрочитанном: в разговор ведущего агента чужие байты не попадают.
 
 export interface PeerHooks {
   /** Новое событие для агента (письмо или сбой передачи). */
@@ -265,8 +265,8 @@ export class PeerService {
     const barrier = sql(this.ctx.db, "SELECT min(seq) AS s FROM events WHERE status = 'transcribing' AND route IS NOT NULL AND created_at > ?").get(this.ctx.clock.now() - voiceHoldMs) as { s: number | null };
     const rows = sql(this.ctx.db,
       `SELECT seq, route, kind, trust, text, transcript, attachments_json, forward_json, edit_of, message_id, chat_id, peer_json FROM events
-       WHERE status = 'new' AND route IS NOT NULL AND route <> ? AND seq < ? ORDER BY seq LIMIT ${ROUTE_BATCH}`,
-    ).all(ROUTE_ASK, barrier.s ?? Number.MAX_SAFE_INTEGER) as unknown as LineEvent[];
+       WHERE status = 'new' AND route IS NOT NULL AND seq < ? ORDER BY seq LIMIT ${ROUTE_BATCH}`,
+    ).all(barrier.s ?? Number.MAX_SAFE_INTEGER) as unknown as LineEvent[];
     if (!rows.length) return;
     for (const ev of rows) {
       transaction(this.ctx.db, () => {
@@ -391,13 +391,12 @@ export class PeerService {
       // Ответ именно на передачу ведущего агента — ему, с кем бы владелец ни был на линии: он этого ответа ждёт.
       const forMain = file === null && linked?.exact === true && linked.origin === 'relay';
       const onLine = !forMain && line?.peer === peer.name;
-      // Ответ на слово с линии, а линии с ним уже нет: ведущему агенту его читать нельзя, владелец посмотрит кнопкой. Файл — так же.
+      // Ответ на слово с линии, а линии с ним уже нет: ведущему агенту его читать нельзя, в чат само не идёт, владелец прочтёт в /agents. Файл — так же.
       const aside = !forMain && !onLine && (file !== null || linked?.origin === 'line');
       const s = this.insertEvent(owner, 'untrusted', text, info, aside ? 'handled' : 'new', onLine || aside ? peer.name : null);
       sql(this.ctx.db,
         `INSERT INTO peer_messages(direction, peer, event_seq, wire_id, reply_to, status, created_at, origin, line_id, unseen) VALUES ('in', ?, ?, ?, ?, 'received', ?, ?, ?, ?)`,
       ).run(peer.name, s, msg.wire_id, msg.reply_to ?? null, now, onLine || aside ? 'line' : 'relay', onLine ? line!.id : aside ? (linked?.line_id ?? null) : null, aside ? 1 : 0);
-      if (aside) noticeLetters(this.ctx, peer.name, now);
       return s;
     });
     this.ctx.journal.write('peer_in', { seq, from: peer.name, wire_id: msg.wire_id.slice(0, 12), relay_seq: info.relay_seq });
@@ -564,7 +563,7 @@ export class PeerService {
 
   /**
    * К какому письму ответ: на которое агент ответил (exact), иначе последнее ему. Без reply_to и при слове с линии, на
-   * которое он ещё не писал, письмо считается ответом на него: ошибка в эту сторону покажет письмо кнопкой владельцу, а в
+   * которое он ещё не писал, письмо считается ответом на него: ошибка в эту сторону оставит письмо в непрочитанном, а в
    * другую отдала бы разговор на линии ведущему агенту.
    */
   private linkedOut(peer: string, replyTo: string | null): LinkedOut | null {

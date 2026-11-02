@@ -119,7 +119,6 @@ import {
   type Timer,
 } from 'stg-core';
 import { enqueueDeletion, enqueueEdit, enqueueServiceLine, type Ctx } from './context.js';
-import { noticeLetters } from './lines.js';
 import { ReactionLane, clearReceipts, requestAnswerLost, requestAnswered } from './reactions.js';
 import { STATUS_LINE_MIN_INTERVAL_MS, StatusLine, type StatusLineSaved } from './statusline.js';
 import { type VoiceKey, VoiceSynth } from './voice.js';
@@ -1136,8 +1135,7 @@ export class Sender {
       // Письмо с линии Telegram не принял: оно есть только здесь, поэтому не пропадает молча, владелец получит строку с кнопкой.
       for (const g of group) {
         if (!g.plain || g.event_seq === null || !g.from_name) continue;
-        const r = sql(this.ctx.db, "UPDATE peer_messages SET unseen = 1 WHERE direction = 'in' AND event_seq = ? AND origin = 'line'").run(g.event_seq);
-        if (Number(r.changes)) noticeLetters(this.ctx, g.from_name, this.ctx.clock.now());
+        sql(this.ctx.db, "UPDATE peer_messages SET unseen = 1 WHERE direction = 'in' AND event_seq = ? AND origin = 'line'").run(g.event_seq);
       }
       const owner = this.ctx.config.owner_id;
       for (const d of failed) {

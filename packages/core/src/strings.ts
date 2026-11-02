@@ -538,6 +538,8 @@ export interface StatusLineInput {
   agent: AgentState;
   /** Сколько сообщений владельца ждут агента. */
   waiting: number;
+  /** Сколько писем агентов владелец ещё не читал (5.20). */
+  unseen?: number;
   mode: 'running' | 'paused' | 'stopped';
   /** Значки агента — контекст или сжатие, лимиты (agent-state.ts, agentIndicatorParts): `🧠 16%`, `🕐 31% · 📅 64%`. */
   indicators?: readonly string[];
@@ -559,6 +561,9 @@ export const NO_EPISODES_YET = 'Тем ещё не было';
  * `🕐 31% · 📅 64%` — последним: внутри него свой « · »): `🟢 · 📥 4 · 🧠 16% · 🕐 31% · 📅 64%`. Начинается с 📍 — не с 💬
  * (Ш-23). Расшифровка значков — в /help.
  */
+/** Письма агентов, которые владелец ещё не читал. */
+export const UNSEEN_MARK = '✉\uFE0F';
+
 export function statusLineText(s: StatusLineInput): string {
   const role = s.role.replace(/\s+/g, ' ').trim();
   const tail = role ? ` · ${role}` : '';
@@ -573,6 +578,7 @@ export function statusLineText(s: StatusLineInput): string {
   else if (s.mode === 'paused') second.push('⏸ пауза');
   second.push(AGENT_STATE_MARK[s.agent]);
   if (s.waiting > 0) second.push(`${WAITING_MARK} ${s.waiting}`);
+  if (s.unseen) second.push(`${UNSEEN_MARK} ${s.unseen}`);
   for (const p of s.indicators ?? []) second.push(p);
   return `${first}\n${second.join(' · ')}`;
 }
@@ -592,14 +598,9 @@ export function lineNoneText(main: string): string {
   return `${SERVICE_MARK} Линии нет, ты говоришь с ${main}`;
 }
 
-/** Долгая тишина: сообщение никуда не ушло и ждёт ответа, кому оно. */
-export function lineAskText(peer: string): string {
-  return `${SERVICE_MARK} Долго тихо на линии с ${peer}. Кому это сообщение?`;
-}
-
-/** Письмо агента вне линии: само в чат не падает. */
-export function peerNoticeText(peer: string): string {
-  return `${SERVICE_MARK} Новое письмо: ${peer}`;
+/** Линия закрылась сама после тишины. */
+export function lineIdleText(peer: string, main: string, minutes: number): string {
+  return `${SERVICE_MARK} Линия с ${peer} закрыта: ${minutes} мин тишины. Дальше сообщения идут: ${main}`;
 }
 
 /** Список агентов (/agents). Что сессия агента жива, шлюз не знает, поэтому кружок — о письмах, а не о нём. */
@@ -623,7 +624,7 @@ export function helpText(o: { whereTtlMinutes: number; audioMaxMinutes: number; 
       : 'На твоём сообщении: 👀 агент увидел; ответил — 👀 снимается, ответ в чате · 👌 агент закрыл без ответа, снимется, когда напишешь снова. Агент не на связи — на сообщении ничего: в строке вверху ⚪ и 📥 N.',
     `Кто пишет: ответ агента — обычным текстом; ${SERVICE_MARK} — строка шлюза; «${RELAY_EMOJI} Имя:» — агент передаёт слова другого; ${AGENT_MARK} — ответ агента, который сам начинается со знака шлюза.`,
     ...(o.lineCommand
-      ? [`Линия: /agents соединяет с агентом, дальше сообщения идут ему напрямую; 🕊 — письмо ушло. Реплай идёт автору сообщения. /${o.lineCommand} — вернуться, /${o.lineCommand} текст — написать, не меняя линию.`]
+      ? [`Линия: /agents соединяет с агентом, дальше сообщения идут ему напрямую; 🕊 — письмо ушло. Без твоих сообщений линия закрывается сама, новое идёт ведущему агенту. ✉️ 2 — непрочитанные письма агентов: читаются в /agents. Реплай идёт автору сообщения. /${o.lineCommand} — вернуться, /${o.lineCommand} текст — написать, не меняя линию.`]
       : []),
     `Вверху — закреплённая строка: номер эпизода (${episodeTag(7)}) и тема («${CLOSED_EPISODE_MARK}» — эпизод закрыт, следующее сообщение начнёт новый); ниже значки: 🟢 агент свободен · 🟡 думает · ⚪ не на связи · 🔴 модель не отвечает (что сказала — в /status); 📥 N — сообщений ждут агента; ⏸ пауза, ⛔ стоп. Бот правит её сам.`,
     '🧠 16% — занято контекста агента, 🌀 — идёт сжатие контекста; 🕐 31% — израсходовано лимита на 5 часов, 📅 64% — на неделю (лимиты общие на аккаунт); ⚠ — выше 80% и когда сброс; значения нет — нет и значка.',

@@ -5,6 +5,7 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 import { afterEach, beforeEach, describe, it } from 'node:test';
 import { BUTTON_REFUSALS, PEER_IN_DIR, PEER_OUT_DIR, STOPPED_TEXT, type Update } from 'stg-core';
 import { PeerLink } from 'stg-link';
@@ -152,38 +153,36 @@ describe('M15 · линия', () => {
     assert.ok(!ch.events().some((e) => e.seq === seq), 'голосовое с линии ведущему агенту не отдаётся');
   });
 
-  it('тишина: сообщение не уходит, вопрос один на все ждущие; [продолжить] — агенту', async () => {
+  it('тишина: линия закрывается сама, новое — ведущему агенту, кнопка возвращает на линию', async () => {
     await connect();
     await say('до тишины');
     await sentLetter('до тишины');
     await gw.advance('121m');
-    const first = await say('после тишины 1');
-    await say('после тишины 2');
-    const ask = await waitSent(s, gw, (m) => (m.text ?? '').startsWith('⚙ Долго тихо'), 'вопроса');
-    await sleep(200);
-    assert.equal(sentWithText(s, ask.text!).length, 1, 'вопрос один');
-    assert.equal(network.sent.length, 1, 'ничего не ушло');
-    assert.ok(!ch.events().some((e) => e.seq === first), 'и ведущему агенту тоже');
-    await press(s, ask, `Продолжить с ${PEER}`);
-    await sentLetter('после тишины 1');
-    await sentLetter('после тишины 2');
-  });
-
-  it('тишина: [к ведущему] — линия закрыта, ждавшие сообщения уходят ему, хотя курсор уже ушёл вперёд', async () => {
-    await connect();
-    await gw.advance('121m');
-    const seq = await say('про баню');
-    const ask = await waitSent(s, gw, (m) => (m.text ?? '').startsWith('⚙ Долго тихо'), 'вопроса');
-    const later = await seqOf(command('/helper другое'));
-    await pump(gw, () => ch.events().find((e) => e.seq === later), { what: 'следующего слова' });
-    await press(s, ask, 'К Помощник');
-    const ev = await pump(gw, () => ch.events().find((e) => e.seq === seq), { what: 'ждавшего слова' });
-    assert.equal(ev.text, 'про баню');
-    assert.equal(network.sent.length, 0);
+    const closed = await waitSent(s, gw, (m) => m.text === `⚙ Линия с ${PEER} закрыта: 120 мин тишины. Дальше сообщения идут: Помощник`, 'строки о закрытии');
     assert.equal(count(s.home, 'SELECT count(*) AS n FROM lines WHERE ended_at IS NULL'), 0);
+    const seq = await say('заметка из другого приложения');
+    const ev = await pump(gw, () => ch.events().find((e) => e.seq === seq), { what: 'заметки ведущему' });
+    assert.equal(ev.text, 'заметка из другого приложения');
+    assert.equal(network.sent.length, 1, 'агенту на линии не ушло');
+    await press(s, closed, 'Соединить снова');
+    await say('снова ему');
+    await sentLetter('снова ему');
   });
 
-  it('письмо с линии после её конца в чат не падает и ведущему агенту не идёт: строка с кнопками, одна на агента', async () => {
+  it('письмо агента не продлевает линию; сообщение владельца продлевает', async () => {
+    await connect();
+    await gw.advance('100m');
+    await say('ещё тут');
+    await sentLetter('ещё тут');
+    await gw.advance('100m');
+    network.letter('in-1', 'ответ', ADDRESS, 'out-1');
+    await waitSent(s, gw, (m) => (m.text ?? '').includes('ответ'), 'письма');
+    assert.equal(count(s.home, 'SELECT count(*) AS n FROM lines WHERE ended_at IS NULL'), 1);
+    await gw.advance('30m');
+    await waitSent(s, gw, (m) => (m.text ?? '').startsWith(`⚙ Линия с ${PEER} закрыта`), 'закрытия');
+  });
+
+  it('письмо с линии после её конца в чат не идёт и ведущему агенту тоже: счётчик, чтение в /agents', async () => {
     await connect();
     await say('посчитай');
     await sentLetter('посчитай');
@@ -191,15 +190,15 @@ describe('M15 · линия', () => {
     await waitSent(s, gw, (m) => (m.text ?? '').startsWith('⚙ Линия закрыта'), 'строки');
     network.letter('in-1', 'Посчитал', ADDRESS, 'out-1');
     network.letter('in-2', 'И ещё вот что', ADDRESS, 'out-1');
-    const note = await waitSent(s, gw, (m) => m.text === `⚙ Новое письмо: ${PEER}`, 'строки о письме');
-    await pump(gw, () => count(s.home, "SELECT count(*) AS n FROM peer_messages WHERE direction = 'in'") === 2 || null, { what: 'двух писем' });
-    await sleep(200);
-    assert.equal(sentWithText(s, note.text!).length, 1, 'строка одна');
+    await pump(gw, () => count(s.home, "SELECT count(*) AS n FROM peer_messages WHERE direction = 'in' AND unseen = 1") === 2 || null, { what: 'двух писем' });
+    await pump(gw, () => (statusLineOf(s.fake)?.text ?? '').includes('✉️ 2') || null, { what: 'счётчика в строке' });
     assert.ok(!s.fake.sentTo(OWNER.id).some((m) => (m.text ?? '').includes('Посчитал')), 'в чат не упало');
     assert.equal(ch.events().filter((e) => e.kind === 'peer').length, 0);
-    await press(s, note, 'Показать');
+    const list = await connect();
+    assert.ok(buttonsOf(list).some((b) => b.text.includes(PEER) && b.text.includes('✉️ 2')), 'счётчик в списке');
     await waitSent(s, gw, (m) => m.text === `↪️ ${PEER}: Посчитал`, 'первого письма');
     await waitSent(s, gw, (m) => m.text === `↪️ ${PEER}: И ещё вот что`, 'второго письма');
+    await pump(gw, () => !(statusLineOf(s.fake)?.text ?? '').includes('✉️') || null, { what: 'счётчик снят' });
   });
 
   it('письмо другого агента во время линии: ответ на передачу — ведущему агенту, линия та же', async () => {
@@ -359,10 +358,10 @@ describe('M15 · линия', () => {
       await sentLetter('спасибо за файл');
     });
 
-    it('файл агента вне линии: строка с кнопками, ведущему агенту не идёт; [Показать] присылает документ', async () => {
+    it('файл агента вне линии: в чат сам не идёт, ведущему агенту тоже; /agents присылает документ', async () => {
       network.file('in-g', 'вне.txt', Buffer.from('вне линии'));
-      const notice = await waitSent(s, gw, (m) => m.text === `⚙ Новое письмо: ${PEER}`, 'строки');
-      await press(s, notice, 'Показать');
+      await pump(gw, () => q1(s.home, 'SELECT 1 FROM peer_messages WHERE unseen = 1') || null, { what: 'файла в непрочитанном' });
+      await connect();
       await waitSent(s, gw, (m) => m.document?.filename === 'вне.txt', 'документа');
       assert.equal(ch.events().filter((e) => e.kind === 'peer').length, 0);
     });
@@ -413,67 +412,6 @@ describe('M15 · линия', () => {
     assert.deepEqual(log.result.messages.map((m) => [m.from, m.forwarded]), [[null, true]]);
   });
 
-  it('тишина: новое встаёт за ждущим, вопрос повторяется, когда кнопки истекли; старая кнопка про другого агента не действует', async () => {
-    await connect();
-    await gw.advance('121m');
-    await say('первое');
-    const asks = (): SentMessage[] => s.fake.sentTo(OWNER.id).filter((m) => (m.text ?? '').startsWith('⚙ Долго тихо'));
-    await pump(gw, () => asks()[0], { what: 'вопроса' });
-    network.letter('in-1', 'агент написал', ADDRESS);
-    await waitSent(s, gw, (m) => (m.text ?? '').includes('агент написал'), 'письма');
-    await say('второе');
-    await sleep(200);
-    assert.equal(network.sent.length, 0, 'письмо агента не сбрасывает тишину, второе не обгоняет первое');
-    await gw.advance('25h');
-    await say('третье');
-    const again = await pump(gw, () => asks()[1], { what: 'второго вопроса' });
-
-    await connect('Дизайнер');
-    await sentLetter('третье');
-    await gw.advance('121m');
-    await say('только про него');
-    await pump(gw, () => asks()[2], { what: 'нового вопроса' });
-    assert.equal(await press(s, again, `Продолжить с ${PEER}`), BUTTON_REFUSALS.used);
-    await sleep(200);
-    assert.ok(!network.sent.some((m) => m.text.includes('только про него')), 'старая кнопка ничего не отправила');
-  });
-
-  it('[Соединить] в строке о письме не забирает сообщение, ждущее ответа «кому»', async () => {
-    await connect();
-    await say('слово');
-    await sentLetter('слово');
-    await connect('Дизайнер');
-    await gw.advance('121m');
-    await say('личное');
-    await waitSent(s, gw, (m) => (m.text ?? '').startsWith('⚙ Долго тихо'), 'вопроса');
-    network.letter('in-1', 'поздний ответ', ADDRESS, 'out-1');
-    const note = await waitSent(s, gw, (m) => m.text === `⚙ Новое письмо: ${PEER}`, 'строки');
-    await press(s, note, 'Соединить');
-    await waitSent(s, gw, (m) => (m.text ?? '').includes('поздний ответ'), 'письма');
-    const again = await waitSent(s, gw, (m) => m.text === `⚙ Долго тихо на линии с ${PEER}. Кому это сообщение?`, 'нового вопроса');
-    await sleep(200);
-    assert.ok(!network.sent.some((m) => m.text.includes('личное')));
-    await press(s, again, `Продолжить с ${PEER}`);
-    assert.equal((await sentLetter('личное')).address, ADDRESS);
-  });
-
-  it('строка о письмах: кнопки истекли — новое письмо даёт новую строку; /agents напоминает о непоказанных', async () => {
-    await connect();
-    await say('посчитай');
-    await sentLetter('посчитай');
-    command('/helper');
-    await waitSent(s, gw, (m) => (m.text ?? '').startsWith('⚙ Линия закрыта'), 'строки');
-    const notes = (): SentMessage[] => sentWithText(s, `⚙ Новое письмо: ${PEER}`);
-    network.letter('in-1', 'раз', ADDRESS, 'out-1');
-    await pump(gw, () => notes()[0], { what: 'строки' });
-    await gw.advance('25h');
-    network.letter('in-2', 'два', ADDRESS, 'out-1');
-    await pump(gw, () => notes()[1], { what: 'второй строки' });
-    await gw.advance('25h');
-    command('/agents');
-    await pump(gw, () => notes()[2], { what: 'напоминания' });
-  });
-
   it('стоп: письмо, ещё не показанное владельцу, не теряется, а показывается после [продолжить]', async () => {
     await connect();
     await say('вопрос');
@@ -506,12 +444,15 @@ describe('M15 · линия', () => {
     await sentLetter('вопрос');
     network.letter('in-1', 'ПИСЬМО УШЕДШЕГО', ADDRESS, 'out-1');
     const letter = await waitSent(s, gw, (m) => (m.text ?? '').includes('ПИСЬМО УШЕДШЕГО'), 'письма');
-    await gw.advance('121m');
     const asked = await say('ждёт ответа');
-    await waitSent(s, gw, (m) => (m.text ?? '').startsWith('⚙ Долго тихо'), 'вопроса');
+    await sentLetter('ждёт ответа');
     await stopLinks();
     ch.close();
     await gw.stop();
+    // Сообщение из версии с вопросом «кому».
+    const before = new DatabaseSync(s.home.paths.db);
+    before.prepare("UPDATE events SET route = '?', status = 'new', delivered_at = NULL, processed_at = NULL WHERE seq = ?").run(asked);
+    before.close();
     fs.writeFileSync(s.home.paths.config, fs.readFileSync(s.home.paths.config, 'utf8').replace(`  - { name: ${PEER}, address: "${ADDRESS}" }\n`, ''));
     gw = await s.start();
     ({ ch, turn } = await connectAdapter(s.home));
@@ -568,7 +509,7 @@ describe('M15 · линия', () => {
     assert.equal((await ch.relay(seq, PEER, turn) as { type: string }).type, 'ack');
     await sentLetter('передай ему');
     network.letter('in-1', 'ОТВЕТ НА ЛИЧНОЕ', ADDRESS);
-    await waitSent(s, gw, (m) => m.text === `⚙ Новое письмо: ${PEER}`, 'строки о письме');
+    await pump(gw, () => q1(s.home, 'SELECT 1 FROM peer_messages WHERE unseen = 1') || null, { what: 'письма в непрочитанном' });
     assert.equal(ch.events().filter((e) => e.kind === 'peer').length, 0);
     network.letter('in-2', 'Ответ на передачу', ADDRESS);
     const ev = await pump(gw, () => ch.events().find((e) => e.kind === 'peer'), { what: 'следующего письма ведущему' });
@@ -589,7 +530,7 @@ describe('M15 · линия', () => {
     assert.ok(gw.alive);
   });
 
-  it('работа на линии не снимает отказ модели у ведущего агента; строка о письме не ждёт такта сроков; правка места без слов молчит', async () => {
+  it('работа на линии не снимает отказ модели у ведущего агента; правка места без слов молчит', async () => {
     await connect();
     await gw.advance('2s');
     const failure = { session_id: 's1', transcript_path: '/t.jsonl', cwd: process.cwd(), hook_event_name: 'StopFailure', error: 'rate_limit', last_assistant_message: 'Rate limit exceeded' };
@@ -607,14 +548,6 @@ describe('M15 · линия', () => {
     await connect('Дизайнер');
     network.letter('in-1', 'поздний', ADDRESS, 'out-1');
     await pump(gw, () => q1(s.home, "SELECT 1 FROM peer_messages WHERE unseen = 1"), { what: 'письма', step: '0s' });
-    // Такт сроков — раз в минуту: 20 секунд часов отличают «разбудили отправителя» от «дождался такта».
-    let waited = 0;
-    while (!sentWithText(s, `⚙ Новое письмо: ${PEER}`).length && waited < 20) {
-      await gw.advance('1s');
-      await sleep(100);
-      waited++;
-    }
-    assert.ok(waited < 20, 'строка не ждёт такта сроков');
 
     const u = s.fake.push(s.fake.builder.location(OWNER, { latitude: 55.75, longitude: 37.61, livePeriod: 600 }))[0]!;
     await waitSent(s, gw, (m) => (m.text ?? '').startsWith('⚙ Не передано: Дизайнер'), 'отказа');

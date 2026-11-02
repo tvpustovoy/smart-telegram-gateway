@@ -8,6 +8,7 @@ import path from 'node:path';
 import { after, describe, it } from 'node:test';
 import { openForGateway, sql, stgPaths, type AdapterMessage } from 'stg-core';
 import type { Ctx } from './context.js';
+import { connectLine, routeFor } from './lines.js';
 import { PeerService, peerLetter } from './peers.js';
 import { Retention } from './retention.js';
 
@@ -26,7 +27,7 @@ function fresh() {
     paths: { home },
     db,
     clock: { now: () => 1_000_000 },
-    config: { owner_id: 1001, peers: [{ name: 'Исследователь', address: ADDRESS }] },
+    config: { owner_id: 1001, peers: [{ name: 'Исследователь', address: ADDRESS }], line: { main_name: 'Помощник', silence_minutes: 20 } },
     journal: { write: () => undefined },
   } as unknown as Ctx;
   const word = (kind: string, trust: string | null, text: string | null, transcript: string | null = null, attachments: string | null = null): number =>
@@ -144,6 +145,24 @@ describe('письмо', () => {
 
   it('без записки — только слово', () => {
     assert.ok(!peerLetter(5, 'слово', false, null).includes('Записка'));
+  });
+});
+
+describe('линия и тишина', () => {
+  it('сообщение после тишины закрывает линию при приёме и идёт ведущему агенту, не дожидаясь такта', () => {
+    const { db, ctx } = fresh();
+    const now = 1_000_000 + 21 * 60_000;
+    connectLine(ctx, 'Исследователь', 1_000_000);
+    assert.equal(routeFor(ctx, { main: false, editOf: null, author: null }, now), null);
+    assert.equal((sql(db, 'SELECT end_reason FROM lines').get() as { end_reason: string }).end_reason, 'silence');
+    assert.match((sql(db, 'SELECT text FROM outbox').get() as { text: string }).text, /^⚙ Линия с Исследователь закрыта: 20 мин тишины/);
+  });
+
+  it('реплай на письмо агента после тишины идёт автору, линию это не держит', () => {
+    const { db, ctx } = fresh();
+    connectLine(ctx, 'Исследователь', 1_000_000);
+    assert.equal(routeFor(ctx, { main: false, editOf: null, author: { peer: 'Исследователь' } }, 1_000_000 + 21 * 60_000), 'Исследователь');
+    assert.equal((sql(db, 'SELECT count(*) AS n FROM lines WHERE ended_at IS NULL').get() as { n: number }).n, 0);
   });
 });
 
