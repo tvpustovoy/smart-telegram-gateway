@@ -7,7 +7,8 @@
 // 64%`, отказ модели — кружок 🔴. Отказ снимается, когда агент снова ответил: `reply` или `done` после отказа (это
 // знает шлюз — noteAgentActivity) или перерисовка строки состояния с выросшей суммой сессии (это пишет сама строка).
 //
-// Отказ модели (D-6) — ещё и строка владельцу `⚙ Агент не может ответить: <коротко>`: не чаще раза в час на одну и ту же
+// Отказ модели (D-6) — ещё и строка владельцу `⚙ Агент не может ответить: <коротко>`, через 30 с: снялся за это время или
+// случился сразу после сна — строки нет (сон оборвал ход, об этом — сводка перерыва). Не чаще раза в час на одну и ту же
 // ошибку (meta.agent_failure_notice); другая ошибка — сразу. Сравниваются тип и текст без чисел (номера запросов,
 // время в тексте ошибки «той же» ошибкой её не делают другой) — failureSignature в stg-core. Запись StopFailure, которая
 // не отказ (max_output_tokens — ответ длиннее предела), — без 🔴 и без строки владельцу.
@@ -36,6 +37,10 @@ import { enqueueServiceLine, type Ctx } from './context.js';
 export const AGENT_STATE_POLL_MS = 5_000;
 /** Та же ошибка модели — строка владельцу не чаще раза в час (задание P-1, D-6). */
 export const FAILURE_NOTICE_REPEAT_MS = 3600_000;
+/** Строка об отказе — не сразу: снялся за это время (агент снова работает) — строки нет. */
+export const FAILURE_GRACE_MS = 30_000;
+/** Отказ так близко к пробуждению шлюза — от сна: ход оборвал сон, а не модель. */
+export const FAILURE_AFTER_WAKE_MS = 60_000;
 
 export interface AgentStateLive {
   /** Агент на связи (проверенная аренда). */
@@ -56,6 +61,8 @@ export class AgentStateWatcher {
   private timer: Timer | null = null;
   /** Когда агент последний раз ответил или отметил done (часы шлюза). */
   private lastActivity = 0;
+  /** Отказ, о котором строка решится в срок (FAILURE_GRACE_MS). */
+  private pendingFailure: { at: number; due: number } | null = null;
   private readError: string | null = null;
   private hidden: AgentView['contextHidden'] = null;
   private live: AgentStateLive = { online: () => false, leaseCwd: () => null };
@@ -91,7 +98,10 @@ export class AgentStateWatcher {
     } catch (err) {
       this.ctx.journal.write('agent_state_watch_failed', { error: (err as Error).message });
     }
-    this.timer ??= this.ctx.clock.setInterval(() => this.safeReload(), AGENT_STATE_POLL_MS);
+    this.timer ??= this.ctx.clock.setInterval(() => {
+      this.safeReload();
+      this.flushFailure();
+    }, AGENT_STATE_POLL_MS);
   }
 
   /**
@@ -198,12 +208,63 @@ export class AgentStateWatcher {
     const prev = this.state;
     this.state = next;
     this.journalChanges(prev, next);
+    this.considerFailure(next);
+    this.hooks.onChange();
+  }
+
+  /** Новый действующий отказ — решить о строке владельцу через FAILURE_GRACE_MS (flushFailure). */
+  private considerFailure(s: AgentStateFile): void {
+    const f = s.failure;
+    if (!f || f.cleared_at !== null || this.pendingFailure?.at === f.at) return;
+    if (f.at <= this.decidedFailureAt()) return;
+    this.pendingFailure = { at: f.at, due: this.ctx.clock.now() + FAILURE_GRACE_MS };
+  }
+
+  /**
+   * Срок отказа вышел: снялся (агент снова работает) или случился сразу после сна (ход оборвал сон: «went to sleep
+   * mid-response», о сне — сводка перерыва, breaks.ts) — без строки владельцу; иначе — строка, как раньше.
+   */
+  private flushFailure(): void {
+    const p = this.pendingFailure;
+    const now = this.ctx.clock.now();
+    if (!p || now < p.due) return;
+    this.pendingFailure = null;
     try {
-      this.maybeNotifyFailure(next);
+      const f = this.state?.failure;
+      const active = !!f && f.at === p.at && f.cleared_at === null && this.view(now).failure;
+      const why = !active ? 'cleared' : this.afterSleep(p.at) ? 'sleep' : null;
+      if (why) {
+        transaction(this.ctx.db, () => setMeta(this.ctx.db, META_KEYS.agentFailureNotice, JSON.stringify({ ...this.failureMeta(), failure_at: p.at })));
+        this.ctx.journal.write('agent_failure_notice_skipped', { failure_at: p.at, reason: why });
+        return;
+      }
+      this.maybeNotifyFailure(this.state!);
     } catch (err) {
       if (!this.ctx.disk.check(err, 'agent_failure_notice')) this.ctx.journal.write('agent_failure_notice_failed', { error: (err as Error).message });
     }
-    this.hooks.onChange();
+  }
+
+  /** Отказ в пределах FAILURE_AFTER_WAKE_MS от пробуждения шлюза (meta.last_wake, тикер). */
+  private afterSleep(at: number): boolean {
+    try {
+      const w = JSON.parse(getMeta(this.ctx.db, META_KEYS.lastWake) ?? 'null') as { at?: unknown } | null;
+      return typeof w?.at === 'number' && Math.abs(at - w.at) <= FAILURE_AFTER_WAKE_MS;
+    } catch {
+      return false;
+    }
+  }
+
+  private failureMeta(): { sig?: unknown; at?: unknown; failure_at?: unknown } {
+    try {
+      return (JSON.parse(getMeta(this.ctx.db, META_KEYS.agentFailureNotice) ?? '{}') as ReturnType<AgentStateWatcher['failureMeta']>) ?? {};
+    } catch {
+      return {};
+    }
+  }
+
+  private decidedFailureAt(): number {
+    const v = this.failureMeta().failure_at;
+    return typeof v === 'number' ? v : 0;
   }
 
   private readFailed(err: Error): void {

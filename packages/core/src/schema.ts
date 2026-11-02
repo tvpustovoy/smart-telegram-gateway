@@ -170,6 +170,13 @@ export const META_KEYS = {
   lastLease: 'last_lease',
   /** Сколько проверок канала обошлось без хода модели (0.3.2, R-4 а) — JSON {n, since, last_at}: «статус», stg status. */
   probesSaved: 'probes_saved',
+  /**
+   * Сводка после перерыва (5.3) — JSON {active, reported_seq}: идущий перерыв {from, slept_from, until, seqs, wakes,
+   * cause} или null и последнее сообщение, которое уже вошло в сводку (раньше него сообщения в сводку не берутся).
+   */
+  breakReport: 'break_report',
+  /** Последнее пробуждение шлюза (5.3) — JSON {at, slept_ms}: отказ модели сразу после сна — от сна (agent-state.ts). */
+  lastWake: 'last_wake',
 } as const;
 
 /**
@@ -1041,7 +1048,7 @@ export type SttNote = (typeof STT_NOTES)[number];
  * Виды одноразовых кнопок шлюза (buttons.kind; без CHECK — дополняются без миграции). rule_ok и rule_no — [разрешить] и
  * [нет] под карточкой изменения правил (M5).
  */
-export const BUTTON_KINDS = ['resume', 'episode_ok', 'episode_reject', 'episode_pick', 'transcript', 'rule_ok', 'rule_no', 'line_connect', 'line_main', 'line_keep', 'peer_show'] as const;
+export const BUTTON_KINDS = ['resume', 'episode_ok', 'episode_reject', 'episode_pick', 'transcript', 'rule_ok', 'rule_no', 'line_connect', 'line_main', 'line_keep', 'peer_show', 'msg_show'] as const;
 export type ButtonKind = (typeof BUTTON_KINDS)[number];
 
 /**

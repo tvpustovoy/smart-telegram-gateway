@@ -30,8 +30,18 @@ The chat interface and the design documents are in Russian; the entries below de
   `stg-link` the gateway works as before and letters wait. Peers are listed in `peers` in `config.yaml`; the list is also
   the allow-list.
 
+- A report after a break. When the computer slept while your messages waited, or messages reached the gateway long after
+  you wrote them, the gateway sends one line once they are all closed (or after 30 minutes): every message of yours
+  from that time with what happened to it, answered, closed with 👌 or still waiting. Numbered buttons under it reply to
+  the message itself, so Telegram takes you to it: private chats have no message links.
+
 ### Changed
 
+- After the computer sleeps, events given to the agent and not closed are given again at once: sleep breaks the
+  agent's turn. Tool calls made before the sleep no longer postpone it, and this repeat does not use up the single repeat
+  that comes before the line to you.
+- The line `Агент не может ответить` waits 30 seconds: if the failure is cleared by then, or it came within a minute of
+  waking up, there is no line.
 - Schema v15: event kind `peer`, column `peer_json`, table `peer_messages`.
 - Schema v16: `events.route`, table `lines`, `peer_messages.origin`, `line_id`, `unseen`.
 - The `↪` mark is sent with U+FE0F, so Telegram shows it as an emoji; it is recognised with or without it.

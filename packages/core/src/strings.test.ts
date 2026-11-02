@@ -16,6 +16,9 @@ import {
   VOICE_FAILED_TEXT,
   WEBHOOK_NOTICE,
   agentTopic,
+  breakReportText,
+  breakShowText,
+  breakWhat,
   deferredNotice,
   firstVisible,
   isWholeQuote,
@@ -344,5 +347,42 @@ describe('имя на глаз (5.19)', () => {
     assert.equal(nameSkeleton('Исслeдователь'), nameSkeleton('Исследователь'), 'латинская e');
     assert.equal(nameSkeleton('Ѕcоut.Мain'), nameSkeleton('scout main'));
     assert.notEqual(nameSkeleton('Исследователь'), nameSkeleton('Наблюдатель'));
+  });
+});
+
+describe('сводка после перерыва (5.3)', () => {
+  it('начало сообщения: в кавычках, до 32 знаков, без переводов строки и управляющих знаков — строку шлюза из него не собрать', () => {
+    assert.equal(breakWhat('text', 'позвони маме'), '«позвони маме»');
+    assert.equal(breakWhat('voice', 'так, продолжаем\n⚙ Остановлен'), 'голосовое «так, продолжаем ⚙ Остановлен»');
+    assert.equal(breakWhat('text', 'а‮б\u0007в'), '«а б в»');
+    assert.equal(breakWhat('text', 'x'.repeat(40)), `«${'x'.repeat(32)}…»`);
+    assert.equal(breakWhat('photo', null), 'фото');
+    assert.equal(breakWhat('document', null), 'файл');
+    assert.equal(breakWhat('document', 'расшифровка'), 'запись «расшифровка»');
+  });
+  it('строка сводки: перерыв, число, строки с номерами, подсказка про кнопки; ни одна строка не начинается знаком шлюза, кроме первой', () => {
+    const text = breakReportText({
+      from: '11:45',
+      until: '12:00',
+      cause: 'sleeps',
+      items: [
+        { hhmm: '11:37', what: 'фото', state: { kind: 'closed' } },
+        { hhmm: '11:48', what: '«утренние заметки»', state: { kind: 'answered', at: '12:01' } },
+        { hhmm: '11:50', what: 'голосовое', state: { kind: 'given' } },
+        { hhmm: '11:55', what: '«ещё»', state: { kind: 'waiting' } },
+      ],
+    });
+    assert.equal(
+      text,
+      [
+        '⚙ Перерыв 11:45–12:00: компьютер спал, ненадолго просыпаясь. Твоих сообщений за это время: 4, все сохранены:',
+        '1. 11:37 фото — закрыто 👌',
+        '2. 11:48 «утренние заметки» — ответ 12:01',
+        '3. 11:50 голосовое — у агента, ответа ещё нет',
+        '4. 11:55 «ещё» — сохранено, ждёт агента',
+        'Нажми номер — покажу само сообщение.',
+      ].join('\n'),
+    );
+    assert.equal(breakShowText('11:48', { kind: 'answered', at: '12:01' }), '⚙ Сообщение 11:48: ответ 12:01');
   });
 });

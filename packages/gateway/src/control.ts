@@ -91,6 +91,7 @@ import {
   lineConnectedText,
   lineNoneText,
 } from 'stg-core';
+import { showBreakMessage } from './breaks.js';
 import { checkButton, createButton, newGroup, useGroup, useKind, type ButtonPayload } from './buttons.js';
 import { enqueueDeletion, enqueueEdit, enqueueServiceLine, type Ctx, type InlineMarkup } from './context.js';
 import { askedCount, closeLine, connectLine, openLine, showUnseen, unseenCount } from './lines.js';
@@ -371,6 +372,12 @@ export class Control {
     const { button, payload } = c;
     this.ctx.journal.write('button', { kind: button.kind, group: payload.group });
     if (button.kind === 'transcript') return this.pressTranscript(payload);
+    // Номер под сводкой перерыва — многоразовый, как [текст]: показать одно сообщение, потом другое.
+    if (button.kind === 'msg_show') {
+      if (showBreakMessage(this.ctx, Number(payload.event_seq)) === null) return { answer: BUTTON_REFUSALS.expired };
+      this.ctx.journal.write('break_message_shown', { seq: Number(payload.event_seq) });
+      return { answer: null };
+    }
     // [верно] под строкой темы — строку удаляют (0.3.5, issue #48): кнопки отдельной правкой не снимаются.
     const deleteTopic = button.kind === 'episode_ok' && this.ctx.config.ui.delete_confirmed_topic && !!cq.message;
     // Одноразовая кнопка нажата — кнопки сообщения больше не нужны (строку стопа и объявление темы ниже правят в одну

@@ -172,6 +172,8 @@ interface Tracked {
   redelivered: boolean;
   /** Откладываний подряд: вызовы были — сессия занята (после повтора счёт заново). */
   postponed: number;
+  /** Срок поставлен пробуждением: повтор — после сна (в журнал). */
+  afterSleep?: boolean;
   /**
    * Сессии Claude Code (session_id строки состояния), которым событие уже отдавалось (0.3.2): стала текущей сессия, которая
    * его не видела (/clear, /resume к прежнему разговору), — повтор ей (checkSession); видела — нет.
@@ -1346,6 +1348,15 @@ export class AdapterService {
           lease.sinceReal = real;
         }
         this.ctx.journal.write('lease_wake', { lease: lease.id, gap_ms: delta });
+        // Сон обрывает ход агента (Claude Code: «went to sleep mid-response»): отданное до сна — отдать снова сразу. Вызовы
+        // до сна — не занятость, и повтор после сна не тратит тот единственный, после которого строка владельцу.
+        for (const t of lease.track.values()) {
+          t.due = now;
+          t.calls = lease.calls;
+          t.postponed = 0;
+          t.redelivered = false;
+          t.afterSleep = true;
+        }
       }
       if (!lease.verified && now - lease.since >= PROBE_TIMEOUT_MS && real - lease.sinceReal >= LEASE_REAL_GRACE_MS) {
         this.unverified(lease);
@@ -1432,7 +1443,8 @@ export class AdapterService {
         t.postponed = 0;
         if (lease.session) t.seen.add(lease.session);
         lease.conn.send(this.frame(ev, true));
-        this.ctx.journal.write('redelivered', { seq, lease: lease.id, kind: ev.kind, ...limit });
+        this.ctx.journal.write('redelivered', { seq, lease: lease.id, kind: ev.kind, ...limit, ...(t.afterSleep ? { after_sleep: true } : {}) });
+        t.afterSleep = false;
         continue;
       }
       lease.track.delete(seq);

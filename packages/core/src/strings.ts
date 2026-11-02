@@ -656,6 +656,58 @@ export function agentFailureNotice(text: string): string {
 /** Предел текста ошибки в строке владельцу. */
 export const AGENT_FAILURE_NOTICE_MAX = 160;
 
+// ——— сводка после перерыва (5.3 «Сон ноутбука») ———
+
+/** Что стало с сообщением владельца: ответ агента, закрыто без ответа (👌), у агента без ответа, ждёт агента. */
+export type BreakState = { kind: 'answered'; at: string } | { kind: 'closed' } | { kind: 'given' } | { kind: 'waiting' };
+
+/** Строка сообщения в сводке: время, когда владелец его написал, что это и что с ним. */
+export interface BreakItem {
+  hhmm: string;
+  what: string;
+  state: BreakState;
+}
+
+/** Причина перерыва: компьютер спал (один раз или просыпаясь ненадолго) или сообщения ждали шлюз (не принимал). */
+export type BreakCause = 'sleep' | 'sleeps' | 'gap';
+
+/** Предел начала сообщения в сводке. */
+export const BREAK_EXCERPT_MAX = 32;
+
+export function breakStateText(s: BreakState): string {
+  if (s.kind === 'answered') return `ответ ${s.at}`;
+  if (s.kind === 'closed') return 'закрыто 👌';
+  if (s.kind === 'given') return 'у агента, ответа ещё нет';
+  return 'сохранено, ждёт агента';
+}
+
+/** Что за сообщение — коротко: начало текста в кавычках, голосовое, запись, фото, файл. */
+export function breakWhat(kind: string, text: string | null): string {
+  const flat = (text ?? '').replace(UNSAFE_LINE_G, ' ').replace(/\s+/g, ' ').trim();
+  const c = cutGraphemes(flat, BREAK_EXCERPT_MAX);
+  const quoted = flat ? `«${c.cut ? `${c.text.trimEnd()}…` : c.text}»` : '';
+  const label = kind === 'voice' ? 'голосовое' : kind === 'photo' ? 'фото' : kind === 'document' ? (text ? 'запись' : 'файл') : '';
+  return [label, quoted].filter(Boolean).join(' ') || 'сообщение';
+}
+
+/**
+ * Сводка после перерыва: одна строка владельцу, когда сообщения, которые ждали, закрыты (или ждут дольше срока). Номера
+ * строк совпадают с кнопками под сводкой: кнопка присылает ответ на само сообщение — по цитате Telegram к нему переходит.
+ */
+export function breakReportText(o: { from: string; until: string; cause: BreakCause; items: readonly BreakItem[] }): string {
+  const why = o.cause === 'gap' ? 'сообщения ждали шлюз' : o.cause === 'sleeps' ? 'компьютер спал, ненадолго просыпаясь' : 'компьютер спал';
+  return [
+    `${SERVICE_MARK} Перерыв ${o.from}–${o.until}: ${why}. Твоих сообщений за это время: ${o.items.length}, все сохранены:`,
+    ...o.items.map((it, i) => `${i + 1}. ${it.hhmm} ${it.what} — ${breakStateText(it.state)}`),
+    'Нажми номер — покажу само сообщение.',
+  ].join('\n');
+}
+
+/** Ответ на само сообщение по кнопке сводки. */
+export function breakShowText(hhmm: string, s: BreakState): string {
+  return `${SERVICE_MARK} Сообщение ${hhmm}: ${breakStateText(s)}`;
+}
+
 // ——— M5: правила доступа и кнопки (5.9; Ш-17, Ш-21, Ш-22) ———
 // Тексты строк — M5 (в TECH-SPEC дословно их нет); строки изменения внутри — из полей (rules.ts, describeChange).
 
