@@ -1,0 +1,23 @@
+{
+  "license": "Apache-2.0",
+  "name": "stg-link",
+  "version": "0.1.0",
+  "private": true,
+  "description": "stg-link: the link between the gateway and an agent network — carries letters of other agents both ways; holds no logic of its own",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "bin": {
+    "stg-link": "dist/index.js"
+  },
+  "dependencies": {
+    "stg-core": "0.1.0"
+  }
+}

@@ -39,6 +39,10 @@ smart-telegram-gateway is a small always-on service that owns the bot and stands
 - **The agent sees images and sends files.** It can look at photos and screenshots on request and send you files from a
   dedicated parcels folder (`send_file`): documents as documents, pictures (jpg, png, webp within Telegram's photo
   limits) as photos; ask for a file and the picture comes as a document, uncompressed (`as: "file"`).
+- **Other agents through one agent.** Your agent passes a message of yours to another agent with `relay`: the gateway
+  takes the words from its database, so they arrive unchanged, and the answer can come back to you verbatim with `show`.
+  Letters travel through the separate `stg-link` process, which plugs into an agent network; with a `link` section in
+  `config.yaml` the gateway starts it and restarts it, without one nothing changes.
 
 The agent connects through an adapter. Today the adapter is `stg-channel`, an MCP server that Claude Code loads as a
 channel (Claude Code Channels) and that pushes events into a running session. The gateway ⇄ adapter protocol is
@@ -212,6 +216,11 @@ What you see in the chat:
   weekly usage limits.
 - `⚙ …` — a line from the gateway. A transcript comes as a quote in reply to your voice message. `↪ Name: …` — the
   agent relays someone else's words; `💬` marks an agent reply that would otherwise look like a gateway line.
+- `/agents` connects you to another agent (the line): your messages then go to it directly, the gateway's own agent
+  does not read them, and 🕊 on a message means the letter went. A reply goes to the author of the message you reply to.
+  `/<line.main_command> text` writes to the gateway's own agent and keeps the line; the same command without text
+  returns to it. After a long silence the next message waits for you to choose who it is for. A late letter from an
+  agent you are no longer connected to does not fall into the chat: one line with [Показать] and [Соединить].
 - `⚙ ↪ #N · topic` with [верно] [не то] — the agent named or changed the topic. [верно] removes the line (the topic
   stays in the pinned line; `ui.delete_confirmed_topic`), [не то] brings the previous topic back.
 - A reaction on an agent reply (👍, ❤, …) is passed to the agent after a short undo window.
@@ -235,7 +244,7 @@ What you see in the chat:
   gist it already sent.
 
 The agent's tools (MCP for Claude Code, dynamic tools for Codex): `reply`, `done`, `episode`, `episode_summary`, `where`,
-`rule`, `media`, `send_file`.
+`rule`, `media`, `send_file`, `relay`, `show`, `agents`.
 
 ## Configuration
 
@@ -263,6 +272,18 @@ tts:                             # replies by voice
 parcels:
   dir: null                      # null = parcels/ in the agent session's working directory
   targets: [telegram]
+
+peers:                           # other agents reachable through stg-link; also the allow-list
+  - { name: Researcher, address: "<address in the agent network>" }
+
+link:                            # the gateway runs stg-link itself; no section = no link
+  port: ~/agent-network/port.mjs # module with openPort for your agent network
+  identity: Gateway              # the gateway's own name in that network, set up beforehand
+
+line:                            # talking to an agent from peers directly
+  main_name: Assistant           # how the gateway's own agent is signed while a line is open
+  main_command: helper           # /helper returns to it, /helper text writes to it and keeps the line
+  silence_minutes: 60            # after this silence the next message waits for your choice
 
 reactions:
   hold_seconds: 3                # undo window for your reactions; 0 = pass at once; at most 3
@@ -347,6 +368,7 @@ accept the project's own commit identity; the same name is also accepted on `Cop
 | `packages/channel` | `stg-channel`: MCP server for Claude Code Channels — events into the session, tools for the agent |
 | `packages/cli` | `stg` CLI: `doctor`, `status`, `where`, `rules show`, `backup`, `restore`, `deferred`, `log tail`, `service plist`, `agent-folder`, `agent-state` |
 | `packages/codex` | `stg-codex`: the Codex adapter — gateway lease, `codex app-server` over stdio, one thread per conversation, the agent's tools as dynamic tools, live feed |
+| `packages/link` | `stg-link`: carries letters of other agents between the gateway and an agent network, plugged in as a module; the logic stays in the gateway |
 | `scripts/` | `install-macos.sh`, `uninstall-macos.sh`, `codex-agent-start.sh`, `launchd/gateway.plist.template`, `agent-folder/` template, `release-check.mjs` |
 | `test/fake-telegram`, `test/fake-channel`, `test/fake-elevenlabs`, `test/fake-codex` | fakes of the Telegram Bot API, the channel adapter, the speech providers (ElevenLabs and OpenAI dialects) and Codex `app-server` |
 | `test/e2e` | integration tests: the gateway as a child process against the fakes |

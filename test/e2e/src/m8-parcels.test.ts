@@ -439,21 +439,21 @@ describe('M8 · посылки: агент отвечает файлами (0.3.
     put('чужое/researcher.md', '# от Исследователя');
     const r1 = result(await ch.sendFile('чужое/researcher.md', null, turn, { caption: 'итоги', from: 'Исследователь' }));
     const m1 = docOf(await sent(r1.delivery!));
-    assert.deepEqual([m1.caption, m1.parse_mode], ['↪ Исследователь: итоги', 'HTML']);
+    assert.deepEqual([m1.caption, m1.parse_mode], ['↪\uFE0F Исследователь: итоги', 'HTML']);
     // Без подписи — подпись «↪ Исследователь»: иначе чужой файл пришёл бы как собственный файл агента.
     const r2 = result(await ch.sendFile('чужое/researcher.md', null, turn, { from: 'Исследователь' }));
-    assert.equal(docOf(await sent(r2.delivery!)).caption, '↪ Исследователь');
+    assert.equal(docOf(await sent(r2.delivery!)).caption, '↪\uFE0F Исследователь');
     // Подпись длиннее 1024 — на документе «↪ Исследователь», следом текст с «↪ Исследователь: ».
     const long = Array.from({ length: 220 }, (_, i) => `строка${i}`).join(' ');
     const r3 = result(await ch.sendFile('чужое/researcher.md', null, turn, { caption: long, from: 'Исследователь' }));
     const d3 = await sent(r3.delivery!);
-    assert.equal(docOf(d3).caption, '↪ Исследователь');
-    const text = await pump(gw, () => s.fake.sentTo(OWNER.id).find((x) => x.text === `↪ Исследователь: ${long}`), { what: 'текста подписи с пометкой' });
+    assert.equal(docOf(d3).caption, '↪\uFE0F Исследователь');
+    const text = await pump(gw, () => s.fake.sentTo(OWNER.id).find((x) => x.text === `↪\uFE0F Исследователь: ${long}`), { what: 'текста подписи с пометкой' });
     assert.ok(text.message_id > d3.tg_message_id!);
     // Новая версия чужого файла без подписи — и имя, и «обновлено».
     put('чужое/researcher.md', '# от Исследователя, вторая версия');
     const r4 = result(await ch.sendFile('чужое/researcher.md', null, turn, { from: 'Исследователь' }));
-    assert.equal(docOf(await sent(r4.delivery!)).caption?.replace(/\r\n/g, '\n'), '↪ Исследователь\n\n⚙ обновлено');
+    assert.equal(docOf(await sent(r4.delivery!)).caption?.replace(/\r\n/g, '\n'), '↪\uFE0F Исследователь\n\n⚙ обновлено');
   });
 
   it('A8.16: пауза — файл без seq придержан (held_paused), доставка ждёт; «продолжить» — документ уходит', async () => {
@@ -813,7 +813,7 @@ describe('M8 · картинка — фото (#60): «не файлом, а к�
     put('эскизы/кухня.jpg', jpeg(4000, 3000, 30_000));
     const r2 = result(await ch.sendFile('эскизы/кухня.jpg', null, turn, { from: 'Дизайнер' }));
     const m2 = shown(await sent(r2.delivery!));
-    assert.deepEqual([m2.method, m2.caption, m2.photo?.contentType], ['sendPhoto', '↪ Дизайнер', 'image/jpeg']);
+    assert.deepEqual([m2.method, m2.caption, m2.photo?.contentType], ['sendPhoto', '↪\uFE0F Дизайнер', 'image/jpeg']);
     put('схемы/plan.png', png(1280, 720, 2048, 8));
     const r3 = result(await ch.sendFile('схемы/plan.png', null, turn, { caption: 'поправил' }));
     assert.deepEqual([r3.as, r3.updated], ['photo', true]);

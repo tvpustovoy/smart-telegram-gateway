@@ -2,7 +2,7 @@
 // поддельный `codex app-server` (stg-fake-codex: JSON-RPC по stdio, «модель» по сценарию в тексте). Настоящий codex не
 // запускается. Папка агента — временный каталог с AGENTS.md: адаптер в неё не пишет.
 // Подъём: initialize с experimentalApi, тред с правилами Codex (developer instructions), песочница workspace-write без
-// сети, папка посылок — writable root вне папки агента, 8 инструментов; проба закрыта адаптером без хода модели ·
+// сети, папка посылок — writable root вне папки агента, инструменты канала; проба закрыта адаптером без хода модели ·
 // слово владельца → ход → delivered → reply в Telegram · два сообщения во время хода — один ход · промежуточный ответ,
 // а ход идёт → «печатает…», 🟡 и 👀 до turn/completed (working; 👀 — #52), «стоп» снимает сразу · Codex рисует картинку
 // (imageGeneration) → «отправляет фото…» (working.action upload_photo), готова — снова «печатает…» · стоп → turn/interrupt,
@@ -110,6 +110,11 @@ describe('M13 · адаптер Codex (stg-codex) против поддельн�
       'function:rule',
       'function:media',
       'function:send_file',
+      'function:relay',
+      'function:show',
+      'function:agents',
+      'function:lines',
+      'function:line_log',
     ]);
     const di = String(p.developerInstructions);
     for (const w of ['не у терминала', 'песочнице', 'reply(seq, text)', `папка посылок: ${parcels}`, `твоя папка (рабочий каталог команд): ${agentDir}`, 'AGENTS.md']) assert.ok(di.includes(w), `developer instructions без «${w}»`);

@@ -142,6 +142,7 @@ export interface OutRow {
   reply_to_message_id: number | null;
   voice_failed: number;
   bare: number;
+  plain: number;
   /** Чьи слова передаёт агент (0.3.2, P-26; схема v9): «↪ <имя>: » перед ответом. */
   from_name?: string | null;
   /** Строка шлюза — цитатой (0.3.4, R-23 а; схема v11): расшифровка. */
@@ -689,6 +690,8 @@ export class Sender {
     const opts = relay ? { prefix: escapeHtml(relay) } : noRelay;
     const mark = (parts: string[], html: boolean): Part[] =>
       parts.map((t) => ({ method: 'sendMessage', text: relay ? t : markAgentPart(t, html, parts.length > 1), html, kind: 'agent' }));
+    // Письмо агента (show) — дословно: разметка спрятала бы адрес ссылки и съела бы знаки.
+    if (r0.plain) return mark(splitPlain(text, opts), false);
     try {
       return mark(splitHtml(markdownToTelegramHtml(text), opts), true);
     } catch (err) {
@@ -893,6 +896,12 @@ export class Sender {
       // в базе не перетирается; что часть всё же ушла, видно в журнале (sent_after_stop) и в messages_out.
       const r = sql(ctx.db, "UPDATE outbox SET status = 'sent', attempts = attempts + 1, next_try_at = NULL WHERE id IN (SELECT value FROM json_each(?)) AND status = 'pending'").run(idsJson);
       afterStop = isAgent && Number(r.changes) < ids.length;
+      // Письмо с линии, отложенное «стопом», уже было в пути и дошло: второй раз после «продолжить» оно не покажется.
+      if (afterStop) {
+        for (const g of group) {
+          if (g.plain && g.event_seq !== null) sql(ctx.db, "UPDATE events SET status = 'processed', processed_at = ? WHERE seq = ? AND route IS NOT NULL AND status = 'new'").run(now, g.event_seq);
+        }
+      }
       for (const g of group) {
         if (g.event_seq === null) continue;
         if (g.kind === 'receipt') {
@@ -919,7 +928,7 @@ export class Sender {
     if (afterStop) ctx.journal.write('sent_after_stop', { outbox_id: r0.id, tg_message_ids: sent });
     ctx.journal.write('out', {
       kind: r0.kind,
-      label: r0.origin,
+      label: r0.plain ? 'untrusted' : r0.origin,
       outbox_ids: ids,
       event_seqs: group.map((g) => g.event_seq),
       chat_id: r0.chat_id,
@@ -1123,6 +1132,11 @@ export class Sender {
       failed = sql(this.ctx.db, "SELECT id, parcel, file, chat_id FROM deliveries WHERE status = 'pending' AND outbox_id IN (SELECT value FROM json_each(?))")
         .all(JSON.stringify(ids)) as Array<{ id: number; parcel: string; file: string; chat_id: number | null }>;
       sql(this.ctx.db, "UPDATE deliveries SET status = 'failed', note = ? WHERE status = 'pending' AND outbox_id IN (SELECT value FROM json_each(?))").run(why.slice(0, 500), JSON.stringify(ids));
+      // Письмо с линии Telegram не принял: оно есть только здесь, поэтому не пропадает молча, владелец получит строку с кнопкой.
+      for (const g of group) {
+        if (!g.plain || g.event_seq === null || !g.from_name) continue;
+        sql(this.ctx.db, "UPDATE peer_messages SET unseen = 1 WHERE direction = 'in' AND event_seq = ? AND origin = 'line'").run(g.event_seq);
+      }
       const owner = this.ctx.config.owner_id;
       for (const d of failed) {
         const words = why.replace(/^send(Document|Photo): /, 'Telegram не принял: ').slice(0, 300);

@@ -9,6 +9,49 @@ an older version after a migration is only possible from a database backup taken
 
 The chat interface and the design documents are in Russian; the entries below describe behavior in English.
 
+## Unreleased
+
+### Added
+
+- Talking to other agents through the gateway's agent (scenario 1). The agent names a message of yours and a peer with
+  `relay`; the gateway takes the text or transcript from its database, so the go-between cannot rewrite it, and checks an
+  excerpt word for word. The peer's answer wakes the agent as an ordinary event labelled untrusted; `show` gives it to you
+  verbatim with the `↪ Name:` mark. `agents` lists the peers and what is known about the link, never whether a session
+  is alive. The gateway itself tells you when a letter went or failed, in a line that replies to your message.
+- The line (scenario 2): `/agents` connects you to another agent, and your messages go to it from the gateway's code, past
+  the agent. The address is decided when a message is admitted: a command to the agent (`line.main_command`) goes to the
+  agent and keeps the line, a reply goes to the author, otherwise it goes to whoever is on the line. Shown in the pinned
+  line and in the marks. After `line.silence_minutes` (20) of silence the line closes itself and new messages go to the agent, with a button to
+  connect again. Letters on the line reach you directly; a late letter stays unread, counted in the pinned line and in `/agents`, and choosing the peer shows it. The agent can list and read these
+  conversations with `lines` and `line_log` when you ask; files go both ways: a file of yours goes with a letter saying its contents are not your words, and a peer's file comes as a document, or stays unread when you are not on a line with that peer. The agent reaches nothing on a line
+  by number: its tools treat such events as unknown.
+- `stg-link`: a separate process that carries letters between the gateway and an agent network. The network plugs in
+  as a module named at start (`--port`, see `packages/link/src/port.ts`), so the gateway gains no dependency. Without
+  `stg-link` the gateway works as before and letters wait. Peers are listed in `peers` in `config.yaml`; the list is also
+  the allow-list.
+- The gateway runs `stg-link` itself when `config.yaml` has a `link` section (`port`, `identity`): it starts the link
+  with the gateway, starts it again if it exits (after 1 s, doubling up to a minute) and stops it with the gateway. The
+  link exits on its own if the gateway is gone. No separate service is needed; its stderr goes to the journal as
+  `link_log`.
+
+- A report after a break. When the computer slept while your messages waited, or messages reached the gateway long after
+  you wrote them, the gateway sends one line once they are all closed (or after 30 minutes): every message of yours
+  from that time with what happened to it, answered, closed with 👌 or still waiting. Numbered buttons under it reply to
+  the message itself, so Telegram takes you to it: private chats have no message links.
+
+### Changed
+
+- `relay` also hands over a message you forwarded, with its text and transcript, under a gateway heading saying it is not
+  your word: a record from another app now reaches the keeper as text. Files are not sent; sound goes as a transcript.
+- After the computer sleeps, events given to the agent and not closed are given again at once: sleep breaks the
+  agent's turn. Tool calls made before the sleep no longer postpone it, and this repeat does not use up the single repeat
+  that comes before the line to you.
+- The line `Агент не может ответить` waits 30 seconds: if the failure is cleared by then, or it came within a minute of
+  waking up, there is no line.
+- Schema v15: event kind `peer`, column `peer_json`, table `peer_messages`.
+- Schema v16: `events.route`, table `lines`, `peer_messages.origin`, `line_id`, `unseen`.
+- The `↪` mark is sent with U+FE0F, so Telegram shows it as an emoji; it is recognised with or without it.
+
 ## 0.4.1 - 2026-10-28
 
 ### Fixed

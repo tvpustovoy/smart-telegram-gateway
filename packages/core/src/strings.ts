@@ -20,6 +20,8 @@ export const AGENT_MARK = '💬';
 export const AGENT_PREFIX = `${AGENT_MARK} `;
 /** Знак «слова другого через агента» (0.3.2, P-26): «↪ Помощник: …» — шлюз ставит его перед ответом с reply.from. */
 export const RELAY_MARK = '↪';
+/** Он же в метке: без U+FE0F Telegram рисует простую стрелку, а не смайлик. Узнаётся по RELAY_MARK, с U+FE0F и без него. */
+const RELAY_EMOJI = `${RELAY_MARK}\uFE0F`;
 /**
  * Знаки, с которых начинаются строки шлюза и пометки источника (Ш-23; TECH-SPEC 5.5, сужение 0.3.2): `⚙` — служебная
  * строка, `📍` — закреплённая строка, `№` — квитанции прежних версий («№ 118 записал»), `↪` — слова другого через агента,
@@ -101,6 +103,15 @@ function foldedName(name: string): string {
   return name.normalize('NFKD').replace(/\p{M}/gu, '');
 }
 
+/** Кириллица, неотличимая от латиницы на глаз: «Исслeдователь» с латинской e — то же имя (5.19). */
+const LOOKALIKE: Readonly<Record<string, string>> = { а: 'a', в: 'b', е: 'e', к: 'k', м: 'm', н: 'h', о: 'o', р: 'p', с: 'c', т: 't', у: 'y', х: 'x', і: 'i', ј: 'j', ѕ: 's', ԁ: 'd', һ: 'h', ԛ: 'q', ԝ: 'w' };
+
+/** Имя как его видит глаз: без регистра, знаков препинания и различий похожих букв. */
+export function nameSkeleton(name: string): string {
+  const folded = foldedName(name).toLocaleLowerCase().replace(/[^\p{L}\p{N}]/gu, '');
+  return [...folded].map((c) => LOOKALIKE[c] ?? c).join('');
+}
+
 /**
  * reply.from (0.3.2, P-26) — почему имя не годится; null — годится. Имя — коротко (до 64 знаков), одной строкой, без
  * управляющих и невидимых знаков; не шлюз и не служебное («шлюз», «gateway», «stg», «служебное») и без знаков шлюза
@@ -118,7 +129,7 @@ export function relayNameProblem(raw: string): string | null {
 
 /** Начало ответа со словами другого (0.3.2, P-26): «↪ Помощник: » — простым текстом (имя уже проверено). */
 export function relayPrefix(name: string): string {
-  return `${RELAY_MARK} ${name.trim()}: `;
+  return `${RELAY_EMOJI} ${name.trim()}: `;
 }
 
 /**
@@ -131,7 +142,7 @@ export function parcelFailedText(file: string, why: string, chat: number | null)
 
 /** Пометка источника без текста следом (0.3.3): подпись документа, чужого файла без своей подписи — «↪ <имя>». */
 export function relayLabel(name: string): string {
-  return `${RELAY_MARK} ${name.trim()}`;
+  return `${RELAY_EMOJI} ${name.trim()}`;
 }
 
 /** 0:42, 12:05 */
@@ -512,6 +523,8 @@ export const STATUS_LINE_MARK = '📍';
 export const WAITING_MARK = '📥';
 
 export interface StatusLineInput {
+  /** С кем линия (TECH-SPEC 5.20): первая строка показывает её вместо эпизода. */
+  line?: string | null;
   /**
    * Эпизод лички владельца: открытый или, если открытого нет, последний — с пометкой closed (следующее сообщение откроет
    * новый); null — эпизодов ещё не было вовсе.
@@ -525,6 +538,8 @@ export interface StatusLineInput {
   agent: AgentState;
   /** Сколько сообщений владельца ждут агента. */
   waiting: number;
+  /** Сколько писем агентов владелец ещё не читал (5.20). */
+  unseen?: number;
   mode: 'running' | 'paused' | 'stopped';
   /** Значки агента — контекст или сжатие, лимиты (agent-state.ts, agentIndicatorParts): `🧠 16%`, `🕐 31% · 📅 64%`. */
   indicators?: readonly string[];
@@ -546,11 +561,16 @@ export const NO_EPISODES_YET = 'Тем ещё не было';
  * `🕐 31% · 📅 64%` — последним: внутри него свой « · »): `🟢 · 📥 4 · 🧠 16% · 🕐 31% · 📅 64%`. Начинается с 📍 — не с 💬
  * (Ш-23). Расшифровка значков — в /help.
  */
+/** Письма агентов, которые владелец ещё не читал. */
+export const UNSEEN_MARK = '✉\uFE0F';
+
 export function statusLineText(s: StatusLineInput): string {
   const role = s.role.replace(/\s+/g, ' ').trim();
   const tail = role ? ` · ${role}` : '';
   const ep = s.episode;
-  const first = ep
+  const first = s.line
+    ? `${STATUS_LINE_MARK} На линии: ${s.line}`
+    : ep
     ? `${STATUS_LINE_MARK} ${episodeTag(ep.id)} · ${shownTopic(ep.topic)}${ep.closed ? ` · ${CLOSED_EPISODE_MARK}` : ''}${tail}`
     : `${STATUS_LINE_MARK} ${NO_EPISODES_YET}${tail}`;
   const second: string[] = [];
@@ -558,8 +578,34 @@ export function statusLineText(s: StatusLineInput): string {
   else if (s.mode === 'paused') second.push('⏸ пауза');
   second.push(AGENT_STATE_MARK[s.agent]);
   if (s.waiting > 0) second.push(`${WAITING_MARK} ${s.waiting}`);
+  if (s.unseen) second.push(`${UNSEEN_MARK} ${s.unseen}`);
   for (const p of s.indicators ?? []) second.push(p);
   return `${first}\n${second.join(' · ')}`;
+}
+
+/** Линия соединена (TECH-SPEC 5.20). */
+export function lineConnectedText(peer: string, main: string, command: string): string {
+  return `${SERVICE_MARK} На линии ${peer}. ${main} твоих слов не читает. /${command} текст — написать ему`;
+}
+
+/** Линия закрыта: дальше — ведущий агент. */
+export function lineClosedText(main: string): string {
+  return `${SERVICE_MARK} Линия закрыта, дальше говоришь с ${main}`;
+}
+
+/** Линии нет, а владелец вернулся к ведущему агенту. */
+export function lineNoneText(main: string): string {
+  return `${SERVICE_MARK} Линии нет, ты говоришь с ${main}`;
+}
+
+/** Линия закрылась сама после тишины. */
+export function lineIdleText(peer: string, main: string, minutes: number): string {
+  return `${SERVICE_MARK} Линия с ${peer} закрыта: ${minutes} мин тишины. Дальше сообщения идут: ${main}`;
+}
+
+/** Список агентов (/agents). Что сессия агента жива, шлюз не знает, поэтому кружок — о письмах, а не о нём. */
+export function agentsListText(link: boolean): string {
+  return `${SERVICE_MARK} С кем соединить? 🟢 — писал за сутки, ⚪ — нет.${link ? '' : ' Связь с агентами сейчас не подключена, письма подождут её.'}`;
 }
 
 /**
@@ -570,15 +616,18 @@ export function statusLineText(s: StatusLineInput): string {
  * #52; по умолчанию да): ответ снимает 👀, 👌 — закрыто без ответа, до следующего сообщения владельца ⟨предл.: текст⟩;
  * false — как раньше.
  */
-export function helpText(o: { whereTtlMinutes: number; audioMaxMinutes: number; clearReceipts?: boolean }): string {
+export function helpText(o: { whereTtlMinutes: number; audioMaxMinutes: number; clearReceipts?: boolean; lineCommand?: string | null }): string {
   return [
     `${SERVICE_MARK} Как устроен чат`,
     o.clearReceipts === false
       ? 'На твоём сообщении: 👀 агент увидел · 👌 агент ответил. Агент не на связи — на сообщении ничего: в строке вверху ⚪ и 📥 N.'
       : 'На твоём сообщении: 👀 агент увидел; ответил — 👀 снимается, ответ в чате · 👌 агент закрыл без ответа, снимется, когда напишешь снова. Агент не на связи — на сообщении ничего: в строке вверху ⚪ и 📥 N.',
-    `Кто пишет: ответ агента — обычным текстом; ${SERVICE_MARK} — строка шлюза; «${RELAY_MARK} Имя:» — агент передаёт слова другого; ${AGENT_MARK} — ответ агента, который сам начинается со знака шлюза.`,
+    `Кто пишет: ответ агента — обычным текстом; ${SERVICE_MARK} — строка шлюза; «${RELAY_EMOJI} Имя:» — агент передаёт слова другого; ${AGENT_MARK} — ответ агента, который сам начинается со знака шлюза.`,
+    ...(o.lineCommand
+      ? [`Линия: /agents соединяет с агентом, дальше сообщения идут ему напрямую; 🕊 — письмо ушло. Без твоих сообщений линия закрывается сама, новое идёт ведущему агенту. ✉️ 2 — непрочитанные письма агентов: читаются в /agents. Реплай идёт автору сообщения. /${o.lineCommand} — вернуться, /${o.lineCommand} текст — написать, не меняя линию.`]
+      : []),
     `Вверху — закреплённая строка: номер эпизода (${episodeTag(7)}) и тема («${CLOSED_EPISODE_MARK}» — эпизод закрыт, следующее сообщение начнёт новый); ниже значки: 🟢 агент свободен · 🟡 думает · ⚪ не на связи · 🔴 модель не отвечает (что сказала — в /status); 📥 N — сообщений ждут агента; ⏸ пауза, ⛔ стоп. Бот правит её сам.`,
-    '🧠 16% — занято контекста агента, 🌀 — идёт сжатие контекста; 🕐 31% — израсходовано лимита на 5 часов, 📅 64% — на неделю (лимиты общие на аккаунт); ⚠ — выше 80% и когда сброс, «—» — неизвестно.',
+    '🧠 16% — занято контекста агента, 🌀 — идёт сжатие контекста; 🕐 31% — израсходовано лимита на 5 часов, 📅 64% — на неделю (лимиты общие на аккаунт); ⚠ — выше 80% и когда сброс; значения нет — нет и значка.',
     'Команды — в меню ☰ или словом:',
     `📍 Где мы — подробности; сообщение исчезнет через ${o.whereTtlMinutes} мин`,
     '🆕 Новая тема — начать новую тему',
@@ -606,6 +655,58 @@ export function agentFailureNotice(text: string): string {
 
 /** Предел текста ошибки в строке владельцу. */
 export const AGENT_FAILURE_NOTICE_MAX = 160;
+
+// ——— сводка после перерыва (5.3 «Сон ноутбука») ———
+
+/** Что стало с сообщением владельца: ответ агента, закрыто без ответа (👌), у агента без ответа, ждёт агента. */
+export type BreakState = { kind: 'answered'; at: string } | { kind: 'closed' } | { kind: 'given' } | { kind: 'waiting' };
+
+/** Строка сообщения в сводке: время, когда владелец его написал, что это и что с ним. */
+export interface BreakItem {
+  hhmm: string;
+  what: string;
+  state: BreakState;
+}
+
+/** Причина перерыва: компьютер спал (один раз или просыпаясь ненадолго) или сообщения ждали шлюз (не принимал). */
+export type BreakCause = 'sleep' | 'sleeps' | 'gap';
+
+/** Предел начала сообщения в сводке. */
+export const BREAK_EXCERPT_MAX = 32;
+
+export function breakStateText(s: BreakState): string {
+  if (s.kind === 'answered') return `ответ ${s.at}`;
+  if (s.kind === 'closed') return 'закрыто 👌';
+  if (s.kind === 'given') return 'у агента, ответа ещё нет';
+  return 'сохранено, ждёт агента';
+}
+
+/** Что за сообщение — коротко: начало текста в кавычках, голосовое, запись, фото, файл. */
+export function breakWhat(kind: string, text: string | null): string {
+  const flat = (text ?? '').replace(UNSAFE_LINE_G, ' ').replace(/\s+/g, ' ').trim();
+  const c = cutGraphemes(flat, BREAK_EXCERPT_MAX);
+  const quoted = flat ? `«${c.cut ? `${c.text.trimEnd()}…` : c.text}»` : '';
+  const label = kind === 'voice' ? 'голосовое' : kind === 'photo' ? 'фото' : kind === 'document' ? (text ? 'запись' : 'файл') : '';
+  return [label, quoted].filter(Boolean).join(' ') || 'сообщение';
+}
+
+/**
+ * Сводка после перерыва: одна строка владельцу, когда сообщения, которые ждали, закрыты (или ждут дольше срока). Номера
+ * строк совпадают с кнопками под сводкой: кнопка присылает ответ на само сообщение — по цитате Telegram к нему переходит.
+ */
+export function breakReportText(o: { from: string; until: string; cause: BreakCause; items: readonly BreakItem[] }): string {
+  const why = o.cause === 'gap' ? 'сообщения ждали шлюз' : o.cause === 'sleeps' ? 'компьютер спал, ненадолго просыпаясь' : 'компьютер спал';
+  return [
+    `${SERVICE_MARK} Перерыв ${o.from}–${o.until}: ${why}. Твоих сообщений за это время: ${o.items.length}, все сохранены:`,
+    ...o.items.map((it, i) => `${i + 1}. ${it.hhmm} ${it.what} — ${breakStateText(it.state)}`),
+    'Нажми номер — покажу само сообщение.',
+  ].join('\n');
+}
+
+/** Ответ на само сообщение по кнопке сводки. */
+export function breakShowText(hhmm: string, s: BreakState): string {
+  return `${SERVICE_MARK} Сообщение ${hhmm}: ${breakStateText(s)}`;
+}
 
 // ——— M5: правила доступа и кнопки (5.9; Ш-17, Ш-21, Ш-22) ———
 // Тексты строк — M5 (в TECH-SPEC дословно их нет); строки изменения внутри — из полей (rules.ts, describeChange).

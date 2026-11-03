@@ -223,6 +223,17 @@ describe('config.yaml', () => {
       assert.match(text, /stt\.vocabulary\.1 — термин словаря — меньше 50 знаков/);
     }
   });
+
+  it('peers (5.19): список агентов; имя как у reply.from, повторы — ошибка; по умолчанию пусто', () => {
+    assert.deepEqual(parseConfig({ bot: 'b', timezone: 'UTC' }, { test: false }).peers, []);
+    const peers = [{ name: 'Исследователь', address: 'addr-1' }];
+    assert.deepEqual(parseConfig({ bot: 'b', timezone: 'UTC', peers }, { test: false }).peers, peers);
+    const twice = (a: object, b: object): string => problems(() => parseConfig({ bot: 'b', timezone: 'UTC', peers: [a, b] }, { test: false })).join();
+    assert.match(twice({ name: 'А', address: 'x' }, { name: 'А', address: 'y' }), /name повторяется/);
+    assert.match(twice({ name: 'А', address: 'x' }, { name: 'Б', address: 'x' }), /address повторяется/);
+    assert.ok(problems(() => parseConfig({ bot: 'b', timezone: 'UTC', peers: [{ name: '⚙ шлюз', address: 'x' }] }, { test: false })).length > 0, 'имя со знаком шлюза');
+    assert.ok(problems(() => parseConfig({ bot: 'b', timezone: 'UTC', peers: [{ name: 'А' }] }, { test: false })).length > 0, 'без адреса');
+  });
 });
 
 describe('config.yaml · голос: провайдеры (5.8)', () => {

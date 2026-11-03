@@ -180,7 +180,7 @@ describe('stg-codex · state.json', () => {
 });
 
 describe('stg-codex · инструменты ↔ Codex', () => {
-  it('восемь инструментов канала — dynamic tools вида function со схемой', () => {
+  it('инструменты канала — dynamic tools вида function со схемой', () => {
     const tools = dynamicTools();
     assert.deepEqual(tools.map((t) => t.name), [...TOOL_NAMES]);
     for (const t of tools) {

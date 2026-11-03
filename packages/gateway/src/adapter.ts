@@ -127,12 +127,14 @@ import {
   readTurn,
   instructionsWhereLine,
   ownerReactionText,
+  nameSkeleton,
   relayNameProblem,
   setMeta,
   silentAgentNotice,
   transaction,
   viewableOf,
   type AdapterMessage,
+  type PeerEventInfo,
   type Attachment,
   type DeferredRetryResult,
   type EventMessage,
@@ -148,6 +150,8 @@ import type { AgentResult, Control, Effects } from './control.js';
 import type { Episodes } from './episodes.js';
 import type { MediaService } from './media.js';
 import type { ParcelService } from './parcels.js';
+import { openLine } from './lines.js';
+import type { PeerService } from './peers.js';
 import { clearReceipts, requestAnsweredAfterTurn, requestAnsweredStale, requestProcessed, requestSeen } from './reactions.js';
 import type { GatewayConnection } from './socket-server.js';
 import { Typing, type WorkingEvent } from './typing.js';
@@ -168,6 +172,8 @@ interface Tracked {
   redelivered: boolean;
   /** Откладываний подряд: вызовы были — сессия занята (после повтора счёт заново). */
   postponed: number;
+  /** Срок поставлен пробуждением: повтор — после сна (в журнал). */
+  afterSleep?: boolean;
   /**
    * Сессии Claude Code (session_id строки состояния), которым событие уже отдавалось (0.3.2): стала текущей сессия, которая
    * его не видела (/clear, /resume к прежнему разговору), — повтор ей (checkSession); видела — нет.
@@ -295,6 +301,7 @@ type InstructionsOffer = InstructionsState | { state: 'none' };
 
 interface EventRow {
   seq: number;
+  peer_json: string | null;
   update_id: number | null;
   message_id: number | null;
   chat_id: number | null;
@@ -355,7 +362,7 @@ export const LEASE_REAL_GRACE_MS = 1_000;
 /** Такт пришёл позже двух — часы прыгнули (сон): ожидание pong и срок пробы — заново. */
 const LEASE_WAKE_GAP_MS = 2 * LEASE_TICK_MS;
 /** Вызовы инструментов канала — признак «сессия занята» (К-5). delivered, ping, pong, hello — не вызовы модели. */
-const TOOL_CALLS = new Set<AdapterMessage['type']>(['reply', 'done', 'episode', 'episode_summary', 'where', 'rule', 'media', 'send_file']);
+const TOOL_CALLS = new Set<AdapterMessage['type']>(['reply', 'done', 'episode', 'episode_summary', 'where', 'rule', 'media', 'send_file', 'relay', 'show', 'agents', 'lines', 'line_log']);
 /**
  * Голосовое в распознавании держит следующие события (5.8 ⟨предл.⟩) не дольше 90 с от записи: зависший провайдер не
  * выключает агента — текст «срочно» после голосовых уходит через ≤ 90 с, а голосовое — когда распознано или получен отказ.
@@ -419,6 +426,7 @@ export class AdapterService {
   /** Картинки для агента (0.3); null — ещё не подключены (media отвечает unavailable). */
   private media: MediaService | null = null;
   private parcels: ParcelService | null = null;
+  private peers: PeerService | null = null;
 
   constructor(
     private readonly ctx: Ctx,
@@ -443,6 +451,10 @@ export class AdapterService {
   /** Посылки (0.3.3): parcels.ts. */
   setParcels(parcels: ParcelService): void {
     this.parcels = parcels;
+  }
+
+  setPeers(peers: PeerService): void {
+    this.peers = peers;
   }
 
   /** Картинки для агента (0.3): media.ts. */
@@ -637,6 +649,27 @@ export class AdapterService {
       case 'working':
         this.onWorking(msg, conn);
         return true;
+      case 'relay':
+        this.onRelay(msg, conn);
+        return true;
+      case 'show':
+        this.onShow(msg, conn);
+        return true;
+      case 'agents':
+        this.onAgents(msg, conn);
+        return true;
+      case 'lines':
+        this.onLines(msg, conn);
+        return true;
+      case 'line_log':
+        this.onLineLog(msg, conn);
+        return true;
+      case 'peer_in':
+      case 'peer_file':
+      case 'peer_sent':
+      case 'peer_failed':
+        this.onPeerLink(msg, conn);
+        return true;
       default:
         return false;
     }
@@ -645,6 +678,7 @@ export class AdapterService {
   /** pong от переходника: ожидание снято. */
   onPong(conn: GatewayConnection): void {
     if (this.lease?.conn === conn) this.lease.ping = null;
+    this.peers?.pong(conn);
   }
 
   private answer(conn: GatewayConnection, reqId: string, r: AgentResult | { ok: true; result: unknown; effects: Effects }): void {
@@ -759,6 +793,7 @@ export class AdapterService {
 
   /** Соединение закрыто: аренда снята, отданное без «обработано» — снова new. */
   onClose(conn: GatewayConnection): void {
+    this.peers?.detach(conn);
     if (this.lease?.conn !== conn) return;
     this.release(this.lease, 'closed');
   }
@@ -802,6 +837,20 @@ export class AdapterService {
     if (msg.role === 'cli') {
       conn.role = 'cli';
       conn.send({ type: 'ack', req_id: msg.req_id, result: { role: 'cli' } });
+      return;
+    }
+    if (msg.role === 'peer_link') {
+      if (!this.peers) {
+        conn.send({ type: 'error', req_id: msg.req_id, code: 'unavailable', text: 'связь с агентами не подключена' });
+        return;
+      }
+      if (!this.peers.accepts(conn)) {
+        conn.send({ type: 'error', req_id: msg.req_id, code: 'busy', text: 'связь уже подключена' });
+        conn.close();
+        return;
+      }
+      conn.send({ type: 'ack', req_id: msg.req_id, result: { role: 'peer_link' } });
+      this.peers.attach(conn);
       return;
     }
     conn.role = 'adapter';
@@ -1207,6 +1256,7 @@ export class AdapterService {
    * и отдаётся, когда окно прошло.
    */
   pump(): void {
+    this.routeNew();
     const lease = this.lease;
     if (this.closed || !lease || !lease.verified || this.mode() === 'stopped') return;
     const now = this.ctx.clock.now();
@@ -1217,7 +1267,7 @@ export class AdapterService {
     };
     if (lease.skipped.size) {
       const ids = JSON.stringify([...lease.skipped]);
-      const ready = sql(this.ctx.db, "SELECT * FROM events WHERE status = 'new' AND seq IN (SELECT value FROM json_each(?)) ORDER BY seq").all(ids) as unknown as EventRow[];
+      const ready = sql(this.ctx.db, "SELECT * FROM events WHERE status = 'new' AND route IS NULL AND seq IN (SELECT value FROM json_each(?)) ORDER BY seq").all(ids) as unknown as EventRow[];
       for (const ev of ready) {
         lease.skipped.delete(ev.seq);
         send(ev);
@@ -1227,10 +1277,10 @@ export class AdapterService {
       );
       for (const seq of lease.skipped) if (!still.has(seq)) lease.skipped.delete(seq);
     }
-    const barrier = sql(this.ctx.db, `SELECT min(seq) AS s FROM events WHERE status = 'transcribing' AND kind IN (${PUMP_KINDS_SQL}) AND seq > ? AND created_at > ?`)
+    const barrier = sql(this.ctx.db, `SELECT min(seq) AS s FROM events WHERE status = 'transcribing' AND route IS NULL AND kind IN (${PUMP_KINDS_SQL}) AND seq > ? AND created_at > ?`)
       .get(lease.cursor, now - VOICE_HOLD_MS) as { s: number | null };
     const from = lease.cursor;
-    const rows = sql(this.ctx.db, `SELECT * FROM events WHERE status = 'new' AND kind IN (${PUMP_KINDS_SQL}) AND seq > ? AND seq < ? ORDER BY seq LIMIT ${PUMP_BATCH}`)
+    const rows = sql(this.ctx.db, `SELECT * FROM events WHERE status = 'new' AND route IS NULL AND kind IN (${PUMP_KINDS_SQL}) AND seq > ? AND seq < ? ORDER BY seq LIMIT ${PUMP_BATCH}`)
       .all(from, barrier.s ?? Number.MAX_SAFE_INTEGER) as unknown as EventRow[];
     for (const ev of rows) {
       lease.cursor = ev.seq;
@@ -1238,7 +1288,7 @@ export class AdapterService {
     }
     if (rows.length) {
       // Голосовые, мимо которых прошёл курсор (распознаются дольше VOICE_HOLD_MS), — отдать, когда будут готовы.
-      const passed = sql(this.ctx.db, `SELECT seq, created_at FROM events WHERE status = 'transcribing' AND kind IN (${PUMP_KINDS_SQL}) AND seq > ? AND seq < ?`)
+      const passed = sql(this.ctx.db, `SELECT seq, created_at FROM events WHERE status = 'transcribing' AND route IS NULL AND kind IN (${PUMP_KINDS_SQL}) AND seq > ? AND seq < ?`)
         .all(from, lease.cursor) as Array<{ seq: number; created_at: number }>;
       for (const p of passed) {
         lease.skipped.add(p.seq);
@@ -1258,6 +1308,25 @@ export class AdapterService {
     }
   }
 
+  /** Диск полон — не падение: события с адресом подождут, как и всё остальное. */
+  private routeNew(): void {
+    if (this.closed) return;
+    try {
+      this.peers?.routeNew(this.mode(), VOICE_HOLD_MS);
+    } catch (err) {
+      if (!this.ctx.disk.check(err, 'route_new', {})) throw err;
+    }
+  }
+
+  /** На линии ответ ведущего агента подписывает шлюз: владелец говорит с другим. Только в личке владельца. */
+  private lineSign(chatId: number): string | null {
+    return chatId === this.ctx.config.owner_id && openLine(this.ctx) ? this.ctx.config.line.main_name : null;
+  }
+
+  get peerLinked(): boolean {
+    return this.peers?.linked ?? false;
+  }
+
   // ——— такт аренды ———
 
   private tick(): void {
@@ -1265,6 +1334,9 @@ export class AdapterService {
     const delta = now - this.lastTick;
     this.lastTick = now;
     const lease = this.lease;
+    if (!this.closed) this.peers?.tick(now, performance.now(), delta > LEASE_WAKE_GAP_MS);
+    // Без аренды pump не зовут: слово на линии не ждёт ведущего агента.
+    this.routeNew();
     if (this.closed || !lease) return;
     try {
       const real = performance.now();
@@ -1276,6 +1348,15 @@ export class AdapterService {
           lease.sinceReal = real;
         }
         this.ctx.journal.write('lease_wake', { lease: lease.id, gap_ms: delta });
+        // Сон обрывает ход агента (Claude Code: «went to sleep mid-response»): отданное до сна — отдать снова сразу. Вызовы
+        // до сна — не занятость, и повтор после сна не тратит тот единственный, после которого строка владельцу.
+        for (const t of lease.track.values()) {
+          t.due = now;
+          t.calls = lease.calls;
+          t.postponed = 0;
+          t.redelivered = false;
+          t.afterSleep = true;
+        }
       }
       if (!lease.verified && now - lease.since >= PROBE_TIMEOUT_MS && real - lease.sinceReal >= LEASE_REAL_GRACE_MS) {
         this.unverified(lease);
@@ -1362,7 +1443,8 @@ export class AdapterService {
         t.postponed = 0;
         if (lease.session) t.seen.add(lease.session);
         lease.conn.send(this.frame(ev, true));
-        this.ctx.journal.write('redelivered', { seq, lease: lease.id, kind: ev.kind, ...limit });
+        this.ctx.journal.write('redelivered', { seq, lease: lease.id, kind: ev.kind, ...limit, ...(t.afterSleep ? { after_sleep: true } : {}) });
+        t.afterSleep = false;
         continue;
       }
       lease.track.delete(seq);
@@ -1448,6 +1530,7 @@ export class AdapterService {
       ...mediaField(attachments),
       ...materialField(ev),
       ...this.afterMaterialField(ev),
+      ...(ev.peer_json !== null ? { peer: JSON.parse(ev.peer_json) as PeerEventInfo } : {}),
     };
   }
 
@@ -1494,8 +1577,9 @@ export class AdapterService {
     return null;
   }
 
+  /** Событие для ведущего агента. С адресом (5.20) для него не существует: ни один инструмент не дотянется до него по №. */
   private event(seq: number): EventRow | null {
-    return (sql(this.ctx.db, 'SELECT * FROM events WHERE seq = ?').get(seq) as EventRow | undefined) ?? null;
+    return (sql(this.ctx.db, 'SELECT * FROM events WHERE seq = ? AND route IS NULL').get(seq) as EventRow | undefined) ?? null;
   }
 
   /** Событие отдано этой аренде (кадр ушёл ей, или delivered от неё). */
@@ -1550,7 +1634,15 @@ export class AdapterService {
     return row.status === 'held' ? 'held_paused' : 'queued';
   }
 
-  private onReply(msg: Extract<AdapterMessage, { type: 'reply' }>, conn: GatewayConnection): void {
+  /** Почему агенту нельзя подписать слова этим именем: метку агента из списка ставит только show, дословно из базы. */
+  private fromProblem(from: string): string | null {
+    const name = nameSkeleton(from);
+    if (this.ctx.config.peers.some((p) => nameSkeleton(p.name) === name)) return `«${from.trim()}» — агент из списка шлюза: его письмо показывает show, дословно`;
+    return relayNameProblem(from);
+  }
+
+  /** shown — письмо агента (show): имя ставит шлюз, текст чужой и уходит без разметки. */
+  private onReply(msg: Extract<AdapterMessage, { type: 'reply' }>, conn: GatewayConnection, shown = false): void {
     const lease = this.verifiedLease(conn, msg.req_id);
     if (!lease) return;
     const repeated = this.repeatedReply(msg);
@@ -1576,7 +1668,7 @@ export class AdapterService {
     // Чьи слова агент передаёт (0.3.2, P-26): имя проверяет шлюз — агент не выдаёт чужие слова за строку шлюза ⟨предл.⟩.
     const fromName = msg.from !== undefined ? msg.from.trim() : null;
     if (msg.from !== undefined) {
-      const why = relayNameProblem(msg.from);
+      const why = shown ? null : this.fromProblem(msg.from);
       if (why) {
         this.ctx.journal.write('reply_refused', { seq: msg.seq, reason: 'from', from: msg.from.slice(0, 80), text: why });
         conn.send({ type: 'error', req_id: msg.req_id, code: 'bad_request', text: why });
@@ -1618,7 +1710,8 @@ export class AdapterService {
         turn: msg.turn,
         status: held ? 'held' : 'pending',
         idem: msg.idem ?? null,
-        fromName,
+        fromName: fromName ?? this.lineSign(chatId),
+        plain: shown,
       });
       if (marks) {
         sql(this.ctx.db, "UPDATE events SET status = 'processed', processed_at = ?, processed_silent = 0 WHERE seq = ?").run(now, ev.seq);
@@ -1631,7 +1724,7 @@ export class AdapterService {
     this.ctx.journal.write('reply', {
       seq: msg.seq,
       outbox_id: outboxId,
-      label: 'agent',
+      label: shown ? 'untrusted' : 'agent',
       text: msg.text,
       voice: msg.voice,
       ...(fromName ? { from: fromName } : {}),
@@ -1645,6 +1738,85 @@ export class AdapterService {
     conn.send({ type: 'ack', req_id: msg.req_id, result: held ? 'held_paused' : 'queued' });
     this.hooks.onAgentActivity?.();
     this.hooks.onReplyQueued();
+  }
+
+  /** relay (сценарий 1): слово владельца другому агенту. Только проверенной аренде; остальное — PeerService. */
+  private onRelay(msg: Extract<AdapterMessage, { type: 'relay' }>, conn: GatewayConnection): void {
+    if (!this.verifiedLease(conn, msg.req_id)) return;
+    const r = this.peers?.relay(msg, this.mode(), this.turn()) ?? { ok: false as const, code: 'unavailable' as const, text: 'связь с агентами не подключена' };
+    if (!r.ok) {
+      conn.send({ type: 'error', req_id: msg.req_id, code: r.code, text: r.text });
+      return;
+    }
+    conn.send({ type: 'ack', req_id: msg.req_id, result: r.result });
+    this.hooks.onAgentActivity?.();
+  }
+
+  /**
+   * show (сценарий 1): письмо агента владельцу дословно. Это reply с текстом из базы и меткой «↪ Имя»: те же проверки хода,
+   * «стопа» и паузы, событие закрывается; уходит простым текстом, без разметки. Письмо уже идёт или ушло — второго сообщения
+   * нет; брошено «стопом» или Telegram не принял — показать можно снова.
+   */
+  private onShow(msg: Extract<AdapterMessage, { type: 'show' }>, conn: GatewayConnection): void {
+    if (!this.verifiedLease(conn, msg.req_id)) return;
+    const ev = this.event(msg.seq);
+    if (!ev || ev.kind !== 'peer' || ev.peer_json === null) {
+      conn.send({ type: 'error', req_id: msg.req_id, code: 'unknown_seq', text: `нет письма агента № ${msg.seq}` });
+      return;
+    }
+    const peer = JSON.parse(ev.peer_json) as PeerEventInfo;
+    if (peer.failed !== undefined || ev.text === null) {
+      conn.send({ type: 'error', req_id: msg.req_id, code: 'bad_request', text: `№ ${msg.seq} — сбой передачи, а не письмо: показывать нечего` });
+      return;
+    }
+    const shown = sql(this.ctx.db, 'SELECT status FROM outbox WHERE event_seq = ? AND plain = 1 ORDER BY id DESC LIMIT 1').get(msg.seq) as { status: string } | undefined;
+    if (shown && shown.status !== 'dropped') {
+      conn.send({ type: 'ack', req_id: msg.req_id, result: shown.status === 'held' ? 'held_paused' : 'queued' });
+      return;
+    }
+    this.onReply({ type: 'reply', req_id: msg.req_id, seq: msg.seq, text: ev.text, voice: false, turn: msg.turn, from: peer.name }, conn, true);
+  }
+
+  /** agents: только чтение, только проверенной аренде. */
+  private onAgents(msg: Extract<AdapterMessage, { type: 'agents' }>, conn: GatewayConnection): void {
+    if (!this.verifiedLease(conn, msg.req_id)) return;
+    conn.send({ type: 'ack', req_id: msg.req_id, result: this.peers?.list() ?? { link: false, agents: [] } });
+  }
+
+  /** lines: только чтение. Содержимого здесь нет. */
+  private onLines(msg: Extract<AdapterMessage, { type: 'lines' }>, conn: GatewayConnection): void {
+    if (!this.verifiedLease(conn, msg.req_id)) return;
+    conn.send({ type: 'ack', req_id: msg.req_id, result: this.peers?.lines(msg.limit ?? 10) ?? { lines: [] } });
+  }
+
+  /** line_log: содержимое линии. Журнал пишет, что агент его прочитал. */
+  private onLineLog(msg: Extract<AdapterMessage, { type: 'line_log' }>, conn: GatewayConnection): void {
+    if (!this.verifiedLease(conn, msg.req_id)) return;
+    const r = this.peers?.lineLog(msg.id) ?? null;
+    if (!r) {
+      conn.send({ type: 'error', req_id: msg.req_id, code: 'bad_request', text: `нет линии ${msg.id}` });
+      return;
+    }
+    this.ctx.journal.write('line_read', { id: msg.id, peer: r.peer });
+    conn.send({ type: 'ack', req_id: msg.req_id, result: r });
+  }
+
+  /** Кадры связи: только соединению hello role peer_link. */
+  private onPeerLink(msg: Extract<AdapterMessage, { type: 'peer_in' | 'peer_file' | 'peer_sent' | 'peer_failed' }>, conn: GatewayConnection): void {
+    const peers = this.peers;
+    if (!peers || conn.role !== 'peer_link') {
+      conn.send({ type: 'error', req_id: msg.req_id, code: 'not_your_lease', text: 'это соединение не связь с агентами' });
+      return;
+    }
+    if (msg.type === 'peer_in' || msg.type === 'peer_file') {
+      const r = msg.type === 'peer_in' ? peers.incoming(msg) : peers.fileOffer(msg);
+      if (r.ok) conn.send({ type: 'ack', req_id: msg.req_id, result: r.result });
+      else conn.send({ type: 'error', req_id: msg.req_id, code: r.code, text: r.text });
+      return;
+    }
+    if (msg.type === 'peer_sent') peers.sent(msg);
+    else peers.failed(msg);
+    conn.send({ type: 'ack', req_id: msg.req_id, result: 'ok' });
   }
 
   /**
@@ -1687,7 +1859,7 @@ export class AdapterService {
     }
     const fromName = msg.from !== undefined ? msg.from.trim() : null;
     if (msg.from !== undefined) {
-      const why = relayNameProblem(msg.from);
+      const why = this.fromProblem(msg.from);
       if (why) {
         refuse('from', why);
         return;
@@ -1720,7 +1892,7 @@ export class AdapterService {
         leaseCwd: lease.hint?.cwd ?? null,
         idem: msg.idem ?? null,
         ...(msg.as !== undefined ? { as: msg.as } : {}),
-        req: { seq: msg.seq, chatId, threadId: ev?.thread_id ?? null, caption: msg.caption ?? '', fromName, turn: msg.turn, held },
+        req: { seq: msg.seq, chatId, threadId: ev?.thread_id ?? null, caption: msg.caption ?? '', fromName: fromName ?? this.lineSign(chatId), turn: msg.turn, held },
         inTx: () => {
           if (!marks) return;
           sql(this.ctx.db, "UPDATE events SET status = 'processed', processed_at = ?, processed_silent = 0 WHERE seq = ?").run(now, ev.seq);

@@ -6,7 +6,7 @@
 //   состояния с выросшей суммой;
 // - обычное: `🟢 · 🧠 16% · 🕐 31% · 📅 64%`; проценты меняются не чаще раза в 60 с; сжатие (🌀) и ⚠ выше 80% — сразу;
 //   после сжатия прежнее число не показывается; сжатие без PostCompact дольше 15 минут — снято;
-// - сброс лимита прошёл — «—»; другая сессия (каталог не тот, что у аренды) и данные старше суток — 🧠 нет;
+// - сброс лимита прошёл — значка нет; другая сессия (каталог не тот, что у аренды) и данные старше суток — 🧠 нет;
 // - /help — расшифровка значков;
 // - StopFailure — в настоящем виде Claude Code 2.1.306 (error — тип, last_assistant_message — текст): владелец видит текст;
 // - `stg status` — строки «агент: …» и «отказ модели: …»; правило «раз в час» переживает перезапуск шлюза.
@@ -151,15 +151,15 @@ describe('значки агента: контекст и сжатие, лими�
     assert.ok(eHot.at - last.at < 60_000, `⚠ через ${eHot.at - last.at} мс`);
   });
 
-  it('сжатие без PostCompact дольше 15 минут — 🌀 снят; сброс прошёл — «—»; другая сессия и данные старше суток — 🧠 нет', async () => {
+  it('сжатие без PostCompact дольше 15 минут — 🌀 снят; сброс прошёл — значка нет; другая сессия и данные старше суток — 🧠 нет', async () => {
     await cli('hook', { session_id: 's1', hook_event_name: 'PreCompact', trigger: 'auto' });
     await waitStatus((t) => t.includes('🌀'), '🌀');
     const since = now();
     await waitStatus((t) => !t.includes('🌀'), 'снятия 🌀', '30s');
     assert.ok(now() - since >= 15 * 60_000, `снят через ${now() - since} мс`);
-    // Claude Code прислал окно с прошедшим сбросом — «—», не неверное число.
+    // Claude Code прислал окно с прошедшим сбросом — значка нет, не неверное число.
     await cli('statusline', statusline({ rate_limits: { five_hour: { used_percentage: 99, resets_at: Math.round((now() - 60_000) / 1000) }, seven_day: { used_percentage: 64, resets_at: Math.round((now() + 3 * 24 * H) / 1000) } } }));
-    await waitStatus((t) => t.endsWith('\n🟢 · 🧠 16% · 🕐 — · 📅 64%'), '«—» вместо прошедшего');
+    await waitStatus((t) => t.endsWith('\n🟢 · 🧠 16% · 📅 64%'), 'без 🕐 вместо прошедшего');
     // Строка состояния другой сессии (каталог не тот, что у аренды) — 🧠 нет, лимиты (общие на подписку) — есть.
     await cli('statusline', statusline({ cwd: '/elsewhere/agent', workspace: { current_dir: '/elsewhere/agent', project_dir: '/elsewhere/agent' } }));
     await waitStatus((t) => t.endsWith('\n🟢 · 🕐 31% · 📅 64%'), 'без 🧠 чужой сессии', '5s');

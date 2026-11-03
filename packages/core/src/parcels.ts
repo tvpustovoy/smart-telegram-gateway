@@ -123,6 +123,10 @@ export function hasHiddenSegment(rel: string): boolean {
   return pathSegments(rel).some((s) => s.startsWith('.'));
 }
 
+/** Папки файлов в пути между шлюзом и связью с агентами (5.20), относительно каталога бота. */
+export const PEER_OUT_DIR = 'raw/peer-out';
+export const PEER_IN_DIR = 'raw/peer-in';
+
 /** Плохое имя: управляющие и невидимые знаки (UNSAFE_NAME_RE). */
 export function hasUnsafeName(rel: string): boolean {
   return UNSAFE_NAME_RE.test(rel);

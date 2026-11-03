@@ -43,6 +43,8 @@ export interface OutboxInsert {
   replyToMessageId?: number | null;
   /** Ключ повтора ответа агента (reply.idem). */
   idem?: string | null;
+  /** Письмо агента, показанное владельцу (show): простым текстом, без разметки; чистится как чужое. */
+  plain?: boolean;
   /** Чьи слова передаёт агент (reply.from, 0.3.2, P-26): отправитель ставит «↪ <имя>: » в начало. */
   fromName?: string | null;
   /**
@@ -73,8 +75,8 @@ export type GatewayMarkup = InlineMarkup | RemoveKeyboardMarkup;
 /** Строка в очередь отправки. Вызывать внутри транзакции или как самостоятельную запись. */
 export function insertOutbox(ctx: Ctx, o: OutboxInsert): number {
   const r = sql(ctx.db,
-      `INSERT INTO outbox(event_seq, chat_id, thread_id, kind, text, voice, turn, origin, status, attempts, created_at, reply_markup, reply_to_message_id, idem, bare, from_name, quote)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO outbox(event_seq, chat_id, thread_id, kind, text, voice, turn, origin, status, attempts, created_at, reply_markup, reply_to_message_id, idem, bare, from_name, quote, plain)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
     .run(
       o.eventSeq,
@@ -93,6 +95,7 @@ export function insertOutbox(ctx: Ctx, o: OutboxInsert): number {
       o.bare ? 1 : 0,
       o.fromName ?? null,
       o.quote ? 1 : 0,
+      o.plain ? 1 : 0,
     );
   return Number(r.lastInsertRowid);
 }
@@ -138,6 +141,8 @@ export interface ServiceLineOptions {
   replyMarkup?: GatewayMarkup | null;
   /** Без разметки шлюза (ответ «где мы» — его удаляют). */
   bare?: boolean;
+  /** Ответом на какое сообщение Telegram. */
+  replyToMessageId?: number | null;
 }
 
 /** Служебная строка владельцу в личку (`⚙ …`). null — владельца нет (первая настройка). */
@@ -155,6 +160,7 @@ export function enqueueServiceLine(ctx: Ctx, text: string, opts: number | null |
     origin: 'gateway',
     replyMarkup: o.replyMarkup ?? null,
     bare: o.bare ?? false,
+    replyToMessageId: o.replyToMessageId ?? null,
   });
 }
 

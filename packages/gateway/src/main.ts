@@ -70,8 +70,10 @@ import { Directory } from './directory.js';
 import { DiskState } from './disk.js';
 import { Episodes } from './episodes.js';
 import { acquireInstanceLock, checkInstance, readPidFile, removeOwnFiles, writePidFile } from './instance.js';
+import { LinkRunner } from './link-runner.js';
 import { MediaService } from './media.js';
 import { ParcelService } from './parcels.js';
+import { PeerService } from './peers.js';
 import { Hold } from './hold.js';
 import { Reception } from './reception.js';
 import { deferStaleInProgress, recoverCrashes, type StartInfo } from './recovery.js';
@@ -134,6 +136,7 @@ class Gateway {
   private media: MediaService | null = null;
   private agentState: AgentStateWatcher | null = null;
   private hold: Hold | null = null;
+  private link: LinkRunner | null = null;
   private tokenTimer: Timer | null = null;
   private stopping = false;
 
@@ -260,6 +263,8 @@ class Gateway {
     adapter.setMedia(media);
     // Посылки (0.3.3, 5.16): send_file — копия в raw/parcels и доставка в очередь отправителя.
     adapter.setParcels(new ParcelService(ctx, hooks));
+    // Связь с другими агентами (сценарий 1): письмо агента — событие для аренды, строка о передаче — владельцу.
+    adapter.setPeers(new PeerService(ctx, { onEvent: () => adapter.pump(), onQueued: () => sender.kick(), fetchFile: (id) => media.bytes(id) }));
     agentState.bindLive({ online: () => adapter.hasLease, leaseCwd: () => adapter.leaseInfo()?.cwd ?? null });
     // Закреплённая строка (5.7): на связи ли агент — знает только аренда; идёт ли ход (working, #55) — «печатает…»;
     // значки агента — agent-state.json.
@@ -287,7 +292,9 @@ class Gateway {
       stt: () => transcriber.view(),
       tts: () => ({ keyKnown: voice.ttsKey.known }),
       agent: () => ({ state: agentState.snapshot(), view: agentState.view() }),
+      peerLink: () => adapter.peerLinked,
     });
+    diskSafe('reconcile_line', () => control.reconcileLine(), undefined);
     this.socket.setHandlers({
       onMessage: (msg, conn) => (this.db ? adapter.handle(msg, conn) : false),
       onClose: (conn) => {
@@ -364,6 +371,11 @@ class Gateway {
     adapter.start();
     diskSafe('hold', () => hold.schedule(), undefined);
     diskSafe('agent_state', () => agentState.start(), undefined);
+    // Связь с другими агентами (5.19) — дочерним процессом: шлюз её запускает и поднимает, если вышла (link-runner.ts).
+    if (this.config.link !== null) {
+      this.link = new LinkRunner({ ...this.config.link, home: paths.home, clock: this.clock, journal });
+      this.link.start();
+    }
     transcriber.kick();
     // Есть ли ключи голоса — сразу, для «статус» (ключ кладёт владелец; нет — голосовые «распознать не смог», ответы
     // голосом уходят текстом). Ключ в журнал не пишется — только есть ли он.
@@ -415,7 +427,10 @@ class Gateway {
    * Помощь. Не вышло — запись в журнал; команды словом работают и без меню (нижней клавиатуры с 0.3.1 нет).
    */
   private setCommandsMenu(api: TelegramApi, ownerId: number): void {
-    const commands = MENU_COMMANDS.map((c) => ({ command: COMMAND_WORDS[c].slash.slice(1), description: COMMAND_WORDS[c].menu }));
+    // Линия (5.20) — в меню, только если есть с кем соединять.
+    const peers = this.config.peers.length > 0;
+    const commands = MENU_COMMANDS.filter((c) => peers || c !== 'agents').map((c) => ({ command: COMMAND_WORDS[c].slash.slice(1), description: COMMAND_WORDS[c].menu }));
+    if (peers) commands.splice(3, 0, { command: this.config.line.main_command, description: `↩ ${this.config.line.main_name}` });
     void api.call('setMyCommands', { commands, scope: { type: 'chat', chat_id: ownerId } }, { timeoutMs: 15_000 }).then(
       () => this.journal.write('commands_menu', { count: commands.length }),
       (err: unknown) => this.journal.write('commands_menu_failed', { error: api.redact((err as Error).message) }),
@@ -464,6 +479,7 @@ class Gateway {
     if (this.stopping) return;
     this.stopping = true;
     this.tokenTimer?.cancel();
+    await this.link?.stop();
     this.ticker?.stop();
     this.hold?.stop();
     this.agentState?.stop();

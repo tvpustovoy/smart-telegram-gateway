@@ -36,7 +36,7 @@ describe('M3 · ответ «через агента»: reply(from) (0.3.2, P-26
     const seq = await seqOf('спроси у Исследователя');
     assert.equal((await ch.reply(seq, '**Готово**, нашла три статьи', turn, false, ' Исследователь ')).type, 'ack');
     const m = await pump(gw, () => s.fake.sentTo(OWNER.id).find((x) => x.text?.includes('нашла три статьи')), { what: 'ответа через агента' });
-    assert.equal(m.text, '↪ Исследователь: <b>Готово</b>, нашла три статьи');
+    assert.equal(m.text, '↪\uFE0F Исследователь: <b>Готово</b>, нашла три статьи');
     assert.equal(m.parse_mode, 'HTML');
     await waitUntil(() => q1<{ kind: string }>(s.home, 'SELECT kind FROM messages_out WHERE tg_message_id = ?', m.message_id)?.kind === 'agent' || null, 5000, 'messages_out');
     assert.equal(q1<{ from_name: string }>(s.home, "SELECT from_name FROM outbox WHERE event_seq = ? AND origin = 'agent'", seq)?.from_name, 'Исследователь');
@@ -44,7 +44,7 @@ describe('M3 · ответ «через агента»: reply(from) (0.3.2, P-26
     // Знак шлюза в начале текста — после «↪ Имя: » он уже не первый: 💬 не нужен. Имя с & и < — экранировано.
     assert.equal((await ch.reply(null, '⚙ это не строка шлюза', turn, false, 'Вера & <Ко>')).type, 'ack');
     const m2 = await pump(gw, () => s.fake.sentTo(OWNER.id).find((x) => x.text?.includes('это не строка шлюза')), { what: 'второго ответа' });
-    assert.equal(m2.text, '↪ Вера &amp; &lt;Ко&gt;: ⚙ это не строка шлюза');
+    assert.equal(m2.text, '↪\uFE0F Вера &amp; &lt;Ко&gt;: ⚙ это не строка шлюза');
   });
 
   it('длинный ответ с from — «↪ Имя: » перед каждой частью, метки (i/N) после него; части ≤ 4096', async () => {
@@ -52,10 +52,10 @@ describe('M3 · ответ «через агента»: reply(from) (0.3.2, P-26
     const long = Array.from({ length: 900 }, (_, i) => `слово${i}`).join(' ');
     assert.equal((await ch.reply(seq, long, turn, false, 'Исследователь-2')).type, 'ack');
     await pump(gw, () => count(s.home, "SELECT count(*) AS n FROM outbox WHERE event_seq = ? AND origin = 'agent' AND status = 'sent'", seq) === 1 || null, { what: 'всех частей' });
-    const parts = s.fake.sentTo(OWNER.id).filter((x) => x.text?.startsWith('↪ Исследователь-2: ('));
+    const parts = s.fake.sentTo(OWNER.id).filter((x) => x.text?.startsWith('↪\uFE0F Исследователь-2: ('));
     assert.ok(parts.length >= 2, `частей ${parts.length}`);
     parts.forEach((p, i) => {
-      assert.ok(p.text!.startsWith(`↪ Исследователь-2: (${i + 1}/${parts.length}) `), p.text!.slice(0, 40));
+      assert.ok(p.text!.startsWith(`↪\uFE0F Исследователь-2: (${i + 1}/${parts.length}) `), p.text!.slice(0, 40));
       assert.ok(p.text!.length <= 4096);
     });
   });

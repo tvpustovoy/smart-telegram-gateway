@@ -1,6 +1,7 @@
 // Сроки и сон (TECH-SPEC 5.3 «Сон ноутбука», 5.7; Ш-12, Ш-14). Один таймер часов раз в 15 с:
 // - скачок часов больше 2 минут — запись `wake`; шлюз сначала забирает накопленное, потом проверяет сроки;
-// - раз в минуту — сроки: тишина эпизода (33 минуты), «агент не на связи», чистка updates (и строк реакций и удалений),
+// - пробуждение — в сводку перерыва (breaks.ts): сообщения, которые оно застало открытыми;
+// - раз в минуту — сроки: тишина эпизода (33 минуты), «агент не на связи», сводка после перерыва, чистка updates (и строк реакций и удалений),
 //   строки in_progress старше суток, голосовые, ждущие распознавания, срок карточек правил (24 ч) и отставший rules.yaml
 //   (M5), закреплённая строка состояния (отправитель сверяет её текст); раз в сутки — хранение и чистка (5.8,
 //   retention.ts).
@@ -11,8 +12,10 @@
 
 import { sql, MESSAGE_EVENT_KINDS, META_KEYS, getMeta, offlineNotice, setMeta, transaction, type Timer } from 'stg-core';
 import type { AdapterService } from './adapter.js';
+import { checkBreak, initBreaks, noteWake } from './breaks.js';
 import { enqueueServiceLine, type Ctx } from './context.js';
 import type { Episodes } from './episodes.js';
+import { liveLine, openLine } from './lines.js';
 import type { Reception } from './reception.js';
 import { REACTIONS_KEEP_MS } from './reactions.js';
 import { deferStaleInProgress } from './recovery.js';
@@ -57,6 +60,7 @@ export class Ticker {
   }
 
   start(): void {
+    initBreaks(this.ctx);
     this.timer ??= this.ctx.clock.setInterval(() => this.tick(), TICK_MS);
   }
 
@@ -71,6 +75,11 @@ export class Ticker {
     this.lastTick = now;
     if (delta > WAKE_JUMP_MS + TICK_MS) {
       this.ctx.journal.write('wake', { slept_ms: delta - TICK_MS });
+      try {
+        noteWake(this.ctx, now, delta - TICK_MS);
+      } catch (err) {
+        if (!this.ctx.disk.check(err, 'break_wake')) throw err;
+      }
       if (!this.waking) {
         this.waking = true;
         const later = this.reception?.wake(() => {
@@ -92,9 +101,11 @@ export class Ticker {
     const now = this.ctx.clock.now();
     this.lastDeadlines = now;
     try {
+      if (transaction(this.ctx.db, () => openLine(this.ctx) !== null && liveLine(this.ctx, now) === null)) this.sender.kick();
       const closed = this.episodes.closeIdle(now);
       if (closed.length) this.adapter.pump();
       this.checkOffline(now);
+      checkBreak(this.ctx, now);
       this.purgeUpdates(now);
       this.purgeUi(now);
       if (deferStaleInProgress(this.ctx, now).length) this.sender.kick();
@@ -148,7 +159,7 @@ export class Ticker {
   checkOffline(now: number): void {
     if (this.adapter.hasLease || this.ctx.config.owner_id === null) return;
     if (getMeta(this.ctx.db, META_KEYS.offlineNotice) === '1') return;
-    const row = sql(this.ctx.db, `SELECT count(*) AS n, min(created_at) AS oldest FROM events WHERE status IN ('new', 'delivered', 'transcribing') AND kind IN (${MSG_KINDS_SQL})`)
+    const row = sql(this.ctx.db, `SELECT count(*) AS n, min(created_at) AS oldest FROM events WHERE status IN ('new', 'delivered', 'transcribing') AND route IS NULL AND kind IN (${MSG_KINDS_SQL})`)
       .get() as { n: number; oldest: number | null };
     if (!row.n || row.oldest === null) return;
     if (now - row.oldest < this.ctx.config.agent_offline_notice_minutes * 60_000) return;

@@ -14,6 +14,7 @@
     "packages/channel",
     "packages/cli",
     "packages/codex",
+    "packages/link",
     "test/fake-telegram",
     "test/fake-channel",
     "test/fake-elevenlabs",

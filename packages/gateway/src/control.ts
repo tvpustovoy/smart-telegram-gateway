@@ -84,9 +84,17 @@ import {
   type WhereData,
   type AgentStateFile,
   type AgentView,
+  ROUTE_ASK,
+  UNSEEN_MARK,
+  agentsListText,
+  lineClosedText,
+  lineConnectedText,
+  lineNoneText,
 } from 'stg-core';
+import { showBreakMessage } from './breaks.js';
 import { checkButton, createButton, newGroup, useGroup, useKind, type ButtonPayload } from './buttons.js';
 import { enqueueDeletion, enqueueEdit, enqueueServiceLine, type Ctx, type InlineMarkup } from './context.js';
+import { askedCount, closeLine, connectLine, openLine, showUnseen, unseenCount } from './lines.js';
 import type { Resolved } from './directory.js';
 import type { EpisodeRow, Episodes } from './episodes.js';
 import type { RulesService } from './rules.js';
@@ -114,6 +122,7 @@ export interface Effects {
   answer?: string | null;
   /** Рабочая копия правил сменилась — справочник и rules.yaml (rules.ts, refresh). */
   rules?: boolean;
+  /** Ведущему агенту стали доступны эти сообщения (ждали ответа «кому», 5.20). */
 }
 
 /** Состояние цикла опроса — для «статус». */
@@ -133,6 +142,8 @@ export interface LiveView {
    */
   lease(): { adapter: string; since: number; verified: boolean; sameSession?: boolean } | null;
   poll(): PollState | null;
+  /** Подключена ли связь с агентами (stg-link). */
+  peerLink?(): boolean;
   /** Распознавание: есть ли ключ (по имени из config.yaml), последний отказ. */
   stt?(): { keyKnown: boolean | null; lastFailure: { at: number; reason: string } | null } | null;
   /** Синтез: есть ли ключ. */
@@ -219,7 +230,7 @@ export class Control {
 
   // ——— команды (внутри главной транзакции приёма) ———
 
-  command(cmd: CommandName, ev: CommandEvent): Effects {
+  command(cmd: CommandName | 'main', ev: CommandEvent): Effects {
     const line = (text: string, replyMarkup: InlineMarkup | null = null): void => {
       enqueueServiceLine(this.ctx, text, { eventSeq: ev.seq, threadId: ev.threadId, replyMarkup });
     };
@@ -244,6 +255,8 @@ export class Control {
         const lostSeqs = (sql(this.ctx.db, "SELECT DISTINCT event_seq FROM outbox WHERE origin = 'agent' AND status IN ('pending', 'held') AND event_seq IS NOT NULL").all() as Array<{
           event_seq: number;
         }>).map((x) => x.event_seq);
+        // Письмо с линии, ещё не показанное, не теряется: «стоп» его откладывает, после «продолжить» оно покажется.
+        sql(this.ctx.db, "UPDATE events SET status = 'new' WHERE route IS NOT NULL AND seq IN (SELECT event_seq FROM outbox WHERE origin = 'agent' AND plain = 1 AND status IN ('pending', 'held'))").run();
         const r = sql(this.ctx.db, "UPDATE outbox SET status = 'dropped' WHERE origin = 'agent' AND status IN ('pending', 'held')").run();
         // Ответы брошены (0.3.6, #52): событие обработано, а ответа в чате нет — 👌 вместо 👀 (снимет следующее сообщение
         // владельца) ⟨предл.⟩; 👀 «агент увидел» висел бы иначе всегда.
@@ -252,6 +265,9 @@ export class Control {
         // строкой outbox: у будущей веб-цели строки outbox нет, а «стоп» — «прекрати текущее дело» для всех целей
         // (находка проверки). Документ, который сейчас загружается, отправитель прервёт сам (sender.kick).
         const d = sql(this.ctx.db, "UPDATE deliveries SET status = 'dropped', note = ? WHERE status = 'pending'").run(PARCEL_NOTE_STOP);
+        // Письма другим агентам, ещё не ушедшие, — тоже: «стоп» прекращает и передачу. Единственное письмо в пути может дойти, тогда sent.
+        const p = sql(this.ctx.db, "UPDATE peer_messages SET status = 'dropped', text = NULL WHERE status = 'pending'").run();
+        if (Number(p.changes)) this.ctx.journal.write('relay_dropped', { count: Number(p.changes), reason: 'stopped' });
         if (Number(r.changes)) this.ctx.journal.write('replies_dropped', { count: Number(r.changes), reason: 'stopped', turn, ...(Number(d.changes) ? { deliveries: Number(d.changes) } : {}) });
         line(STOPPED_TEXT, this.resumeButton());
         return { mode: true };
@@ -311,12 +327,23 @@ export class Control {
         line(this.statusText());
         return {};
       }
+      case 'agents': {
+        this.agentsList(ev);
+        return {};
+      }
+      case 'main': {
+        const main = this.ctx.config.line.main_name;
+        const closed = closeLine(this.ctx, 'command', this.ctx.clock.now());
+        line(closed ? lineClosedText(main) : lineNoneText(main));
+        return { pump: true };
+      }
       case 'help': {
         line(
           helpText({
             whereTtlMinutes: this.ctx.config.ui.where_ttl_minutes,
             audioMaxMinutes: this.ctx.config.stt.audio_max_minutes,
             clearReceipts: clearReceipts(this.ctx),
+            lineCommand: this.ctx.config.peers.length ? this.ctx.config.line.main_command : null,
           }),
         );
         return {};
@@ -345,6 +372,12 @@ export class Control {
     const { button, payload } = c;
     this.ctx.journal.write('button', { kind: button.kind, group: payload.group });
     if (button.kind === 'transcript') return this.pressTranscript(payload);
+    // Номер под сводкой перерыва — многоразовый, как [текст]: показать одно сообщение, потом другое.
+    if (button.kind === 'msg_show') {
+      if (showBreakMessage(this.ctx, Number(payload.event_seq)) === null) return { answer: BUTTON_REFUSALS.expired };
+      this.ctx.journal.write('break_message_shown', { seq: Number(payload.event_seq) });
+      return { answer: null };
+    }
     // [верно] под строкой темы — строку удаляют (0.3.5, issue #48): кнопки отдельной правкой не снимаются.
     const deleteTopic = button.kind === 'episode_ok' && this.ctx.config.ui.delete_confirmed_topic && !!cq.message;
     // Одноразовая кнопка нажата — кнопки сообщения больше не нужны (строку стопа и объявление темы ниже правят в одну
@@ -373,7 +406,76 @@ export class Control {
       case 'rule_no':
         if (!this.rules) return { answer: BUTTON_REFUSALS.expired };
         return this.rules.press(button.kind, payload, now);
+      case 'line_connect': {
+        useGroup(this.ctx, payload.group, now);
+        const peer = String(payload.peer);
+        if (!this.ctx.config.peers.some((p) => p.name === peer)) return { answer: BUTTON_REFUSALS.expired };
+        connectLine(this.ctx, peer, now);
+        showUnseen(this.ctx, peer, this.turn());
+        this.editPressed(cq, lineConnectedText(peer, this.ctx.config.line.main_name, this.ctx.config.line.main_command));
+        return { answer: null, pump: true };
+      }
+      // Кнопки прежних версий: вопрос «кому» и строка о письме.
+      case 'line_keep':
+      case 'peer_show':
+        return { answer: BUTTON_REFUSALS.expired };
+      case 'line_main': {
+        useGroup(this.ctx, payload.group, now);
+        if (payload.peer !== undefined && openLine(this.ctx)?.peer !== payload.peer) return { answer: BUTTON_REFUSALS.expired };
+        closeLine(this.ctx, 'button', now);
+        this.editPressed(cq, lineClosedText(this.ctx.config.line.main_name));
+        return { answer: null, pump: true };
+      }
     }
+  }
+
+  /** Сообщения из версии с вопросом «кому» — ведущему агенту, с эпизодом, как обычное сообщение. */
+  private releaseToMain(chatRule: ChatRule): number[] {
+    const rows = sql(this.ctx.db, 'SELECT seq, chat_id, subject_id, thread_id, message_date FROM events WHERE route = ? ORDER BY seq').all(ROUTE_ASK) as unknown as Array<{
+      seq: number;
+      chat_id: number;
+      subject_id: string;
+      thread_id: number | null;
+      message_date: number;
+    }>;
+    for (const r of rows) {
+      const a = this.episodes.forMessage(r.chat_id, r.subject_id, chatRule, r.message_date, r.thread_id);
+      sql(this.ctx.db, 'UPDATE events SET route = NULL, episode_id = ? WHERE seq = ?').run(a.episode.id, r.seq);
+    }
+    return rows.map((r) => r.seq);
+  }
+
+  /** Старт: линия с агентом, которого убрали из настроек, закрыта; ждавшие без линии — ведущему агенту. */
+  reconcileLine(): void {
+    const { ctx } = this;
+    const line = openLine(ctx);
+    const gone = line !== null && !ctx.config.peers.some((p) => p.name === line.peer);
+    if (!gone && askedCount(ctx) === 0) return;
+    const rule = ctx.directory.ownerChatRule();
+    const now = ctx.clock.now();
+    transaction(ctx.db, () => {
+      if (gone) {
+        closeLine(ctx, 'peer_removed', now);
+        enqueueServiceLine(ctx, `${SERVICE_MARK} Линия закрыта: ${line.peer} больше нет в настройках`);
+      }
+      if (rule) this.releaseToMain(rule);
+    });
+  }
+
+  /** Список агентов кнопками. 🟢 — писал за сутки: жив ли агент, шлюз не знает. */
+  private agentsList(ev: CommandEvent): void {
+    const { ctx } = this;
+    const group = newGroup();
+    const line = openLine(ctx);
+    const since = ctx.clock.now() - 24 * 3600_000;
+    const rows = ctx.config.peers.map((p) => {
+      const recent = !!sql(ctx.db, "SELECT 1 FROM peer_messages WHERE direction = 'in' AND peer = ? AND created_at > ? LIMIT 1").get(p.name, since);
+      const token = createButton(ctx, 'line_connect', { group, peer: p.name });
+      const unseen = unseenCount(ctx, p.name);
+      return [{ text: `${recent ? '🟢' : '⚪'} ${p.name}${unseen ? ` · ${UNSEEN_MARK} ${unseen}` : ''}${line?.peer === p.name ? ' · на линии' : ''}`, token }];
+    });
+    rows.push([{ text: `↩ ${ctx.config.line.main_name}`, token: createButton(ctx, 'line_main', { group }) }]);
+    enqueueServiceLine(ctx, agentsListText(this.live.peerLink?.() ?? false), { eventSeq: ev.seq, threadId: ev.threadId, replyMarkup: inline(rows) });
   }
 
   /** Строку под нажатием уже удаляют как подтверждённую тему (0.3.5): удаление ждёт или прошло. */
@@ -419,7 +521,7 @@ export class Control {
   private pressResume(now: number, cq: CallbackQuery): Effects {
     useKind(this.ctx, 'resume', now);
     if (this.mode() !== 'stopped') return { answer: BUTTON_REFUSALS.used };
-    const waiting = (sql(this.ctx.db, `SELECT count(*) AS n FROM events WHERE status = 'new' AND kind IN (${MSG_KINDS_SQL})`).get() as { n: number }).n;
+    const waiting = (sql(this.ctx.db, `SELECT count(*) AS n FROM events WHERE status = 'new' AND route IS NULL AND kind IN (${MSG_KINDS_SQL})`).get() as { n: number }).n;
     this.setMode('running', 1, 'button');
     // Строка стопа правится на месте (новой строки нет); сообщения нет под нажатием — строкой, как раньше.
     if (cq.message) this.editPressed(cq, stopLiftedText(waiting));
@@ -643,6 +745,8 @@ export class Control {
     const tz = ctx.config.timezone;
     const now = ctx.clock.now();
     const lines = [`${SERVICE_MARK} Статус`];
+    const onLine = openLine(ctx);
+    if (onLine) lines.push(`На линии: ${onLine.peer}`);
     const poll = this.live.poll();
     if (!poll) lines.push('Опрос: не идёт — нет токена бота (stg doctor)');
     else {

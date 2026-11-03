@@ -59,7 +59,7 @@ function lastOwnerWords(ctx: Ctx, p: MaterialPlace, cond: string, ...args: numbe
   const rows = sql(ctx.db,
     `SELECT seq, kind, trust, text, attachments_json FROM events
      WHERE chat_id = ? AND thread_id IS ? AND subject_id IS ? AND update_id IS NOT NULL
-       AND kind IN ('text', 'voice', 'photo', 'document') AND forward_json IS NULL AND ${cond}
+       AND kind IN ('text', 'voice', 'photo', 'document') AND forward_json IS NULL AND route IS NULL AND ${cond}
      ORDER BY seq DESC LIMIT 50`,
   ).all(p.chatId, p.threadId, p.subjectId, ...args) as Array<{ seq: number; kind: 'text' | 'voice' | 'photo' | 'document'; trust: TrustLabel | null; text: string | null; attachments_json: string | null }>;
   for (const r of rows) {

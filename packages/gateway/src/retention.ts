@@ -168,7 +168,7 @@ export class Retention {
       transaction(db, () => {
         for (const row of rows) {
           sql(db, 'UPDATE events SET text = NULL, transcript = NULL, attachments_json = NULL, raw_ref = NULL, media_ref = NULL, forward_json = NULL WHERE seq = ?').run(row.seq);
-          sql(db, "UPDATE outbox SET text = NULL WHERE event_seq = ? AND origin = 'gateway'").run(row.seq);
+          sql(db, "UPDATE outbox SET text = NULL WHERE event_seq = ? AND (origin = 'gateway' OR plain = 1)").run(row.seq);
           sql(db, "UPDATE edits SET text = NULL WHERE event_seq = ? AND status <> 'pending'").run(row.seq);
         }
         for (const m of mixed) sql(db, 'UPDATE events SET attachments_json = ? WHERE seq = ?').run(m.json, m.seq);

@@ -15,6 +15,7 @@
     "stg-fake-codex": "0.1.0",
     "stg-fake-elevenlabs": "0.1.0",
     "stg-fake-telegram": "0.1.0",
-    "stg-gateway": "0.1.0"
+    "stg-gateway": "0.1.0",
+    "stg-link": "0.1.0"
   }
 }
