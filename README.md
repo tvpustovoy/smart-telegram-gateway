@@ -73,6 +73,7 @@ The chat interface (gateway lines, `/help`, command names) and the agent's instr
 | 0.3.5 | Current channel rules reach a resumed conversation; the confirmed topic line is deleted from the chat |
 | 0.3.6 | A forward, link, file or photo without your words waits for them a minute and reaches the agent together with them; a later reply to it or your next words stay tied to it; the bot's reaction goes away once it has served (an answer removes 👀, your next message removes 👌) |
 | 0.4.0 | Codex: connect an existing Codex agent (live feed in a visible window); install by giving your agent the link (INSTALL.md); pictures arrive as photos; 👀 and "typing…" stay for the whole agent turn |
+| 0.5.0 | Other agents: your agent passes your message to another agent word for word (`relay`) and shows you its answer (`show`); `/agents` opens a line to talk to one directly, files both ways; the gateway runs the link to the agent network itself (`link`); a report after the computer slept, with a button to each message |
 
 Details are in [CHANGELOG.md](CHANGELOG.md).
 
@@ -389,7 +390,7 @@ The design documents are in Russian for now.
 
 ## Status
 
-Version 0.4.1, pre-1.0. It is built for one owner, one bot and one agent (Claude Code or Codex) on one Mac. Groups and other people are
+Version 0.5.0, pre-1.0. It is built for one owner, one bot and one agent (Claude Code or Codex) on one Mac. Groups and other people are
 modelled in the data and the access rules, but there is no interface for them yet. The agent runs without a sandbox
 (see the threat model). Expect breaking changes before 1.0; database migrations run automatically, and rolling back
 needs a backup (`stg backup`).

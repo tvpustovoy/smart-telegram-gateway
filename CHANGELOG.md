@@ -9,7 +9,11 @@ an older version after a migration is only possible from a database backup taken
 
 The chat interface and the design documents are in Russian; the entries below describe behavior in English.
 
-## Unreleased
+## 0.5.0 - 2026-11-02
+
+Upgrading from 0.4.1: the database moves to schema v17 by itself on the first start (v15, v16, v17); take
+`stg backup` first if you may want to go back. Talking to other agents stays off until you list them in `peers`;
+the report after a break and the repeat after sleep work for everyone.
 
 ### Added
 
@@ -33,7 +37,6 @@ The chat interface and the design documents are in Russian; the entries below de
   with the gateway, starts it again if it exits (after 1 s, doubling up to a minute) and stops it with the gateway. The
   link exits on its own if the gateway is gone. No separate service is needed; its stderr goes to the journal as
   `link_log`.
-
 - A report after a break. When the computer slept while your messages waited, or messages reached the gateway long after
   you wrote them, the gateway sends one line once they are all closed (or after 30 minutes): every message of yours
   from that time with what happened to it, answered, closed with 👌 or still waiting. Numbered buttons under it reply to
@@ -50,6 +53,7 @@ The chat interface and the design documents are in Russian; the entries below de
   waking up, there is no line.
 - Schema v15: event kind `peer`, column `peer_json`, table `peer_messages`.
 - Schema v16: `events.route`, table `lines`, `peer_messages.origin`, `line_id`, `unseen`.
+- Schema v17: `peer_messages.file_json`, `file_ref` (files in letters on the line).
 - The `↪` mark is sent with U+FE0F, so Telegram shows it as an emoji; it is recognised with or without it.
 
 ## 0.4.1 - 2026-10-28
