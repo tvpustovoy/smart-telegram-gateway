@@ -41,7 +41,8 @@ smart-telegram-gateway is a small always-on service that owns the bot and stands
   limits) as photos; ask for a file and the picture comes as a document, uncompressed (`as: "file"`).
 - **Other agents through one agent.** Your agent passes a message of yours to another agent with `relay`: the gateway
   takes the words from its database, so they arrive unchanged, and the answer can come back to you verbatim with `show`.
-  Letters travel through the separate `stg-link` process, which plugs into an agent network; without it nothing changes.
+  Letters travel through the separate `stg-link` process, which plugs into an agent network; with a `link` section in
+  `config.yaml` the gateway starts it and restarts it, without one nothing changes.
 
 The agent connects through an adapter. Today the adapter is `stg-channel`, an MCP server that Claude Code loads as a
 channel (Claude Code Channels) and that pushes events into a running session. The gateway ⇄ adapter protocol is
@@ -274,6 +275,10 @@ parcels:
 
 peers:                           # other agents reachable through stg-link; also the allow-list
   - { name: Researcher, address: "<address in the agent network>" }
+
+link:                            # the gateway runs stg-link itself; no section = no link
+  port: ~/agent-network/port.mjs # module with openPort for your agent network
+  identity: Gateway              # the gateway's own name in that network, set up beforehand
 
 line:                            # talking to an agent from peers directly
   main_name: Assistant           # how the gateway's own agent is signed while a line is open

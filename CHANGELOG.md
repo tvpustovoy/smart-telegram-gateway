@@ -29,6 +29,10 @@ The chat interface and the design documents are in Russian; the entries below de
   as a module named at start (`--port`, see `packages/link/src/port.ts`), so the gateway gains no dependency. Without
   `stg-link` the gateway works as before and letters wait. Peers are listed in `peers` in `config.yaml`; the list is also
   the allow-list.
+- The gateway runs `stg-link` itself when `config.yaml` has a `link` section (`port`, `identity`): it starts the link
+  with the gateway, starts it again if it exits (after 1 s, doubling up to a minute) and stops it with the gateway. The
+  link exits on its own if the gateway is gone. No separate service is needed; its stderr goes to the journal as
+  `link_log`.
 
 - A report after a break. When the computer slept while your messages waited, or messages reached the gateway long after
   you wrote them, the gateway sends one line once they are all closed (or after 30 minutes): every message of yours

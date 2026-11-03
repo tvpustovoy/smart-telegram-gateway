@@ -70,6 +70,7 @@ import { Directory } from './directory.js';
 import { DiskState } from './disk.js';
 import { Episodes } from './episodes.js';
 import { acquireInstanceLock, checkInstance, readPidFile, removeOwnFiles, writePidFile } from './instance.js';
+import { LinkRunner } from './link-runner.js';
 import { MediaService } from './media.js';
 import { ParcelService } from './parcels.js';
 import { PeerService } from './peers.js';
@@ -135,6 +136,7 @@ class Gateway {
   private media: MediaService | null = null;
   private agentState: AgentStateWatcher | null = null;
   private hold: Hold | null = null;
+  private link: LinkRunner | null = null;
   private tokenTimer: Timer | null = null;
   private stopping = false;
 
@@ -369,6 +371,11 @@ class Gateway {
     adapter.start();
     diskSafe('hold', () => hold.schedule(), undefined);
     diskSafe('agent_state', () => agentState.start(), undefined);
+    // Связь с другими агентами (5.19) — дочерним процессом: шлюз её запускает и поднимает, если вышла (link-runner.ts).
+    if (this.config.link !== null) {
+      this.link = new LinkRunner({ ...this.config.link, home: paths.home, clock: this.clock, journal });
+      this.link.start();
+    }
     transcriber.kick();
     // Есть ли ключи голоса — сразу, для «статус» (ключ кладёт владелец; нет — голосовые «распознать не смог», ответы
     // голосом уходят текстом). Ключ в журнал не пишется — только есть ли он.
@@ -472,6 +479,7 @@ class Gateway {
     if (this.stopping) return;
     this.stopping = true;
     this.tokenTimer?.cancel();
+    await this.link?.stop();
     this.ticker?.stop();
     this.hold?.stop();
     this.agentState?.stop();

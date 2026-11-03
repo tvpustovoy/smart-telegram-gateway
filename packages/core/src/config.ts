@@ -324,6 +324,16 @@ export const ConfigSchema = z.strictObject({
         if (new Set(list.map((p) => p[key])).size !== list.length) c.addIssue({ code: 'custom', message: `peers: ${key} повторяется` });
       }
     }),
+  // Связь с другими агентами (5.19): port — модуль порта сети агентов (полный путь или с «~/»), identity — имя шлюза в
+  // сети, заведённое заранее. Есть раздел — шлюз сам запускает stg-link и поднимает его, если тот вышел (link-runner.ts);
+  // нет — связь не запускается, её можно запустить руками, как раньше.
+  link: z
+    .strictObject({
+      port: z.string().refine((d) => d.startsWith('/') || d.startsWith('~/'), { message: 'модуль порта — полный путь или с «~/»' }),
+      identity: z.string().min(1).max(256),
+    })
+    .nullable()
+    .default(null),
   // Линия (сценарий 2): владелец говорит с агентом из peers напрямую. main_name — как подписан ведущий агент, пока идёт
   // линия; main_command — команда ему: без текста возвращает к нему, с текстом пишет ему, не меняя линию;
   // silence_minutes — после такой тишины линия закрывается сама.
