@@ -37,6 +37,8 @@ The chat interface and the design documents are in Russian; the entries below de
 
 ### Changed
 
+- `relay` also hands over a message you forwarded, with its text and transcript, under a gateway heading saying it is not
+  your word: a record from another app now reaches the keeper as text. Files are not sent; sound goes as a transcript.
 - After the computer sleeps, events given to the agent and not closed are given again at once: sleep breaks the
   agent's turn. Tool calls made before the sleep no longer postpone it, and this repeat does not use up the single repeat
   that comes before the line to you.

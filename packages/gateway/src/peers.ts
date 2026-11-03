@@ -127,15 +127,18 @@ function detailOf(excerpt: string | undefined, note: string | undefined): string
   return parts.length ? parts.join(', ') : null;
 }
 
+/** Скобки заголовков ставит только шлюз: в пересланном тексте и записке они заменяются, иначе чужое выдало бы себя за слово владельца. */
+function headless(t: string): string {
+  return t.replaceAll(HEAD_OPEN, '[').replaceAll(HEAD_CLOSE, ']');
+}
+
 /** Письмо: слово и записка раздельно, заголовки ставит шлюз. */
 export function peerLetter(seq: number, words: string, excerpted: boolean, note: string | null, title?: string): string {
   const head = `${HEAD_OPEN}${title ?? `Слово владельца № ${seq}${excerpted ? ', отрывок' : ''}`}. Текст из базы шлюза, агент его не менял${HEAD_CLOSE}`;
-  // Скобки заголовков ставит только шлюз: в пересланном тексте и записке они заменяются, иначе чужое выдало бы себя за слово владельца.
-  const plain = (t: string): string => t.replaceAll(HEAD_OPEN, '[').replaceAll(HEAD_CLOSE, ']');
-  const parts = [head, plain(words)];
+  const parts = [head, headless(words)];
   if (note !== null) {
     parts.push(`${HEAD_OPEN}Записка агента, не слово владельца${HEAD_CLOSE}`);
-    parts.push(plain(note));
+    parts.push(headless(note));
   }
   return parts.join('\n');
 }
@@ -224,10 +227,16 @@ export class PeerService {
       const names = this.ctx.config.peers.map((p) => p.name).join(', ');
       return { ok: false, code: 'bad_request', text: `агента «${msg.to.slice(0, 64)}» нет в списке шлюза${names ? `; есть: ${names}` : '; список пуст'}` };
     }
-    const ev = sql(this.ctx.db, 'SELECT route, kind, trust, text, transcript, attachments_json FROM events WHERE seq = ?').get(msg.seq) as WordRow | undefined;
-    if (!ev || ev.route !== null || !(MESSAGE_EVENT_KINDS as readonly string[]).includes(ev.kind)) return { ok: false, code: 'unknown_seq', text: `нет сообщения № ${msg.seq}` };
-    if (ev.trust !== 'owner') return { ok: false, code: 'bad_request', text: `№ ${msg.seq} — не слова владельца; передать можно только их, остальное — запиской` };
-    const words = ownerWords(ev);
+    const ev = sql(this.ctx.db, 'SELECT route, kind, trust, text, transcript, attachments_json, forward_json, chat_id FROM events WHERE seq = ?').get(msg.seq) as
+      | (WordRow & { forward_json: string | null; chat_id: number })
+      | undefined;
+    if (!ev || ev.route !== null || ev.kind === 'edit' || !(MESSAGE_EVENT_KINDS as readonly string[]).includes(ev.kind)) return { ok: false, code: 'unknown_seq', text: `нет сообщения № ${msg.seq}` };
+    // Пересланное владельцем — тоже можно (запись из другого приложения): заголовок письма от шлюза говорит, что это не его слово,
+    // как на линии, поэтому идёт и расшифровка чужого звука. Сообщения других людей — нет: только личка владельца. Файлы не идут:
+    // звук шлюз распознал, адресату нужен текст.
+    const forwarded = ev.forward_json !== null || ev.trust !== 'owner';
+    if (forwarded && ev.chat_id !== this.ctx.config.owner_id) return { ok: false, code: 'bad_request', text: `№ ${msg.seq} — не от владельца; передать можно только его сообщения, остальное — запиской` };
+    const words = forwarded ? [ev.text, ev.transcript].filter((x): x is string => !!x?.trim()).join('\n') : ownerWords(ev);
     if (!words) return { ok: false, code: 'bad_request', text: `в № ${msg.seq} нет слов: сообщение без текста или голос ещё не распознан` };
     const excerpt = msg.excerpt?.trim();
     if (excerpt !== undefined && !words.includes(excerpt)) return { ok: false, code: 'bad_request', text: `отрывка нет в № ${msg.seq} дословно` };
@@ -243,14 +252,15 @@ export class PeerService {
       this.ctx.journal.write('relay_dropped', { seq: msg.seq, to: peer.name, reason: 'paused' });
       return { ok: true, result: { status: 'refused_paused' } };
     }
-    const text = peerLetter(msg.seq, excerpt ?? words, excerpt !== undefined, msg.note ?? null);
+    const title = forwarded ? `Переслал владелец, это не его слово, № ${msg.seq}${excerpt !== undefined ? ', отрывок' : ''}` : undefined;
+    const text = peerLetter(msg.seq, excerpt ?? words, excerpt !== undefined, msg.note ?? null, title);
     // Предел кадра связи: расшифровка длинного голосового может быть больше.
     if (text.length > MAX_REPLY_TEXT) return { ok: false, code: 'bad_request', text: `письмо длиннее ${MAX_REPLY_TEXT} знаков: передай отрывком (excerpt)` };
     const r = sql(this.ctx.db,
       `INSERT INTO peer_messages(direction, peer, event_seq, text, detail, idem, status, created_at) VALUES ('out', ?, ?, ?, ?, ?, 'pending', ?)`,
     ).run(peer.name, msg.seq, text, detailOf(excerpt, msg.note), msg.idem ?? null, this.ctx.clock.now());
     const id = Number(r.lastInsertRowid);
-    this.ctx.journal.write('relay', { id, seq: msg.seq, to: peer.name, excerpt: excerpt !== undefined, note: msg.note !== undefined, link: this.linked });
+    this.ctx.journal.write('relay', { id, seq: msg.seq, to: peer.name, excerpt: excerpt !== undefined, note: msg.note !== undefined, link: this.linked, forwarded });
     this.next();
     return { ok: true, result: { status: 'queued', id, link: this.linked } };
   }

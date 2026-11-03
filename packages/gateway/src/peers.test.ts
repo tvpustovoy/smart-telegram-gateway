@@ -76,12 +76,31 @@ describe('слово владельца другому агенту', () => {
     t.db.close();
   });
 
-  it('чужое и пересланное не выдаётся за слово владельца', () => {
+  it('пересланное владельцем идёт с заголовком «не его слово», за слово владельца не выдаётся; сообщение не из его лички — отказ', () => {
     const t = fresh();
     for (const trust of ['untrusted', 'owner_forward']) {
       const r = t.relay(t.word('text', trust, 'текст'));
-      assert.ok(!r.ok && r.code === 'bad_request' && /не слова владельца/.test(r.text), trust);
+      assert.ok(r.ok, trust);
+      const text = t.letter(r.ok ? r.result.id! : 0);
+      assert.match(text, /^⟦Переслал владелец, это не его слово, № \d+\. Текст из базы шлюза, агент его не менял⟧\nтекст$/, trust);
+      assert.ok(!text.includes('Слово владельца'), trust);
     }
+    const other = Number(sql(t.db, "INSERT INTO events(chat_id, kind, trust, text, status, created_at) VALUES (2002, 'text', 'untrusted', 'чужой', 'delivered', 1)").run().lastInsertRowid);
+    const r = t.relay(other);
+    assert.ok(!r.ok && r.code === 'bad_request' && /не от владельца/.test(r.text));
+    t.db.close();
+  });
+
+  it('пересланная запись идёт расшифровкой под заголовком «не его слово»; файл не идёт: звук распознал шлюз', () => {
+    const t = fresh();
+    const rec = JSON.stringify([{ kind: 'document', trust: 'untrusted', ref: { type: 'audio', file_id: 'F1', file_unique_id: 'U1', file_name: 'journey.m4a', mime_type: 'audio/mp4', file_size: 2048 } }]);
+    const r = t.relay(t.word('document', 'owner_forward', null, 'расшифровка путешествия', rec), { note: 'путешествие от 01.11' });
+    assert.ok(r.ok);
+    const row = sql(t.db, 'SELECT text, file_json FROM peer_messages WHERE id = ?').get(r.ok ? r.result.id! : 0) as { text: string; file_json: string | null };
+    assert.match(row.text, /^⟦Переслал владелец, это не его слово, № \d+\. Текст из базы шлюза, агент его не менял⟧\nрасшифровка путешествия\n⟦Записка агента, не слово владельца⟧\nпутешествие от 01\.11$/);
+    assert.equal(row.file_json, null);
+    const silent = t.relay(t.word('document', 'owner_forward', null, null, rec));
+    assert.ok(!silent.ok && /нет слов/.test(silent.text), 'звук ещё не распознан — отказ');
     t.db.close();
   });
 
