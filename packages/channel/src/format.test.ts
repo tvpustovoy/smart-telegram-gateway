@@ -93,6 +93,23 @@ describe('канал: событие → уведомление (5.11)', () => {
     assert.equal(r.meta.redelivery, 'true');
   });
 
+  it('5.15: документ — «файл «имя», размер — получить: file(seq: N)»; изображение файлом — и media, и file; без подписи; meta.file', () => {
+    const pdf = formatEvent(
+      ev({ seq: 392, kind: 'document', text: 'В коллекцию', mixed: true, attachments: [{ kind: 'document', trust: 'untrusted' }], file: { name: 'Model.pdf', mime: 'application/pdf', bytes: 1_209_428 } }),
+    );
+    assert.equal(pdf.content, '[№ 392 · эп. 42 · файл «Model.pdf», 1,2 МБ — получить: file(seq: 392) · слово владельца + чужое (файл)] В коллекцию');
+    assert.equal(pdf.meta.file, 'Model.pdf');
+    // Без имени и размера — только подсказка; без подписи — «(без подписи)»: содержимое агент получает сам.
+    assert.equal(
+      formatEvent(ev({ seq: 393, kind: 'document', text: null, mixed: true, attachments: [{ kind: 'document', trust: 'untrusted' }], file: { name: null, mime: null, bytes: null } })).content,
+      '[№ 393 · эп. 42 · файл — получить: file(seq: 393) · слово владельца + чужое (файл)] (без подписи)',
+    );
+    assert.equal(
+      formatEvent(ev({ seq: 60, kind: 'document', text: 'вот', mixed: true, attachments: [{ kind: 'document', trust: 'untrusted' }], media: { what: 'image' }, file: { name: 'shot.png', mime: 'image/png', bytes: 2048 } })).content,
+      '[№ 60 · эп. 42 · изображение файлом — посмотреть: media(seq: 60), получить: file(seq: 60) · слово владельца + чужое (файл)] вот',
+    );
+  });
+
   it('0.3: подсказка картинки в заголовке; своё аудио и кружок — слово владельца; чужое — «— чужое»; видео; без подписи', () => {
     // Фото: «фото — посмотреть: media(seq: N)»; метка — как раньше.
     const photo = formatEvent(ev({ seq: 59, kind: 'photo', text: null, mixed: true, attachments: [{ kind: 'photo', trust: 'untrusted' }], media: { what: 'photo' } }));
@@ -278,7 +295,7 @@ describe('письмо другого агента (5.19)', () => {
 describe('канал: инструменты, instructions, сроки', () => {
   it('инструменты 5.11 (media — 0.3, send_file — 0.3.3, relay, show, agents — 5.19); у episode нет role; схемы — объекты', () => {
     assert.deepEqual(TOOLS.map((t) => t.name), [...TOOL_NAMES]);
-    assert.deepEqual([...TOOL_NAMES], ['reply', 'done', 'episode', 'episode_summary', 'where', 'rule', 'media', 'send_file', 'relay', 'show', 'agents', 'lines', 'line_log']);
+    assert.deepEqual([...TOOL_NAMES], ['reply', 'done', 'episode', 'episode_summary', 'where', 'rule', 'media', 'file', 'send_file', 'relay', 'show', 'agents', 'lines', 'line_log']);
     for (const t of TOOLS) assert.equal(t.inputSchema.type, 'object');
     const ep = TOOLS.find((t) => t.name === 'episode')!;
     assert.ok(!('role' in ep.inputSchema.properties));

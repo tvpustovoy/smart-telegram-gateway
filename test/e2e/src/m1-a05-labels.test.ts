@@ -189,7 +189,9 @@ describe('A1.5 · метки доверия (через шлюз)', () => {
       assert.deepEqual(fwd.forward, { origin_type: 'channel', from_name: 'Новости' });
       const doc = ch.events().find((e) => e.kind === 'document')!;
       assert.deepEqual({ trust: doc.trust, mixed: doc.mixed, attachments: doc.attachments }, { trust: 'owner', mixed: true, attachments: [{ kind: 'document', trust: 'untrusted' }] });
-      assert.ok(!JSON.stringify(doc).includes('отчёт.pdf'), 'имя файла переходнику не уходит');
+      // С 0.5.1 имя и размер документа уходят полем file (подсказка для file(seq)); содержимое и file_id — нет.
+      assert.equal(doc.file?.name, 'отчёт.pdf');
+      assert.ok(!JSON.stringify(doc).includes('file_id'), 'file_id переходнику не уходит');
     } finally {
       ch.close();
     }

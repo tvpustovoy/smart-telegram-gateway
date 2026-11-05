@@ -9,6 +9,17 @@ an older version after a migration is only possible from a database backup taken
 
 The chat interface and the design documents are in Russian; the entries below describe behavior in English.
 
+## Unreleased
+
+### Added
+
+- Documents reach the agent as files. A document in your message (PDF, spreadsheet, archive, an image sent as a file)
+  shows in the event header with its name and size and `file(seq: N)`. The new tool `file` downloads it into the agent's
+  incoming folder (`incoming.dir` in `config.yaml`, or `incoming/` in the agent session's working directory) under
+  `<date>_<No.>_<name>` and returns the path; a second call finds it there without asking Telegram. Up to 20 MB, the Bot
+  API limit. The contents are marked untrusted; only your caption is your word. Before, the agent could only look at
+  pictures (`media`), and a PDF stayed out of reach.
+
 ## 0.5.0 - 2026-11-02
 
 Upgrading from 0.4.1: the database moves to schema v17 by itself on the first start (v15, v16, v17); take

@@ -4,7 +4,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import type { Message } from '@grammyjs/types';
-import { MEDIA_VIEW_MAX_BYTES, formatBytes, imageExt, imageInfo, pickPhotoSize, viewableOf, type FileRef } from './media.js';
+import { MEDIA_VIEW_MAX_BYTES, documentOf, formatBytes, imageExt, imageInfo, pickPhotoSize, viewableOf, type FileRef } from './media.js';
 import { labelMessage } from './trust.js';
 
 const owner = { id: 111, is_bot: false, first_name: 'Анна' };
@@ -42,6 +42,25 @@ function jpegHeader(w: number, h: number): Buffer {
   sof[9] = 3;
   return Buffer.concat([Buffer.from([0xff, 0xd8]), app0, dqt, sof, Buffer.from([0xff, 0xd9])]);
 }
+
+describe('документы для агента: что отдать файлом (5.15, documentOf)', () => {
+  it('файл Telegram — имя, mime строчными, размер; изображение файлом — тоже; фото, кружок, видео, голос и текст — нет', () => {
+    const pdf = label({ document: { file_id: 'p', file_unique_id: 'u', file_name: 'Maturity Model.pdf', mime_type: 'application/PDF', file_size: 1_209_428 } });
+    assert.deepEqual(documentOf(pdf.attachments), { fileId: 'p', name: 'Maturity Model.pdf', mime: 'application/pdf', size: 1_209_428 });
+    const png = label({ document: { file_id: 'i', file_unique_id: 'u', mime_type: 'image/png' } });
+    assert.deepEqual(documentOf(png.attachments), { fileId: 'i', name: null, mime: 'image/png', size: null });
+    assert.equal(documentOf(label({ photo: [{ file_id: 'f', file_unique_id: 'u', width: 90, height: 90 }] }).attachments), null);
+    assert.equal(documentOf(label({ video_note: { file_id: 'vn', file_unique_id: 'u', length: 384, duration: 12 } }).attachments), null);
+    assert.equal(documentOf(label({ video: { file_id: 'v', file_unique_id: 'u', width: 1, height: 1, duration: 3 } }).attachments), null);
+    assert.equal(documentOf(label({ voice: { file_id: 'v', file_unique_id: 'u', duration: 3 } }).attachments), null);
+    assert.equal(documentOf(label({ text: 'x' }).attachments), null);
+  });
+
+  it('ссылку стёрла чистка — null', () => {
+    assert.equal(documentOf([{ kind: 'document', trust: 'untrusted', ref: {} }]), null);
+    assert.equal(documentOf(null), null);
+  });
+});
 
 describe('картинки для агента: что показать (media.ts)', () => {
   it('предел просмотра — 3,75 МБ: в base64 ровно 5 МБ (предел API модели на картинку) ⟨предл.⟩', () => {

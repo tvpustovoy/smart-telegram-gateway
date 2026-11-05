@@ -11,9 +11,9 @@ import { CODEX_TOOL_EDITS, TOOLS, toolsFor } from './tools.js';
 /**
  * SHA-256 текста для Claude Code — при правке текста здесь меняется осознанно, вместе с версией: разговорам, получившим
  * прежнюю версию, шлюз один раз пришлёт событие «правила канала». 0.3.6 — 9470ccc980ca…; с #60 (картинка — фото,
- * send_file as: "file") — эта.
+ * send_file as: "file") — 24a2f2e38cce…; с 0.5.1 (документы файлом — file(seq)) — эта.
  */
-const CLAUDE_SHA256 = '24a2f2e38ccecf92f96ab86f1238e0362d03aca76c5c13ca8fbfbaaca5bc55d5';
+const CLAUDE_SHA256 = '0861fc8ee5c9944531aa68ff559e7bcea94f3ba6ec4fa9664cbdc61973cc1134';
 
 function occurrences(text: string, part: string): number {
   return text.split(part).length - 1;

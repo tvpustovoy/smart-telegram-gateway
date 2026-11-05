@@ -142,6 +142,7 @@ Then finish the setup:
 | `.claude/agent-state.settings.json` | status line command and `PreCompact` / `PostCompact` / `StopFailure` hooks that feed the agent icons in the pinned line | rewritten |
 | `start.sh` | starts Claude Code with the channel and its own `CLAUDE_CONFIG_DIR` (`.claude-config/`) | rewritten |
 | `notes/`, `parcels/` | the agent's notes; files the agent sends with `send_file` | kept |
+| `incoming/` | documents from your messages, put there by `file`; the gateway does not delete them | kept |
 
 This is not a sandbox: the agent runs as the same macOS user and can read the user's files, including the gateway's.
 See [docs/THREAT-MODEL.md](docs/THREAT-MODEL.md). More about the template:
@@ -245,7 +246,8 @@ What you see in the chat:
   gist it already sent.
 
 The agent's tools (MCP for Claude Code, dynamic tools for Codex): `reply`, `done`, `episode`, `episode_summary`, `where`,
-`rule`, `media`, `send_file`, `relay`, `show`, `agents`.
+`rule`, `media`, `file`, `send_file`, `relay`, `show`, `agents`. A document you send (PDF, spreadsheet, archive) reaches
+the agent as a file: `file` puts it in the agent's `incoming/` folder and returns the path.
 
 ## Configuration
 
@@ -273,6 +275,9 @@ tts:                             # replies by voice
 parcels:
   dir: null                      # null = parcels/ in the agent session's working directory
   targets: [telegram]
+
+incoming:
+  dir: null                      # where `file` puts documents; null = incoming/ in the agent session's working directory
 
 peers:                           # other agents reachable through stg-link; also the allow-list
   - { name: Researcher, address: "<address in the agent network>" }
