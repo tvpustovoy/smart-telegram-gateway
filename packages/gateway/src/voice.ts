@@ -31,6 +31,9 @@
 // у голосовых: исчерпанный срок на длинном файле — не «провайдер не отвечает»; отказ по аудиофайлу виден в ответе на
 // него, а «статус» (последний отказ, счётчики) — о голосовых.
 //
+// Без распознавания (/stt, stt-off.ts): пока владелец его выключил, пересланный звук и аудиофайлы из очереди не
+// скачиваются и не распознаются — событие new с пометкой stt_off, ответа владельцу нет; звук агент получает file(seq).
+//
 // Видео-кружок и видео (0.3): распознаётся звуковая дорожка, тем же провайдером — файл уходит как `<имя>.mp4`,
 // `video/mp4` (mp4 — в списке форматов OpenAI; у ElevenLabs — не проверено). Кружок — событие document, но очередь
 // голосовая ⟨предл.: кружки короткие, до минуты⟩; видео — очередь аудиофайлов ⟨предл.⟩. Владельцу —
@@ -88,6 +91,7 @@ import {
 } from 'stg-core';
 import { insertOutbox, type Ctx } from './context.js';
 import { settleTranscribed, type SettleResult } from './material.js';
+import { sttOffCovers, sttOffUntil } from './stt-off.js';
 
 /** Срок одной попытки распознавания (5.8). */
 export const STT_ATTEMPT_MS = 60_000;
@@ -196,6 +200,10 @@ interface VoiceEventRow {
   created_at: number;
   /** Длительность аудиофайла по самому файлу (v7); NULL — из метаданных или не определена. */
   audio_seconds: number | null;
+  /** Пересылка (JSON) — для /stt: выключение касается пересланного. */
+  forward_json: string | null;
+  /** Не распознавался: распознавание пересланного и аудиофайлов было выключено (v18, stt-off.ts). */
+  stt_off?: number;
 }
 
 function attachmentsOf(row: { attachments_json: string | null }): Attachment[] {
@@ -277,7 +285,8 @@ export function sttReplyOf(
   seq: number,
 ): { text: string; quote: boolean; chatId: number; threadId: number | null; messageId: number | null } | null {
   const ev = sql(ctx.db, "SELECT * FROM events WHERE seq = ? AND kind IN ('voice', 'document')").get(seq) as VoiceEventRow | undefined;
-  if (!ev || ev.chat_id === null || ev.status === 'transcribing') return null;
+  // Распознавание было выключено владельцем (/stt): ответа на такое сообщение нет — он сам так решил.
+  if (!ev || ev.chat_id === null || ev.status === 'transcribing' || ev.stt_off) return null;
   const audio = ev.kind === 'document';
   const attachments = audio ? attachmentsOf(ev) : [];
   const sound = audio ? audioFileOf(attachments) : null;
@@ -335,7 +344,11 @@ type SttOutcome =
   | { ok: true; text: string; attempts: number; elapsedMs: number; outputTokens: number | null }
   | { ok: false; reason: string; attempts: number; elapsedMs: number; error?: string }
   /** Не распознавать (аудиофайл длиннее предела): файл скачан или нет — видно по raw_ref. */
-  | { ok: 'skipped'; reason: string; attempts: 0; elapsedMs: number };
+  | { ok: 'skipped'; reason: string; attempts: 0; elapsedMs: number }
+  /** Не распознавать: владелец выключил распознавание пересланного и аудиофайлов (/stt, stt-off.ts); звук не скачивается. */
+  | { ok: 'off'; attempts: 0; elapsedMs: 0 };
+
+const STT_OFF_OUTCOME: SttOutcome = { ok: 'off', attempts: 0, elapsedMs: 0 };
 
 /** Файл больше предела Bot API: getFile отвечает «file is too big». */
 class TooBig extends Error {}
@@ -443,7 +456,7 @@ export class Transcriber {
       if (!row) return;
       let outcome: SttOutcome;
       try {
-        outcome = this.unsaved.get(row.seq) ?? (await this.recognize(row));
+        outcome = this.unsaved.get(row.seq) ?? (this.offCovers(row) ? STT_OFF_OUTCOME : await this.recognize(row));
       } catch (err) {
         if (!(err instanceof DiskFullLater)) throw err;
         this.retryLater(name);
@@ -459,6 +472,13 @@ export class Transcriber {
       }
       this.unsaved.delete(row.seq);
     }
+  }
+
+  /** Распознавание пересланного и аудиофайлов выключено (/stt), и этот звук — такой (stt-off.ts). */
+  private offCovers(row: VoiceEventRow): boolean {
+    if (sttOffUntil(this.ctx.db, this.ctx.clock.now()) === null) return false;
+    const src = sttSourceOf(row);
+    return src !== null && sttOffCovers(row.forward_json !== null, src.file ? src.source : null);
   }
 
   private retryLater(name: SttLaneName): void {
@@ -654,9 +674,11 @@ export class Transcriber {
               ? sql(this.ctx.db, "UPDATE events SET status = 'new', stt_note = 'too_big' WHERE seq = ? AND status = 'transcribing'").run(row.seq)
               : o.ok === 'skipped'
                 ? sql(this.ctx.db, "UPDATE events SET status = 'new', stt_note = 'too_long' WHERE seq = ? AND status = 'transcribing'").run(row.seq)
-                : sql(this.ctx.db, "UPDATE events SET status = 'new' WHERE seq = ? AND status = 'transcribing'").run(row.seq);
+                : o.ok === 'off'
+                  ? sql(this.ctx.db, "UPDATE events SET status = 'new', stt_off = 1 WHERE seq = ? AND status = 'transcribing'").run(row.seq)
+                  : sql(this.ctx.db, "UPDATE events SET status = 'new' WHERE seq = ? AND status = 'transcribing'").run(row.seq);
         if (!Number(r.changes)) return false;
-        enqueueSttReply(this.ctx, row.seq);
+        if (o.ok !== 'off') enqueueSttReply(this.ctx, row.seq);
         material = settleTranscribed(this.ctx, row.seq, this.ctx.clock.now());
         return true;
       });
@@ -673,7 +695,9 @@ export class Transcriber {
       for (const m of settled.released) this.ctx.journal.write('material_released', { seq: m.seq, held_ms: m.heldMs, words: 'after', words_seq: row.seq });
     }
     const src = sttSourceOf(row);
-    if (o.ok === 'skipped') {
+    if (o.ok === 'off') {
+      this.ctx.journal.write('stt_off_skipped', { seq: row.seq, forwarded: row.forward_json !== null, ...(src?.file ? { audio_file: true, source: src.source } : {}) });
+    } else if (o.ok === 'skipped') {
       this.ctx.journal.write('stt_skipped', { seq: row.seq, reason: o.reason, saved: !!row.raw_ref, raw_ref: row.raw_ref, seconds: src?.seconds ?? null });
     } else if (o.ok) {
       // Входящее — дословно (Ш-16): расшифровка в журнал с меткой содержимого — меткой вложения: свой аудиофайл и свой

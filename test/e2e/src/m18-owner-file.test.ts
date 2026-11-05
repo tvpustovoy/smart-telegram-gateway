@@ -2,7 +2,7 @@
 // переходнике:
 // - A18.1 PDF с подписью: в событии — поле file (имя, mime, размер); file кладёт его в incoming.dir под именем
 //   <дата>_<№>_<имя>, байт в байт; повтор — «уже лежал», без getFile;
-// - A18.2 отказы: текст — «нет документа»; неизвестный № — unknown_seq; больше 20 МБ по метаданным — без скачивания;
+// - A18.2 отказы: текст — «нет файла»; неизвестный № — unknown_seq; больше 20 МБ по метаданным — без скачивания;
 // - A18.3 имя из чужих рук: путь в имени отрезается — файл остаётся в папке входящих;
 // - A18.4 incoming.dir нет — папка <каталог сессии агента>/incoming, шлюз создаёт её сам.
 
@@ -64,14 +64,14 @@ describe('M18 · документы файлом: file(seq) (5.15)', () => {
     assert.equal(getFileCalls('pdf1'), 1, 'повтор — из папки входящих, Telegram не спрашивается');
   });
 
-  it('A18.2 отказы: текст — «нет документа»; неизвестный № — unknown_seq; больше 20 МБ — без скачивания', async () => {
+  it('A18.2 отказы: текст — «нет файла»; неизвестный № — unknown_seq; больше 20 МБ — без скачивания', async () => {
     const t = s.fake.push(s.fake.builder.text(OWNER, 'просто текст'))[0]!;
     const tseq = await seqOf(t);
     await waitRecorded(s, gw, t);
     await ch.waitEvent(tseq);
     const none = await ch.request('file', { seq: tseq });
     assert.equal(none.type, 'error');
-    assert.match(none.type === 'error' ? none.text : '', /нет документа/);
+    assert.match(none.type === 'error' ? none.text : '', /нет файла/);
 
     const unknown = await ch.request('file', { seq: 99_999 });
     assert.deepEqual(unknown.type === 'error' ? unknown.code : unknown.type, 'unknown_seq');

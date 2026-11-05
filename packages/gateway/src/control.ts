@@ -46,6 +46,8 @@ import {
   SERVICE_MARK,
   STOPPED_TEXT,
   STOP_NEEDS_BUTTON_TEXT,
+  STT_OFF_DEFAULT_MINUTES,
+  STT_ON_TEXT,
   agentTopic,
   cutGraphemes,
   episodeAnnounceText,
@@ -63,12 +65,15 @@ import {
   modeWord,
   agentStatusLines,
   newTopicNoteText,
+  parseSttCommand,
   readMode,
   readProbesSaved,
   readTurn,
   setMeta,
   shownRole,
   stopLiftedText,
+  sttBadText,
+  sttOffText,
   transaction,
   sttVocabularyUse,
   ttsVoice,
@@ -100,6 +105,7 @@ import type { EpisodeRow, Episodes } from './episodes.js';
 import type { RulesService } from './rules.js';
 import { clearReceipts, requestAnswerLost } from './reactions.js';
 import { statusLinePinFailed } from './statusline.js';
+import { setSttOff, sttOffUntil } from './stt-off.js';
 import { VOICE_LANE_SQL, enqueueSttReply } from './voice.js';
 
 const MSG_KINDS_SQL = MESSAGE_EVENT_KINDS.map((k) => `'${k}'`).join(',');
@@ -161,6 +167,8 @@ export interface CommandEvent {
   messageDate: number;
   /** Сообщение владельца с командой — удаляется после исполнения (null — неизвестно). */
   messageId?: number | null;
+  /** Текст команды — для команд со сроком (/stt off 2h). */
+  text?: string | null;
 }
 
 export type AgentResult = { ok: true; result: unknown; effects: Effects } | { ok: false; code: 'bad_request' | 'unavailable'; text: string };
@@ -336,6 +344,26 @@ export class Control {
         const closed = closeLine(this.ctx, 'command', this.ctx.clock.now());
         line(closed ? lineClosedText(main) : lineNoneText(main));
         return { pump: true };
+      }
+      case 'stt': {
+        // Распознавание пересланного и аудиофайлов на время (5.8 «Без распознавания», stt-off.ts). Строка остаётся в
+        // чате: в ней срок.
+        const now = this.ctx.clock.now();
+        const c = parseSttCommand(ev.text ?? null) ?? { action: 'toggle' };
+        if (c.action === 'bad') {
+          line(sttBadText(c.arg));
+          return {};
+        }
+        const until = sttOffUntil(this.ctx.db, now);
+        if (c.action === 'off' || (c.action === 'toggle' && until === null)) {
+          const at = now + (c.action === 'off' ? c.minutes : STT_OFF_DEFAULT_MINUTES) * 60_000;
+          setSttOff(this.ctx, at, 'command');
+          line(sttOffText(localTime(at, this.ctx.config.timezone)));
+        } else {
+          if (until !== null) setSttOff(this.ctx, null, 'command');
+          line(STT_ON_TEXT);
+        }
+        return {};
       }
       case 'help': {
         line(

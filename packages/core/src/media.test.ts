@@ -44,16 +44,22 @@ function jpegHeader(w: number, h: number): Buffer {
 }
 
 describe('документы для агента: что отдать файлом (5.15, documentOf)', () => {
-  it('файл Telegram — имя, mime строчными, размер; изображение файлом — тоже; фото, кружок, видео, голос и текст — нет', () => {
+  it('файл Telegram — имя, mime строчными, размер; изображение файлом — тоже; фото, кружок, видео и текст — нет', () => {
     const pdf = label({ document: { file_id: 'p', file_unique_id: 'u', file_name: 'Maturity Model.pdf', mime_type: 'application/PDF', file_size: 1_209_428 } });
-    assert.deepEqual(documentOf(pdf.attachments), { fileId: 'p', name: 'Maturity Model.pdf', mime: 'application/pdf', size: 1_209_428 });
+    assert.deepEqual(documentOf(pdf.attachments), { fileId: 'p', name: 'Maturity Model.pdf', mime: 'application/pdf', size: 1_209_428, voice: false });
     const png = label({ document: { file_id: 'i', file_unique_id: 'u', mime_type: 'image/png' } });
-    assert.deepEqual(documentOf(png.attachments), { fileId: 'i', name: null, mime: 'image/png', size: null });
+    assert.deepEqual(documentOf(png.attachments), { fileId: 'i', name: null, mime: 'image/png', size: null, voice: false });
     assert.equal(documentOf(label({ photo: [{ file_id: 'f', file_unique_id: 'u', width: 90, height: 90 }] }).attachments), null);
     assert.equal(documentOf(label({ video_note: { file_id: 'vn', file_unique_id: 'u', length: 384, duration: 12 } }).attachments), null);
     assert.equal(documentOf(label({ video: { file_id: 'v', file_unique_id: 'u', width: 1, height: 1, duration: 3 } }).attachments), null);
-    assert.equal(documentOf(label({ voice: { file_id: 'v', file_unique_id: 'u', duration: 3 } }).attachments), null);
     assert.equal(documentOf(label({ text: 'x' }).attachments), null);
+  });
+
+  it('звук самим файлом: аудиофайл — с именем и mime, голосовое — Ogg/Opus без имени', () => {
+    const mp3 = label({ audio: { file_id: 'a', file_unique_id: 'u', duration: 268, file_name: '1-Mantra.mp3', mime_type: 'audio/mpeg', file_size: 6_363_175 } });
+    assert.deepEqual(documentOf(mp3.attachments), { fileId: 'a', name: '1-Mantra.mp3', mime: 'audio/mpeg', size: 6_363_175, voice: false });
+    const voice = label({ voice: { file_id: 'v', file_unique_id: 'u', duration: 3 } });
+    assert.deepEqual(documentOf(voice.attachments), { fileId: 'v', name: null, mime: 'audio/ogg', size: null, voice: true });
   });
 
   it('ссылку стёрла чистка — null', () => {

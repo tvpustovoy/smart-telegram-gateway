@@ -19,6 +19,14 @@ The chat interface and the design documents are in Russian; the entries below de
   `<date>_<No.>_<name>` and returns the path; a second call finds it there without asking Telegram. Up to 20 MB, the Bot
   API limit. The contents are marked untrusted; only your caption is your word. Before, the agent could only look at
   pictures (`media`), and a PDF stayed out of reach.
+- Speech recognition can be switched off for a while. `/stt` (also in the menu) stops recognizing forwarded audio and
+  audio files for an hour, or turns recognition back on if it is off; `/stt off 2h` sets the time, up to a day, and
+  `/stt on` ends it early. While it is off, such audio is not downloaded or sent to the provider, you get no transcript
+  reply, and the agent receives the event marked as not recognized. Your own voice messages are still recognized. The
+  pinned line shows `🔇 until HH:MM`, and when the time runs out the gateway turns recognition on and tells you.
+- The agent can get audio as a file too: an audio file, or a forwarded voice message, shows `file(seq: N)` in the event
+  header, and `file` puts the sound into the incoming folder, so the agent can pass it on as is. Audio the gateway has
+  already downloaded for recognition is copied from its own store, without asking Telegram again.
 
 ## 0.5.0 - 2026-11-02
 

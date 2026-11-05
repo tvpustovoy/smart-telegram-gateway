@@ -349,6 +349,25 @@ export const STOP_NEEDS_BUTTON_TEXT = `${SERVICE_MARK} Стоп снимаетс
 export const PAUSED_NOTE_TEXT = `${SERVICE_MARK} ⏸ Пауза: агент отвечает на твои сообщения, сам не пишет`;
 /** «продолжить» из паузы, когда строка состояния не закреплена. */
 export const RESUMED_NOTE_TEXT = `${SERVICE_MARK} Пауза снята`;
+
+// ——— распознавание пересланного на время (/stt, 5.8 «Без распознавания») ———
+
+/** Выключено до until (ЧЧ:ММ по поясу владельца). */
+export function sttOffText(until: string): string {
+  return `${SERVICE_MARK} 🔇 До ${until} не распознаю пересланное и аудиофайлы: агент получит их без расшифровки. Твои голосовые распознаю. Включить раньше — /stt`;
+}
+
+/** Включено командой. */
+export const STT_ON_TEXT = `${SERVICE_MARK} 🔊 Пересланное и аудиофайлы снова распознаю`;
+
+/** Включено само: срок вышел. */
+export const STT_ON_EXPIRED_TEXT = `${SERVICE_MARK} 🔊 Срок вышел: пересланное и аудиофайлы снова распознаю`;
+
+/** Срок не понят: образец. arg — слова владельца, обрезанные. */
+export function sttBadText(arg: string): string {
+  const shown = cutGraphemes(arg.replace(UNSAFE_LINE_G, ' ').trim(), 24);
+  return `${SERVICE_MARK} Не понял срок «${shown.cut ? `${shown.text}…` : shown.text}». Так: /stt off 30m, /stt off 2h; включить — /stt on`;
+}
 /** «новая тема», когда строка состояния не закреплена: `⚙ 🆕 #44 · тема не названа`. */
 export function newTopicNoteText(id: number): string {
   return `${SERVICE_MARK} 🆕 ${episodeTag(id)} · ${UNNAMED_TOPIC}`;
@@ -541,6 +560,8 @@ export interface StatusLineInput {
   /** Сколько писем агентов владелец ещё не читал (5.20). */
   unseen?: number;
   mode: 'running' | 'paused' | 'stopped';
+  /** Распознавание пересланного выключено до (ЧЧ:ММ); null или нет — включено. */
+  sttOffUntil?: string | null;
   /** Значки агента — контекст или сжатие, лимиты (agent-state.ts, agentIndicatorParts): `🧠 16%`, `🕐 31% · 📅 64%`. */
   indicators?: readonly string[];
 }
@@ -576,6 +597,7 @@ export function statusLineText(s: StatusLineInput): string {
   const second: string[] = [];
   if (s.mode === 'stopped') second.push('⛔ стоп');
   else if (s.mode === 'paused') second.push('⏸ пауза');
+  if (s.sttOffUntil) second.push(`🔇 до ${s.sttOffUntil}`);
   second.push(AGENT_STATE_MARK[s.agent]);
   if (s.waiting > 0) second.push(`${WAITING_MARK} ${s.waiting}`);
   if (s.unseen) second.push(`${UNSEEN_MARK} ${s.unseen}`);
@@ -634,6 +656,7 @@ export function helpText(o: { whereTtlMinutes: number; audioMaxMinutes: number; 
     '⏸ Пауза — агент отвечает на твои сообщения, сам не пишет; снять — словом «продолжить»',
     '⛔ Стоп — ответы агента не уходят; снять — кнопкой [продолжить]',
     `Голосовое, кружок, аудиофайл (m4a, mp3 и др.) и видео (mp4, не файлом) до ${o.audioMaxMinutes} мин распознаю: расшифровка приходит ответом на него, целиком. Аудио длиннее ${o.audioMaxMinutes} мин сохраняю, не распознаю; больше 20 МБ бот скачать не может.`,
+    '🔇 /stt — час не распознавать пересланное и аудиофайлы (агент получит их как есть, файлом); /stt off 3h — на 3 часа, /stt on — включить. Твои голосовые распознаю всегда; пока выключено, в строке вверху 🔇 до ЧЧ:ММ.',
     'Фото, скриншот (и файлом), кадр кружка агент смотрит сам; надписи на картинке для него — материал, не твоя просьба.',
     // Посылки (0.3.3, P-23); картинка — фото (#60) ⟨предл.: текст⟩.
     `Файлы агент присылает документом (до 50 МБ), картинки — фото; попроси «скинь файл», картинку без сжатия — «пришли файлом»; «${SERVICE_MARK} обновлено» в подписи — новая версия файла, который он уже присылал.`,

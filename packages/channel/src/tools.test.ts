@@ -173,7 +173,7 @@ describe('канал: документы файлом (5.15) — file', () => {
       ack({ seq: 392, path: '/a/incoming/2026-11-04_392_Model.pdf', name: 'Model.pdf', mime: 'application/pdf', bytes: 1_209_428, reused: false }),
       ack({ seq: 392, path: '/a/incoming/2026-11-04_392_Model.pdf', name: 'Model.pdf', mime: 'application/pdf', bytes: 1_209_428, reused: true }),
       err('bad_request', 'неизвестный type «file»'),
-      err('bad_request', 'в № 5 нет документа: файлом отдаётся документ (PDF, таблица, архив); фото — media, звук и видео приходят расшифровкой'),
+      err('bad_request', 'в № 5 нет файла: файлом отдаётся документ (PDF, таблица, архив), аудиофайл и голосовое; фото — media, видео и кружок приходят расшифровкой'),
       err('unavailable', 'файл не скачался: сеть — повтори позже'),
     ]);
     const req = client.request.bind(client);
@@ -191,7 +191,7 @@ describe('канал: документы файлом (5.15) — file', () => {
     assert.deepEqual(await callTool(ctx, 'file', { seq: 392 }), { content: [{ type: 'text', text: OUTCOME.fileUnsupported }], isError: true });
     const none = await callTool(ctx, 'file', { seq: 5 });
     assert.equal(none.isError, true);
-    assert.match(textOf(none), /^файл не получить: в № 5 нет документа/);
+    assert.match(textOf(none), /^файл не получить: в № 5 нет файла/);
     assert.equal(textOf(await callTool(ctx, 'file', { seq: 6 })), 'файл не скачался: сеть — повтори позже');
     assert.deepEqual(await callTool(ctx, 'file', { seq: 0 }), { content: [{ type: 'text', text: 'file: seq — № события, целое число' }], isError: true });
   });

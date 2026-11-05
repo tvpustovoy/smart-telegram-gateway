@@ -134,6 +134,11 @@ export const META_KEYS = {
   /** Хранение и чистка (5.8) — когда шла последняя (раз в сутки). */
   retentionAt: 'retention_at',
   /**
+   * Распознавание пересланного и аудиофайлов выключено до (часы шлюза, мс; /stt, 5.8 «Без распознавания»). Ключа нет —
+   * включено; срок вышел — тикер включает его и пишет владельцу строку.
+   */
+  sttOffUntil: 'stt_off_until',
+  /**
    * Закреплённая строка состояния (5.7, J-4) — JSON {chat_id, message_id, text, at, retry_at}: какое сообщение бота она,
    * что в нём сейчас, когда правилось (не чаще раза в 3 с) и когда повторить после сбоя.
    */
@@ -912,6 +917,15 @@ ALTER TABLE peer_messages ADD COLUMN file_json TEXT;
 ALTER TABLE peer_messages ADD COLUMN file_ref TEXT;
 `;
 
+/**
+ * Версия 18 (5.8 «Без распознавания»): events.stt_off — звук не распознавался, потому что владелец выключил
+ * распознавание пересланного и аудиофайлов (/stt). Отдельным столбцом, а не значением stt_note: CHECK в SQLite меняется
+ * только пересборкой таблицы.
+ */
+const SCHEMA_V18 = `
+ALTER TABLE events ADD COLUMN stt_off INTEGER NOT NULL DEFAULT 0 CHECK (stt_off IN (0,1));
+`;
+
 const SCHEMA_V16 = `
 CREATE TABLE lines (
   id         INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -947,6 +961,7 @@ export const MIGRATIONS: readonly Migration[] = [
   { version: 15, name: 'связь с другими агентами: письма и вид события peer', sql: SCHEMA_V15, foreignKeysOff: true },
   { version: 16, name: 'линия: адрес сообщения и разговор с агентом напрямую', sql: SCHEMA_V16 },
   { version: 17, name: 'линия: файлы в письмах', sql: SCHEMA_V17 },
+  { version: 18, name: 'распознавание пересланного выключено владельцем', sql: SCHEMA_V18 },
 ];
 
 /**

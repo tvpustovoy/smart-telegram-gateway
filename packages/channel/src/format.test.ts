@@ -110,6 +110,29 @@ describe('канал: событие → уведомление (5.11)', () => {
     );
   });
 
+  it('звук файлом и /stt: аудиофайл и пересланное голосовое — «получить: file(seq: N)», у своего голосового подсказки нет; распознавание выключено — так и сказано', () => {
+    const fwd = { origin_type: 'user' as const, from_name: 'Петя' };
+    const voiceOff = formatEvent(ev({ seq: 448, kind: 'voice', text: null, forward: fwd, attachments: [{ kind: 'voice', trust: 'untrusted' }], file: { name: null, mime: 'audio/ogg', bytes: null }, stt_off: true }));
+    assert.match(voiceOff.content, /голосовое — получить: file\(seq: 448\)/);
+    assert.match(voiceOff.content, /\(голосовое без расшифровки: владелец выключил распознавание пересланного\)$/);
+    const own = formatEvent(ev({ seq: 449, kind: 'voice', text: null, transcript: 'привет', file: { name: null, mime: 'audio/ogg', bytes: null } }));
+    assert.doesNotMatch(own.content, /file\(seq/, 'своё голосовое — его слова, не материал');
+    const audioOff = formatEvent(
+      ev({
+        seq: 450,
+        kind: 'document',
+        text: null,
+        forward: fwd,
+        attachments: [{ kind: 'document', trust: 'untrusted' }],
+        audio: { name: '1-Mantra.mp3', seconds: 268, state: 'failed', max_minutes: 15, source: 'audio' },
+        file: { name: '1-Mantra.mp3', mime: 'audio/mpeg', bytes: 6_363_175 },
+        stt_off: true,
+      }),
+    );
+    assert.match(audioOff.content, /аудиофайл «1-Mantra\.mp3», 6,1 МБ — получить: file\(seq: 450\)/);
+    assert.match(audioOff.content, /\(аудиофайл «1-Mantra\.mp3» 4:28: не распознаю: владелец выключил распознавание пересланного и аудиофайлов\)$/);
+  });
+
   it('0.3: подсказка картинки в заголовке; своё аудио и кружок — слово владельца; чужое — «— чужое»; видео; без подписи', () => {
     // Фото: «фото — посмотреть: media(seq: N)»; метка — как раньше.
     const photo = formatEvent(ev({ seq: 59, kind: 'photo', text: null, mixed: true, attachments: [{ kind: 'photo', trust: 'untrusted' }], media: { what: 'photo' } }));

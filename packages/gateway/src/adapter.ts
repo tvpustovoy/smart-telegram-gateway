@@ -325,6 +325,8 @@ interface EventRow {
   attempts: number;
   /** Почему аудиофайл не распознан (схема v6). */
   stt_note?: string | null;
+  /** Не распознавался: владелец выключил распознавание пересланного и аудиофайлов (схема v18, /stt). */
+  stt_off?: number;
   /** Длительность аудиофайла по самому файлу (схема v7), если у Telegram её нет. */
   audio_seconds?: number | null;
   /** Когда событие отдано агенту (delivered); не сбрасывается при снятии аренды. */
@@ -1575,6 +1577,7 @@ export class AdapterService {
         : null,
       redelivery: redelivery ?? ev.attempts > 0,
       ...this.audioField(ev, attachments),
+      ...(ev.stt_off ? { stt_off: true as const } : {}),
       ...mediaField(attachments),
       ...fileField(attachments),
       ...materialField(ev),

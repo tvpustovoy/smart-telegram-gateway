@@ -162,7 +162,10 @@ function mediaWord(ev: EventMessage): string | null {
     else word = 'файл';
   }
   // Документ агент получает сам (5.15): file(seq) кладёт его в папку входящих. Изображение файлом — и смотреть, и получить.
-  const file = ev.kind === 'document' && ev.file ? `получить: file(seq: ${ev.seq})` : null;
+  // Аудиофайл и пересланное голосовое — тоже: звук самим файлом, например чтобы передать дальше. У своего голосового
+  // подсказки нет — это его слова, а не материал.
+  const fileOk = ev.file && (ev.kind === 'document' || (ev.kind === 'voice' && ev.forward !== null));
+  const file = fileOk ? `получить: file(seq: ${ev.seq})` : null;
   if (file && !media) {
     const about = [ev.file!.name !== null ? quoted(neutralText(ev.file!.name), TOPIC_MAX) : null, ev.file!.bytes !== null ? formatBytes(ev.file!.bytes) : null].filter((x) => x !== null).join(', ');
     return `${word}${about ? ` ${about}` : ''} — ${file}`;
@@ -183,7 +186,8 @@ function bodyOf(ev: EventMessage): string {
     // Расшифровку делает шлюз (5.8); не вышло — пометка «не распознано», звук у шлюза.
     const transcript = ev.transcript !== null ? neutralText(ev.transcript) : null;
     if (transcript) return text ? `${transcript}\n(подпись: ${text})` : transcript;
-    return text ? `(голосовое не распознано; подпись: ${text})` : '(голосовое не распознано)';
+    const why = ev.stt_off ? 'голосовое без расшифровки: владелец выключил распознавание пересланного' : 'голосовое не распознано';
+    return text ? `(${why}; подпись: ${text})` : `(${why})`;
   }
   if (ev.kind === 'document' && ev.transcript !== null) {
     // Звук файлом (J-2; 0.3 — кружок, видео): расшифровку делает шлюз. Свой аудиофайл и свой кружок без пересылки —
@@ -199,8 +203,9 @@ function bodyOf(ev: EventMessage): string {
     const source = soundSource(a);
     const len = a.seconds !== null ? ` ${formatDuration(a.seconds)}` : '';
     const what = source === 'video_note' ? 'кружок' : `${source === 'video' ? 'видео' : 'аудиофайл'} ${quoted(neutralText(a.name), TOPIC_MAX)}`;
-    const why =
-      a.state === 'too_long'
+    const why = ev.stt_off
+      ? 'не распознаю: владелец выключил распознавание пересланного и аудиофайлов'
+      : a.state === 'too_long'
         ? `длиннее ${a.max_minutes} минут — не распознаю; файл у шлюза`
         : a.state === 'too_big'
           ? 'больше 20 МБ — бот не может его скачать'

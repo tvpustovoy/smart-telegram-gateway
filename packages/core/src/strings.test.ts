@@ -3,7 +3,7 @@
 
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { COMMAND_WORDS, COMMANDS, MENU_COMMANDS, parseCommand } from './commands.js';
+import { COMMAND_WORDS, COMMANDS, MENU_COMMANDS, STT_OFF_DEFAULT_MINUTES, parseCommand, parseSttCommand } from './commands.js';
 import {
   AGENT_MARK,
   AGENT_SIDE_MARKS,
@@ -193,8 +193,28 @@ describe('команды (5.6)', () => {
     // Меню команд — с эмодзи в описаниях.
     assert.deepEqual(
       MENU_COMMANDS.map((c) => `${COMMAND_WORDS[c].slash} ${COMMAND_WORDS[c].menu}`),
-      ['/where 📍 Где мы', '/new 🆕 Новая тема', '/agents 🔌 Агенты', '/pause ⏸ Пауза', '/stop ⛔ Стоп', '/status 📊 Статус', '/help ❓ Помощь'],
+      ['/where 📍 Где мы', '/new 🆕 Новая тема', '/agents 🔌 Агенты', '/pause ⏸ Пауза', '/stop ⛔ Стоп', '/stt 🔇 Распознавание пересланного', '/status 📊 Статус', '/help ❓ Помощь'],
     );
+  });
+
+  it('/stt: без срока — переключить; off и срок — выключить; on — включить; срок не понят — bad', () => {
+    assert.equal(parseCommand('/stt'), 'stt');
+    assert.equal(parseCommand('/stt off'), null, 'со сроком — только parseSttCommand');
+    assert.deepEqual(parseSttCommand('/stt'), { action: 'toggle' });
+    assert.deepEqual(parseSttCommand('/stt@test_assistant_bot'), { action: 'toggle' });
+    assert.deepEqual(parseSttCommand('Распознавание'), { action: 'toggle' });
+    assert.deepEqual(parseSttCommand('/stt on'), { action: 'on' });
+    assert.deepEqual(parseSttCommand('/stt вкл'), { action: 'on' });
+    assert.deepEqual(parseSttCommand('/stt off'), { action: 'off', minutes: STT_OFF_DEFAULT_MINUTES });
+    assert.deepEqual(parseSttCommand('/stt off 30m'), { action: 'off', minutes: 30 });
+    assert.deepEqual(parseSttCommand('/stt off 2h'), { action: 'off', minutes: 120 });
+    assert.deepEqual(parseSttCommand('/STT 3 ч'), { action: 'off', minutes: 180 });
+    assert.deepEqual(parseSttCommand('/stt выкл 45'), { action: 'off', minutes: 45 });
+    assert.deepEqual(parseSttCommand('/stt 25h'), { action: 'bad', arg: '25h' }, 'дольше суток');
+    assert.deepEqual(parseSttCommand('/stt off завтра'), { action: 'bad', arg: 'завтра' });
+    assert.equal(parseSttCommand('/sttx'), null);
+    assert.equal(parseSttCommand('выключи распознавание'), null);
+    assert.equal(parseSttCommand(null), null);
   });
 
   it('не команда: лишние слова, знаки, пустое', () => {

@@ -47,7 +47,7 @@ describe('M2 · «не на связи», «где мы», «статус», м�
     );
     assert.deepEqual(
       c.commands.map((x) => `/${x.command} ${x.description}`),
-      ['/where 📍 Где мы', '/new 🆕 Новая тема', '/pause ⏸ Пауза', '/stop ⛔ Стоп', '/status 📊 Статус', '/help ❓ Помощь'],
+      ['/where 📍 Где мы', '/new 🆕 Новая тема', '/pause ⏸ Пауза', '/stop ⛔ Стоп', '/stt 🔇 Распознавание пересланного', '/status 📊 Статус', '/help ❓ Помощь'],
     );
     assert.deepEqual(c.scope, { type: 'chat', chat_id: OWNER.id });
   });

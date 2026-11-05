@@ -32,6 +32,7 @@ import {
   agentUrgentSignature,
   getMeta,
   lastClosedEpisodeOf,
+  localTime,
   openEpisodeOf,
   ownerRoleName,
   readMode,
@@ -44,6 +45,7 @@ import {
 } from 'stg-core';
 import type { Ctx } from './context.js';
 import { openLine, unseenCount } from './lines.js';
+import { sttOffUntil } from './stt-off.js';
 
 /** Правка строки — не чаще раза в 3 с. */
 export const STATUS_LINE_MIN_INTERVAL_MS = 3_000;
@@ -138,12 +140,14 @@ export class StatusLine {
     const role = ep?.role ?? this.ctx.directory.ownerChatRule()?.role ?? '';
     const now = this.ctx.clock.now();
     const view = this.live.agent?.(now) ?? null;
+    const sttOff = sttOffUntil(db, now);
     const input = {
       episode: ep ? { id: ep.id, topic: ep.topic, closed: !open } : null,
       role: ownerRoleName(this.ctx.config, role),
       agent: this.agentState(view),
       waiting: waitingCount(db),
       mode: readMode(db),
+      sttOffUntil: sttOff === null ? null : localTime(sttOff, this.ctx.config.timezone),
       line: openLine(this.ctx)?.peer ?? null,
       unseen: unseenCount(this.ctx),
     };
