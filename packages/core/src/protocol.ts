@@ -174,6 +174,13 @@ export const RuleSchema = z.strictObject({ type: z.literal('rule'), req_id: reqI
  */
 export const MediaSchema = z.strictObject({ type: z.literal('media'), req_id: reqId, seq });
 
+/**
+ * Документ события файлом (5.15): PDF, таблица, архив — то, что media не показывает. Только событие, которое уже
+ * отдавалось агенту. Шлюз скачивает файл в папку входящих агента (incoming.dir или <каталог сессии>/incoming) и
+ * отвечает FileResult (ниже). Содержимое — чужое.
+ */
+export const FileSchema = z.strictObject({ type: z.literal('file'), req_id: reqId, seq });
+
 export const WhereSchema = z.strictObject({ type: z.literal('where'), req_id: reqId });
 
 /**
@@ -310,6 +317,7 @@ export const AdapterMessageSchema = z.discriminatedUnion('type', [
   WhereSchema,
   DeferredRetrySchema,
   MediaSchema,
+  FileSchema,
   SendFileSchema,
   WorkingSchema,
   RelaySchema,
@@ -337,6 +345,7 @@ export const ADAPTER_MESSAGE_TYPES: readonly AdapterMessageType[] = [
   'where',
   'deferred_retry',
   'media',
+  'file',
   'send_file',
   'working',
   'ping',
@@ -391,6 +400,17 @@ export const MediaResultSchema = z.object({
   note: z.string().nullable(),
 });
 export type MediaResult = z.infer<typeof MediaResultSchema>;
+
+/** Ответ на file (5.15): где лежит файл. reused — уже лежал там с прошлого запроса, Telegram не спрашивался. */
+export const FileResultSchema = z.object({
+  seq,
+  path: z.string(),
+  name: z.string(),
+  mime: z.string().nullable(),
+  bytes: z.int().nonnegative(),
+  reused: z.boolean(),
+});
+export type FileResult = z.infer<typeof FileResultSchema>;
 
 /**
  * Ответ шлюза на send_file (0.3.3). status — как у reply: queued · held_paused (пауза: уйдёт после «продолжить») ·
@@ -506,6 +526,9 @@ export const EventMessageSchema = z.object({
   // video_note · video (строкой: прежний канал поле отбрасывает, новый значение может пополниться); frame — у кружка и
   // видео есть кадр-обложка.
   media: z.object({ what: z.string(), frame: z.boolean().optional() }).optional(),
+  // Документ, который агент может получить файлом инструментом file(seq) (5.15, в пределах v1, как media): имя, mime и
+  // размер из метаданных Telegram; прежний канал поле отбрасывает.
+  file: z.object({ name: z.string().nullable(), mime: z.string().nullable(), bytes: z.int().nonnegative().nullable() }).optional(),
   // Реакция владельца на ответ агента (0.3.4; в пределах v1, как media): событие базы вида reaction уходит кадром вида
   // text — прежний канал (до 0.3.4) вида reaction не знает и отбросил бы кадр целиком, а так читает событие обычным
   // текстом «Реакция на твой ответ к № M: 👍 …» (поле reaction он отбрасывает). Новый канал строит заголовок по этому полю

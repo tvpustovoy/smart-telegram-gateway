@@ -89,6 +89,8 @@ export function describeCall(tool: string, args: Record<string, unknown>, out: T
     }
     case 'media':
       return { kind: 'tool', text: `media № ${String(args.seq ?? '?')} → ${verdict}` };
+    case 'file':
+      return { kind: 'tool', text: `file № ${String(args.seq ?? '?')} → ${verdict}` };
     case 'episode':
       return { kind: 'tool', text: `episode ${String(args.action ?? '')} «${short(String(args.topic ?? ''), 80)}» → ${verdict}` };
     case 'episode_summary':

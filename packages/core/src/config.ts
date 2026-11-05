@@ -366,6 +366,17 @@ export const ConfigSchema = z.strictObject({
         .default([DEFAULT_PARCEL_TARGET]),
     })
     .prefault({}),
+  // Входящие файлы (5.15): dir — папка, куда шлюз кладёт документ из сообщения по file(seq); null —
+  // `<каталог сессии агента>/incoming`. Путь — полный или с «~/». Шлюз создаёт папку сам и файлы в ней не удаляет.
+  incoming: z
+    .strictObject({
+      dir: z
+        .string()
+        .refine((d) => d.startsWith('/') || d.startsWith('~/'), { message: 'папка входящих — полный путь или с «~/»' })
+        .nullable()
+        .default(null),
+    })
+    .prefault({}),
 }).superRefine((c, ctx) => {
   // Метка «↪ имя» у ведущего агента и у агента из peers должна различаться: реплай идёт по ней автору.
   if (c.peers.some((p) => nameSkeleton(p.name) === nameSkeleton(c.line.main_name))) {

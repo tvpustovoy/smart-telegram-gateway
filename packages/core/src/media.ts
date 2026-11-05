@@ -114,6 +114,31 @@ export function safeFileName(name: string): string {
   return clean || 'файл';
 }
 
+/** Документ сообщения, который агент получает файлом в свою папку (file(seq), 5.15). */
+export interface DocumentFile {
+  fileId: string;
+  name: string | null;
+  mime: string | null;
+  /** Размер из метаданных Telegram, байты; null — нет. */
+  size: number | null;
+}
+
+/**
+ * Документ во вложениях события: файл Telegram (PDF, таблица, архив, изображение файлом). Звук и видео идут расшифровкой,
+ * фото — media(seq): null. Ссылку стёрла чистка — тоже null.
+ */
+export function documentOf(attachments: readonly Attachment[] | null | undefined): DocumentFile | null {
+  for (const a of attachments ?? []) {
+    if (a.kind !== 'document') continue;
+    const ref = a.ref ?? {};
+    if (str(ref.type) !== 'document') continue;
+    const f = fileRef(ref);
+    if (!f) continue;
+    return { fileId: f.fileId, name: str(ref.file_name), mime: str(ref.mime_type)?.toLowerCase() ?? null, size: f.size };
+  }
+  return null;
+}
+
 /** Файл вложения для другого агента. */
 export interface PeerAttachment {
   fileId: string;

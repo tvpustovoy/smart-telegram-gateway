@@ -27,7 +27,7 @@
 // «слова после материала № N» или «№ N, K» (meta.after_material). Прежний шлюз полей не шлёт — заголовок прежний.
 // Здесь же — слова, которыми инструменты возвращают модели исход.
 
-import { cutGraphemes, formatDuration, formatElapsed, linksOnly, localTime, ownerReactionChange, ownerReactionTarget, type EventMessage, type Mode } from 'stg-core';
+import { cutGraphemes, formatBytes, formatDuration, formatElapsed, linksOnly, localTime, ownerReactionChange, ownerReactionTarget, type EventMessage, type Mode } from 'stg-core';
 import { INSTRUCTIONS, INSTRUCTIONS_VERSION } from './instructions.js';
 
 export const CHANNEL_NOTIFICATION = 'notifications/claude/channel';
@@ -161,11 +161,17 @@ function mediaWord(ev: EventMessage): string | null {
     else if (media?.what === 'video') word = 'видео';
     else word = 'файл';
   }
+  // Документ агент получает сам (5.15): file(seq) кладёт его в папку входящих. Изображение файлом — и смотреть, и получить.
+  const file = ev.kind === 'document' && ev.file ? `получить: file(seq: ${ev.seq})` : null;
+  if (file && !media) {
+    const about = [ev.file!.name !== null ? quoted(neutralText(ev.file!.name), TOPIC_MAX) : null, ev.file!.bytes !== null ? formatBytes(ev.file!.bytes) : null].filter((x) => x !== null).join(', ');
+    return `${word}${about ? ` ${about}` : ''} — ${file}`;
+  }
   // Картинку агент смотрит сам (0.3): у кружка и видео — кадр-обложка.
   if (media) {
     const frameOnly = media.what === 'video_note' || media.what === 'video';
     if (frameOnly && media.frame === false) return word;
-    const hint = frameOnly ? `кадр: media(seq: ${ev.seq})` : `посмотреть: media(seq: ${ev.seq})`;
+    const hint = frameOnly ? `кадр: media(seq: ${ev.seq})` : `посмотреть: media(seq: ${ev.seq})${file ? `, ${file}` : ''}`;
     return word ? `${word} — ${hint}` : hint;
   }
   return word;
@@ -210,7 +216,7 @@ function bodyOf(ev: EventMessage): string {
   }
   if (text) return text;
   // Картинку агент смотрит сам — media(seq) (0.3); прочий файл — у шлюза.
-  if (ev.media) return '(без подписи)';
+  if (ev.media || ev.file) return '(без подписи)';
   if (ev.kind === 'photo' || ev.kind === 'document') return '(без подписи; содержимое файла у шлюза)';
   return '(без текста)';
 }
@@ -247,6 +253,7 @@ function metaOf(ev: EventMessage): Record<string, string> {
   if (ev.chat) m.chat = ev.chat.kind;
   if (ev.edit_of !== null) m.edit_of = String(ev.edit_of);
   if (ev.media) m.media = headerValue(ev.media.what, NAME_MAX);
+  if (ev.file) m.file = headerValue(ev.file.name ?? 'файл', NAME_MAX);
   if (ev.material) {
     m.material = headerValue(ev.material.words, NAME_MAX);
     if (ev.material.words_seq !== null) m.words_seq = String(ev.material.words_seq);
@@ -417,6 +424,7 @@ export const OUTCOME = {
   mismatch: 'версии протокола шлюза и канала не совпали — обнови шлюз и канал',
   /** Шлюз старше 0.3: инструмента media у него нет. */
   mediaUnsupported: 'шлюз старой версии: картинки (media) не умеет — скажи владельцу, что шлюз нужно обновить',
+  fileUnsupported: 'шлюз старой версии: документы файлом (file) не отдаёт — скажи владельцу, что шлюз нужно обновить',
   /** Шлюз старше 0.3.2: поля from у reply нет — ответ не отправлен. */
   fromUnsupported:
     'шлюз старой версии: from (чьи слова передаёшь) не знает — ответ не отправлен. Повтори reply без from, а чьи это слова, напиши в начале текста',

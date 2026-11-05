@@ -108,6 +108,8 @@
 // instructions уже дал, шлюз от продолженного не отличает: он тоже получает событие (лишний раз — безвредно) ⟨предл.⟩.
 
 import crypto from 'node:crypto';
+import os from 'node:os';
+import path from 'node:path';
 import { performance } from 'node:perf_hooks';
 import {
   getMeta,
@@ -133,6 +135,7 @@ import {
   silentAgentNotice,
   transaction,
   viewableOf,
+  documentOf,
   type AdapterMessage,
   type PeerEventInfo,
   type Attachment,
@@ -362,7 +365,7 @@ export const LEASE_REAL_GRACE_MS = 1_000;
 /** Такт пришёл позже двух — часы прыгнули (сон): ожидание pong и срок пробы — заново. */
 const LEASE_WAKE_GAP_MS = 2 * LEASE_TICK_MS;
 /** Вызовы инструментов канала — признак «сессия занята» (К-5). delivered, ping, pong, hello — не вызовы модели. */
-const TOOL_CALLS = new Set<AdapterMessage['type']>(['reply', 'done', 'episode', 'episode_summary', 'where', 'rule', 'media', 'send_file', 'relay', 'show', 'agents', 'lines', 'line_log']);
+const TOOL_CALLS = new Set<AdapterMessage['type']>(['reply', 'done', 'episode', 'episode_summary', 'where', 'rule', 'media', 'file', 'send_file', 'relay', 'show', 'agents', 'lines', 'line_log']);
 /**
  * Голосовое в распознавании держит следующие события (5.8 ⟨предл.⟩) не дольше 90 с от записи: зависший провайдер не
  * выключает агента — текст «срочно» после голосовых уходит через ≤ 90 с, а голосовое — когда распознано или получен отказ.
@@ -643,6 +646,9 @@ export class AdapterService {
       case 'media':
         this.onMedia(msg, conn);
         return true;
+      case 'file':
+        this.onFile(msg, conn);
+        return true;
       case 'send_file':
         this.onSendFile(msg, conn);
         return true;
@@ -763,6 +769,48 @@ export class AdapterService {
       (err: unknown) => {
         this.ctx.journal.write('media_failed', { seq: ev.seq, error: (err as Error).message });
         conn.send({ type: 'error', req_id: msg.req_id, code: 'unavailable', text: `картинка не получилась: ${(err as Error).message}` });
+      },
+    );
+  }
+
+  /**
+   * Документ события файлом (5.15): те же проверки, что у media (проверенная аренда, событие уже отдавалось). Папка —
+   * incoming.dir или <каталог сессии агента>/incoming; каталог неизвестен и папки в настройках нет — отказ с подсказкой.
+   */
+  private onFile(msg: Extract<AdapterMessage, { type: 'file' }>, conn: GatewayConnection): void {
+    const lease = this.verifiedLease(conn, msg.req_id);
+    if (!lease) return;
+    const ev = this.event(msg.seq);
+    if (!ev || !(MESSAGE_EVENT_KINDS as readonly string[]).includes(ev.kind)) {
+      conn.send({ type: 'error', req_id: msg.req_id, code: 'unknown_seq', text: `нет сообщения № ${msg.seq}` });
+      return;
+    }
+    const given = this.ownsEvent(lease, ev) || (ev.delivered_at ?? null) !== null || ev.status === 'processed';
+    if (!given) {
+      this.ctx.journal.write('file_refused', { seq: ev.seq, lease: lease.id, reason: 'not_delivered' });
+      conn.send({ type: 'error', req_id: msg.req_id, code: 'not_your_lease', text: `№ ${ev.seq} агенту ещё не отдавался` });
+      return;
+    }
+    const configured = this.ctx.config.incoming.dir;
+    const cwd = lease.hint?.cwd ?? null;
+    const dir = configured !== null ? expandHome(configured) : cwd ? path.join(cwd, INCOMING_DIR_NAME) : null;
+    if (dir === null) {
+      conn.send({ type: 'error', req_id: msg.req_id, code: 'bad_request', text: 'папка входящих не задана: каталог сессии агента неизвестен — нужен incoming.dir в config.yaml' });
+      return;
+    }
+    const media = this.media;
+    if (!media) {
+      conn.send({ type: 'error', req_id: msg.req_id, code: 'unavailable', text: 'файлы ещё не подключены — повтори позже' });
+      return;
+    }
+    void media.file(ev.seq, dir).then(
+      (r) => {
+        if (r.ok) conn.send({ type: 'ack', req_id: msg.req_id, result: r.result });
+        else conn.send({ type: 'error', req_id: msg.req_id, code: r.code, text: r.text });
+      },
+      (err: unknown) => {
+        this.ctx.journal.write('file_failed', { seq: ev.seq, error: (err as Error).message });
+        conn.send({ type: 'error', req_id: msg.req_id, code: 'unavailable', text: `файл не скачался: ${(err as Error).message} — повтори позже` });
       },
     );
   }
@@ -1528,6 +1576,7 @@ export class AdapterService {
       redelivery: redelivery ?? ev.attempts > 0,
       ...this.audioField(ev, attachments),
       ...mediaField(attachments),
+      ...fileField(attachments),
       ...materialField(ev),
       ...this.afterMaterialField(ev),
       ...(ev.peer_json !== null ? { peer: JSON.parse(ev.peer_json) as PeerEventInfo } : {}),
@@ -2042,6 +2091,20 @@ export class AdapterService {
     if (lease.probeSeq !== null && msg.seqs.includes(lease.probeSeq)) this.verify(lease);
     else if (changed) this.hooks.onReplyQueued();
   }
+}
+
+/** Папка входящих по умолчанию — в каталоге сессии агента, рядом с parcels/ (5.15). */
+const INCOMING_DIR_NAME = 'incoming';
+
+/** «~/…» — от домашнего каталога. */
+function expandHome(p: string): string {
+  return p === '~' ? os.homedir() : p.startsWith('~/') ? path.join(os.homedir(), p.slice(2)) : p;
+}
+
+/** Подсказка агенту (5.15): в событии есть документ для file(seq) — имя, mime и размер из метаданных Telegram. */
+function fileField(attachments: Attachment[]): { file?: NonNullable<EventMessage['file']> } {
+  const d = documentOf(attachments);
+  return d ? { file: { name: d.name, mime: d.mime, bytes: d.size } } : {};
 }
 
 /** Подсказка агенту (0.3): в событии есть картинка для media(seq) — что за она и есть ли кадр у кружка и видео. */

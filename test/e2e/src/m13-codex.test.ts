@@ -109,6 +109,7 @@ describe('M13 · адаптер Codex (stg-codex) против поддельн�
       'function:where',
       'function:rule',
       'function:media',
+      'function:file',
       'function:send_file',
       'function:relay',
       'function:show',

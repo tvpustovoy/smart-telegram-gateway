@@ -29,17 +29,20 @@ import {
   MEDIA_VIEW_MAX_BYTES,
   TelegramApiError,
   clockDeadline,
+  documentOf,
   ensureDir,
   formatBytes,
   imageExt,
   imageInfo,
   localDate,
+  safeFileName,
   sql,
   transaction,
   viewableOf,
   writeFileAtomicSync,
   type Attachment,
   type FileRef,
+  type FileResult,
   type ImageInfo,
   type MediaResult,
   type Viewable,
@@ -74,6 +77,7 @@ export interface MediaHooks {
 }
 
 export type MediaOutcome = { ok: true; result: MediaResult } | { ok: false; code: 'bad_request' | 'unavailable'; text: string };
+export type FileOutcome = { ok: true; result: FileResult } | { ok: false; code: 'bad_request' | 'unavailable'; text: string };
 
 interface MediaRow {
   seq: number;
@@ -109,6 +113,7 @@ function shownAttachment(attachments: Attachment[]): Attachment | undefined {
 
 export class MediaService {
   private readonly inflight = new Map<number, Promise<MediaOutcome>>();
+  private readonly fileInflight = new Map<number, Promise<FileOutcome>>();
   private readonly stopCtl = new AbortController();
 
   constructor(
@@ -122,7 +127,7 @@ export class MediaService {
    */
   async stop(): Promise<void> {
     this.stopCtl.abort();
-    await Promise.allSettled([...this.inflight.values()]);
+    await Promise.allSettled([...this.inflight.values(), ...this.fileInflight.values()]);
   }
 
   /** Файл Telegram целиком для другого агента (5.20): без показа и без raw/. Шлюз останавливается — null. */
@@ -143,6 +148,65 @@ export class MediaService {
     const p = this.run(seq).finally(() => this.inflight.delete(seq));
     this.inflight.set(seq, p);
     return p;
+  }
+
+  /**
+   * Документ события № seq файлом в папку dir (5.15; проверки аренды — у вызывающего). Имя — `<дата>_<№>_<имя файла>`;
+   * файл уже лежит там с тем же размером — отдаётся без Telegram. Больше 20 МБ бот не скачает; старше срока хранения —
+   * «удалено». Два запроса одного № сразу — одно скачивание. Сбой сети и Telegram — исключение (вызывающий: «повтори позже»).
+   */
+  file(seq: number, dir: string): Promise<FileOutcome> {
+    const cur = this.fileInflight.get(seq);
+    if (cur) return cur;
+    const p = this.runFile(seq, dir).finally(() => this.fileInflight.delete(seq));
+    this.fileInflight.set(seq, p);
+    return p;
+  }
+
+  private async runFile(seq: number, dir: string): Promise<FileOutcome> {
+    const row = sql(this.ctx.db, 'SELECT seq, update_id, kind, attachments_json, media_ref, created_at FROM events WHERE seq = ?').get(seq) as MediaRow | undefined;
+    if (!row) return { ok: false, code: 'bad_request', text: `нет события № ${seq}` };
+    const attachments = attachmentsOf(row.attachments_json);
+    const doc = documentOf(attachments);
+    if (!doc || this.expired(row, attachments)) {
+      if (doc || contentRemoved(row, attachments)) {
+        this.ctx.journal.write('file', { seq, reason: 'removed' });
+        return { ok: false, code: 'bad_request', text: 'содержимое удалено по сроку хранения' };
+      }
+      return { ok: false, code: 'bad_request', text: `в № ${seq} нет документа: файлом отдаётся документ (PDF, таблица, архив); фото — media, звук и видео приходят расшифровкой` };
+    }
+    if (doc.size !== null && doc.size > BOT_API_FILE_LIMIT) {
+      this.ctx.journal.write('file', { seq, reason: 'too_big', bytes: doc.size });
+      return { ok: false, code: 'bad_request', text: `файл ${formatBytes(doc.size)}: больше ${formatBytes(BOT_API_FILE_LIMIT)} бот Telegram не скачивает — попроси владельца прислать его иначе` };
+    }
+    const name = safeFileName(doc.name ?? `файл-${seq}`);
+    const dest = path.join(dir, `${localDate(row.created_at, this.ctx.config.timezone)}_${seq}_${name}`);
+    const result = (bytes: number, reused: boolean): FileOutcome => ({ ok: true, result: { seq, path: dest, name, mime: doc.mime, bytes, reused } });
+    try {
+      const st = fs.lstatSync(dest);
+      if (st.isFile() && (doc.size === null || st.size === doc.size)) {
+        this.ctx.journal.write('file', { seq, bytes: st.size, path: dest, from: 'incoming' });
+        return result(st.size, true);
+      }
+    } catch {
+      // Файла ещё нет — скачиваем.
+    }
+    let data: Buffer;
+    try {
+      data = await this.download(doc.fileId);
+    } catch (err) {
+      if (err instanceof TooBigForBot) return { ok: false, code: 'bad_request', text: `файл больше ${formatBytes(BOT_API_FILE_LIMIT)}: бот Telegram такие не скачивает` };
+      throw err;
+    }
+    try {
+      ensureDir(dir);
+      writeFileAtomicSync(dest, data, 0o600, this.hooks?.fileIo());
+    } catch (err) {
+      if (!this.ctx.disk.check(err, 'file', { seq })) this.ctx.journal.write('file_save_failed', { seq, error: (err as Error).message });
+      return { ok: false, code: 'unavailable', text: `файл не записался в ${dir}: ${(err as Error).message}` };
+    }
+    this.ctx.journal.write('file', { seq, bytes: data.length, path: dest, from: 'telegram' });
+    return result(data.length, false);
   }
 
   private async run(seq: number): Promise<MediaOutcome> {
