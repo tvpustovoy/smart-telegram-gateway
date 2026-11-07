@@ -135,6 +135,14 @@ describe('M15 · линия', () => {
     await sentLetter('уточни срок');
     await sleep(200);
     assert.equal(ch.events().length, n, 'реплай автору ведущему агенту не отдан');
+    // Ответ на реплай (0.5.1): владелец ждёт его в чате, линии при этом нет. Раньше он молча ложился в непрочитанное.
+    network.letter('in-2', 'Срок — пятница', ADDRESS, 'out-2');
+    await waitSent(s, gw, (m) => m.text === `↪️ ${PEER}: Срок — пятница`, 'ответа на реплай в чате');
+    network.letter('in-3', 'И ещё: к обеду', ADDRESS);
+    await waitSent(s, gw, (m) => m.text === `↪️ ${PEER}: И ещё: к обеду`, 'письма без reply_to следом');
+    assert.equal(ch.events().length, n, 'ведущему агенту не отдано');
+    assert.equal(count(s.home, "SELECT count(*) AS n FROM peer_messages WHERE unseen = 1"), 0);
+    assert.equal(count(s.home, 'SELECT count(*) AS n FROM lines'), 0, 'линия не открылась');
   });
 
   it('переключение: голосовое идёт тому, кто был адресатом при приёме, хотя расшифровка пришла позже', async () => {
@@ -182,7 +190,7 @@ describe('M15 · линия', () => {
     await waitSent(s, gw, (m) => (m.text ?? '').startsWith(`⚙ Линия с ${PEER} закрыта`), 'закрытия');
   });
 
-  it('письмо с линии после её конца в чат не идёт и ведущему агенту тоже: счётчик, чтение в /agents', async () => {
+  it('письмо и файл с линии после её конца в чат не идут и ведущему агенту тоже: счётчик, чтение в /agents', async () => {
     await connect();
     await say('посчитай');
     await sentLetter('посчитай');
@@ -191,13 +199,18 @@ describe('M15 · линия', () => {
     network.letter('in-1', 'Посчитал', ADDRESS, 'out-1');
     network.letter('in-2', 'И ещё вот что', ADDRESS, 'out-1');
     await pump(gw, () => count(s.home, "SELECT count(*) AS n FROM peer_messages WHERE direction = 'in' AND unseen = 1") === 2 || null, { what: 'двух писем' });
-    await pump(gw, () => (statusLineOf(s.fake)?.text ?? '').includes('✉️ 2') || null, { what: 'счётчика в строке' });
+    // Файл без reply_to после слова закрытой линии — ответ на него: тоже ждёт, хотя линии сейчас нет (0.5.1).
+    network.file('in-f', 'итог.txt', Buffer.from('итог'));
+    await pump(gw, () => count(s.home, "SELECT count(*) AS n FROM peer_messages WHERE direction = 'in' AND unseen = 1") === 3 || null, { what: 'файла в непрочитанном' });
+    await pump(gw, () => (statusLineOf(s.fake)?.text ?? '').includes('✉️ 3') || null, { what: 'счётчика в строке' });
     assert.ok(!s.fake.sentTo(OWNER.id).some((m) => (m.text ?? '').includes('Посчитал')), 'в чат не упало');
+    assert.ok(!s.fake.sentTo(OWNER.id).some((m) => m.document?.filename === 'итог.txt'), 'файл в чат не упал');
     assert.equal(ch.events().filter((e) => e.kind === 'peer').length, 0);
     const list = await connect();
-    assert.ok(buttonsOf(list).some((b) => b.text.includes(PEER) && b.text.includes('✉️ 2')), 'счётчик в списке');
+    assert.ok(buttonsOf(list).some((b) => b.text.includes(PEER) && b.text.includes('✉️ 3')), 'счётчик в списке');
     await waitSent(s, gw, (m) => m.text === `↪️ ${PEER}: Посчитал`, 'первого письма');
     await waitSent(s, gw, (m) => m.text === `↪️ ${PEER}: И ещё вот что`, 'второго письма');
+    await waitSent(s, gw, (m) => m.document?.filename === 'итог.txt', 'файла');
     await pump(gw, () => !(statusLineOf(s.fake)?.text ?? '').includes('✉️') || null, { what: 'счётчик снят' });
   });
 
@@ -358,11 +371,24 @@ describe('M15 · линия', () => {
       await sentLetter('спасибо за файл');
     });
 
-    it('файл агента вне линии: в чат сам не идёт, ведущему агенту тоже; /agents присылает документ', async () => {
+    it('файл агента, линии нет: документ в чат сразу, ведущему агенту не идёт, линия не открывается', async () => {
       network.file('in-g', 'вне.txt', Buffer.from('вне линии'));
+      const doc = await waitSent(s, gw, (m) => m.document?.filename === 'вне.txt', 'документа');
+      assert.equal(doc.text ?? doc.caption, `↪️ ${PEER}`);
+      assert.equal(ch.events().filter((e) => e.kind === 'peer').length, 0);
+      assert.equal(count(s.home, 'SELECT count(*) AS n FROM peer_messages WHERE unseen = 1'), 0);
+      assert.equal(count(s.home, 'SELECT count(*) AS n FROM lines'), 0);
+    });
+
+    it('файл агента, владелец на линии с другим: ждёт в непрочитанном, /agents присылает документ', async () => {
+      await connect('Дизайнер');
+      network.file('in-h', 'смета.txt', Buffer.from('смета'));
       await pump(gw, () => q1(s.home, 'SELECT 1 FROM peer_messages WHERE unseen = 1') || null, { what: 'файла в непрочитанном' });
+      await sleep(200);
+      assert.ok(!s.fake.sentTo(OWNER.id).some((m) => m.document?.filename === 'смета.txt'), 'документ не пришёл сам');
       await connect();
-      await waitSent(s, gw, (m) => m.document?.filename === 'вне.txt', 'документа');
+      await waitSent(s, gw, (m) => m.document?.filename === 'смета.txt', 'документа');
+      assert.ok(q1(s.home, 'SELECT 1 FROM lines WHERE peer = ? AND ended_at IS NULL', PEER), 'линия с автором');
       assert.equal(ch.events().filter((e) => e.kind === 'peer').length, 0);
     });
 
