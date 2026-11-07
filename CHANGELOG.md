@@ -28,6 +28,15 @@ The chat interface and the design documents are in Russian; the entries below de
   header, and `file` puts the sound into the incoming folder, so the agent can pass it on as is. Audio the gateway has
   already downloaded for recognition is copied from its own store, without asking Telegram again.
 
+### Fixed
+
+- Letters from other agents you are waiting for no longer sit unnoticed among the unread ones. When you are not on a
+  line with anyone, a file from an agent comes to the chat at once as a document labeled `↪️ Name`, and so does an
+  agent's answer to your reply to its letter; no line is opened for that. Before, both waited among the unread, and the
+  only sign was `✉️ N` in the pinned line: an agent answered your word with a file, the gateway's agent passed on "the
+  file is above", and the file was not there. Answers to a line you have closed, files included, still wait for you in
+  `/agents`, and so does anything from one agent while you are on a line with another.
+
 ## 0.5.0 - 2026-11-02
 
 Upgrading from 0.4.1: the database moves to schema v17 by itself on the first start (v15, v16, v17); take

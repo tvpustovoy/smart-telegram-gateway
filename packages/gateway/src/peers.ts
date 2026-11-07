@@ -401,12 +401,19 @@ export class PeerService {
       // Ответ именно на передачу ведущего агента — ему, с кем бы владелец ни был на линии: он этого ответа ждёт.
       const forMain = file === null && linked?.exact === true && linked.origin === 'relay';
       const onLine = !forMain && line?.peer === peer.name;
-      // Ответ на слово с линии, а линии с ним уже нет: ведущему агенту его читать нельзя, в чат само не идёт, владелец прочтёт в /agents. Файл — так же.
-      const aside = !forMain && !onLine && (file !== null || linked?.origin === 'line');
-      const s = this.insertEvent(owner, 'untrusted', text, info, aside ? 'handled' : 'new', onLine || aside ? peer.name : null);
+      // Ответ на слово с линии, которая уже закрыта: владелец сам идёт за ним в /agents, в чат оно не идёт.
+      const closedLine = linked?.origin === 'line' && linked.line_id !== null;
+      // Владелец ни с кем не на линии и ждёт этого в чате (0.5.1): файл агента — ведущему агенту его байты не идут, и
+      // ответ на реплай владельца агенту — слово ушло автору, а не на линию. Раньше и то и другое молча ложилось в непрочитанное.
+      const direct = !forMain && !onLine && line === null && !closedLine && (file !== null || linked?.origin === 'line');
+      // Ответ на слово закрытой линии, или владелец на линии с другим: ведущему агенту его читать нельзя, в чат само не идёт,
+      // владелец прочтёт в /agents. Файл — так же.
+      const aside = !forMain && !onLine && !direct && (file !== null || linked?.origin === 'line');
+      const toOwner = onLine || direct;
+      const s = this.insertEvent(owner, 'untrusted', text, info, aside ? 'handled' : 'new', toOwner || aside ? peer.name : null);
       sql(this.ctx.db,
         `INSERT INTO peer_messages(direction, peer, event_seq, wire_id, reply_to, status, created_at, origin, line_id, unseen) VALUES ('in', ?, ?, ?, ?, 'received', ?, ?, ?, ?)`,
-      ).run(peer.name, s, msg.wire_id, msg.reply_to ?? null, now, onLine || aside ? 'line' : 'relay', onLine ? line!.id : aside ? (linked?.line_id ?? null) : null, aside ? 1 : 0);
+      ).run(peer.name, s, msg.wire_id, msg.reply_to ?? null, now, toOwner || aside ? 'line' : 'relay', onLine ? line!.id : direct || aside ? (linked?.line_id ?? null) : null, aside ? 1 : 0);
       return s;
     });
     this.ctx.journal.write('peer_in', { seq, from: peer.name, wire_id: msg.wire_id.slice(0, 12), relay_seq: info.relay_seq });
