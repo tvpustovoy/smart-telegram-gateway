@@ -96,6 +96,7 @@ import {
   type VoiceInfo,
   MESSAGE_EVENT_KINDS,
   parseMainCommand,
+  parseSttCommand,
 } from 'stg-core';
 import type { AdapterService } from './adapter.js';
 import type { Ctx } from './context.js';
@@ -122,6 +123,7 @@ const sameEmoji = (a: readonly string[], b: readonly string[]): boolean => [...a
 import { clearReceipts, requestCleared, requestClosedCleared } from './reactions.js';
 import { retryingUpdates } from './recovery.js';
 import type { Sender } from './sender.js';
+import { sttOffCovers, sttOffUntil } from './stt-off.js';
 import type { TestHooks } from './testhooks.js';
 import { enqueueSttReply } from './voice.js';
 
@@ -869,7 +871,8 @@ export class Admission {
     }
     const plain = labeled.plainOwnerText && msg.chat.type === 'private' && who.isOwner;
     const hasPeers = this.ctx.config.peers.length > 0;
-    const parsed = plain ? parseCommand(labeled.text) : null;
+    // /stt со сроком (/stt off 2h) — тоже команда: точного совпадения у неё нет (commands.ts, parseSttCommand).
+    const parsed = plain ? (parseCommand(labeled.text) ?? (parseSttCommand(labeled.text) ? 'stt' : null)) : null;
     // «агенты» без настроенных агентов — обычное слово.
     const command = parsed === 'agents' && !hasPeers ? null : parsed;
     // Подпись к фото и реплай с цитатой — тоже его слова: команда ведущему агенту работает и там, иначе слова уйдут на линию.
@@ -1046,7 +1049,10 @@ export class Admission {
         // Звук файлом больше 20 МБ по метаданным (аудиофайл, кружок, видео) распознаваться не будет — короткий ответ на
         // него сразу (P-19); видео не в mp4 — тоже (сведение 0.3 и 0.3.1 ⟨предл.⟩: иначе владелец ждал бы расшифровку).
         // Остальным голосовым и звуку файлом ответ — расшифровка или причина — когда распознавание кончится (voice.ts).
-        if ((d.audio && d.sttNote === 'too_big') || (d.kind === 'document' && !d.audio && isNotMp4Video(d.attachments))) enqueueSttReply(this.ctx, seq);
+        // Распознавание пересланного и аудиофайлов выключено (/stt, stt-off.ts) — такому звуку ответа нет и здесь.
+        const unheard = (d.audio && d.sttNote === 'too_big') || (d.kind === 'document' && !d.audio && isNotMp4Video(d.attachments));
+        const off = unheard && sttOffUntil(db, now) !== null && sttOffCovers(d.forward !== null, d.audio?.source ?? null);
+        if (unheard && !off) enqueueSttReply(this.ctx, seq);
       }
       // t_admit — COMMIT («записал», L-2; с 0.3.2 — по записи, ✍ нет); t_receipt и t_eyes — когда встанет 👀 (reactions.ts).
       sql(db, 'INSERT INTO latency(event_seq, t_update, t_admit) VALUES (?, ?, ?)').run(seq, tUpdate, now);
@@ -1059,6 +1065,7 @@ export class Admission {
           chatRule: d.who.chatRule as ChatRule,
           messageDate: d.messageDate,
           messageId: d.messageId,
+          text: d.text,
         });
       } else if (d.callback) {
         effects = this.control.press(d.callback, d.who);

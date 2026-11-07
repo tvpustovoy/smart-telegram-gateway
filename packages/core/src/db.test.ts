@@ -235,12 +235,12 @@ describe('база: v11 (0.3.4) — пересборка events с видом re
     const others = ['outbox', 'receipts', 'messages_out', 'latency', 'edits', 'reactions'].map((t) => JSON.stringify(db.prepare(`SELECT * FROM ${t} ORDER BY 1`).all()));
     const r = migrate(db);
     try {
-      assert.deepEqual(r.applied, [10, 11, 12, 13, 14, 15, 16, 17], 'миграции по порядку: v10 (0.3.3, посылки) → v11 (0.3.4) → v12 (0.3.5) → v13 (0.3.6) → v14 (#60) → v15');
+      assert.deepEqual(r.applied, [10, 11, 12, 13, 14, 15, 16, 17, 18], 'миграции по порядку: v10 (0.3.3, посылки) → v11 (0.3.4) → v12 (0.3.5) → v13 (0.3.6) → v14 (#60) → v15');
       assert.equal(schemaVersion(db), SCHEMA_VERSION);
       const after = db.prepare('SELECT * FROM events ORDER BY seq').all() as Array<Record<string, unknown>>;
       assert.equal(
         JSON.stringify(
-          after.map(({ reaction_json, hold_until, instructions_json, material_json, peer_json, route: _route, ...rest }) => {
+          after.map(({ reaction_json, hold_until, instructions_json, material_json, peer_json, route: _route, stt_off: _sttOff, ...rest }) => {
             assert.equal(peer_json, null, 'писем агентов у прежних событий нет (v15)');
             assert.equal(reaction_json, null);
             assert.equal(hold_until, null, 'окна отмены у прежних событий нет');
@@ -325,7 +325,7 @@ describe('база: v11 (0.3.4) — пересборка events с видом re
     const dIdx = idxOf('deliveries');
     const r = migrate(db);
     try {
-      assert.deepEqual(r.applied, [11, 12, 13, 14, 15, 16, 17]);
+      assert.deepEqual(r.applied, [11, 12, 13, 14, 15, 16, 17, 18]);
       assert.equal(schemaVersion(db), SCHEMA_VERSION);
       assert.equal(
         JSON.stringify(
@@ -422,11 +422,11 @@ describe('база: v12 (0.3.5) — правила канала разговор
     const dBefore = JSON.stringify(deletions());
     const r = migrate(db);
     try {
-      assert.deepEqual(r.applied, [12, 13, 14, 15, 16, 17], 'v12, затем v13 (0.3.6), v14 (#60) и v15');
+      assert.deepEqual(r.applied, [12, 13, 14, 15, 16, 17, 18], 'v12, затем v13 (0.3.6), v14 (#60) и v15');
       assert.equal(schemaVersion(db), SCHEMA_VERSION);
       assert.equal(
         JSON.stringify(
-          events().map(({ instructions_json, material_json, peer_json, route: _route, ...rest }) => {
+          events().map(({ instructions_json, material_json, peer_json, route: _route, stt_off: _sttOff, ...rest }) => {
             assert.equal(peer_json, null, 'писем агентов у прежних событий нет (v15)');
             assert.equal(instructions_json, null);
             assert.equal(material_json, null);
@@ -516,11 +516,11 @@ describe('база: v13 (0.3.6) — окно для материала без с
     const before = JSON.stringify(events());
     const r = migrate(db);
     try {
-      assert.deepEqual(r.applied, [13, 14, 15, 16, 17]);
+      assert.deepEqual(r.applied, [13, 14, 15, 16, 17, 18]);
       assert.equal(schemaVersion(db), SCHEMA_VERSION);
       assert.equal(
         JSON.stringify(
-          events().map(({ material_json, peer_json, route: _route, ...rest }) => {
+          events().map(({ material_json, peer_json, route: _route, stt_off: _sttOff, ...rest }) => {
             assert.equal(peer_json, null, 'писем агентов у прежних событий нет (v15)');
             assert.equal(material_json, null);
             return rest;
@@ -603,7 +603,7 @@ describe('база: v14 (#60) — посылка картинкой: фото и
     const idxBefore = idx();
     const r = migrate(db);
     try {
-      assert.deepEqual(r.applied, [14, 15, 16, 17]);
+      assert.deepEqual(r.applied, [14, 15, 16, 17, 18]);
       assert.equal(schemaVersion(db), SCHEMA_VERSION);
       assert.equal(
         JSON.stringify(
@@ -654,13 +654,29 @@ describe('база: v15 — связь с другими агентами (peer_
     return db;
   }
 
+  it('v17 → v18: события целы, распознавание у них не выключалось (stt_off = 0), другое значение — CHECK', () => {
+    const db = dbAt(17);
+    insertSample(db);
+    const before = db.prepare('SELECT count(*) AS n FROM events').get() as { n: number };
+    const r = migrate(db);
+    try {
+      assert.deepEqual(r.applied, [18]);
+      const rows = db.prepare('SELECT stt_off FROM events').all() as Array<{ stt_off: number }>;
+      assert.equal(rows.length, before.n);
+      assert.ok(rows.every((x) => x.stt_off === 0));
+      assert.throws(() => db.prepare('UPDATE events SET stt_off = 2').run(), /CHECK/);
+    } finally {
+      db.close();
+    }
+  });
+
   it('v16 → v17: письма целы, файла у них нет', () => {
     const db = dbAt(16);
     insertSample(db);
     db.prepare("INSERT INTO peer_messages(direction, peer, text, status, created_at, origin) VALUES ('out', 'Агент', 'слово', 'pending', 1, 'line')").run();
     const r = migrate(db);
     try {
-      assert.deepEqual(r.applied, [17]);
+      assert.deepEqual(r.applied, [17, 18]);
       assert.deepEqual({ ...(db.prepare('SELECT text, status, file_json, file_ref FROM peer_messages').get() as object) }, { text: 'слово', status: 'pending', file_json: null, file_ref: null });
     } finally {
       db.close();
@@ -673,7 +689,7 @@ describe('база: v15 — связь с другими агентами (peer_
     db.prepare("INSERT INTO peer_messages(direction, peer, wire_id, status, created_at) VALUES ('in', 'Агент', 'w1', 'received', 1)").run();
     const r = migrate(db);
     try {
-      assert.deepEqual(r.applied, [16, 17]);
+      assert.deepEqual(r.applied, [16, 17, 18]);
       assert.deepEqual({ ...(db.prepare('SELECT origin, line_id, unseen FROM peer_messages').get() as object) }, { origin: 'relay', line_id: null, unseen: 0 });
       assert.equal((db.prepare('SELECT count(*) AS n FROM events WHERE route IS NOT NULL').get() as { n: number }).n, 0);
       const open = db.prepare('INSERT INTO lines(peer, started_at, last_at, ended_at) VALUES (?, 1, 1, ?)');
@@ -705,10 +721,10 @@ describe('база: v15 — связь с другими агентами (peer_
     const seqBefore = (db.prepare("SELECT seq FROM sqlite_sequence WHERE name = 'events'").get() as { seq: number }).seq;
     const r = migrate(db);
     try {
-      assert.deepEqual(r.applied, [15, 16, 17]);
+      assert.deepEqual(r.applied, [15, 16, 17, 18]);
       assert.equal(
         JSON.stringify(
-          events().map(({ peer_json, route, ...rest }) => {
+          events().map(({ peer_json, route, stt_off: _sttOff, ...rest }) => {
             assert.equal(peer_json, null);
             assert.equal(route, null);
             return rest;

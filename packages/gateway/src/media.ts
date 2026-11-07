@@ -85,6 +85,8 @@ interface MediaRow {
   kind: string;
   attachments_json: string | null;
   media_ref: string | null;
+  /** Звук, скачанный для распознавания (голосовое — при приёме, звук файлом — распознавателем), voice.ts. */
+  raw_ref?: string | null;
   created_at: number;
 }
 
@@ -164,7 +166,7 @@ export class MediaService {
   }
 
   private async runFile(seq: number, dir: string): Promise<FileOutcome> {
-    const row = sql(this.ctx.db, 'SELECT seq, update_id, kind, attachments_json, media_ref, created_at FROM events WHERE seq = ?').get(seq) as MediaRow | undefined;
+    const row = sql(this.ctx.db, 'SELECT seq, update_id, kind, attachments_json, media_ref, raw_ref, created_at FROM events WHERE seq = ?').get(seq) as MediaRow | undefined;
     if (!row) return { ok: false, code: 'bad_request', text: `нет события № ${seq}` };
     const attachments = attachmentsOf(row.attachments_json);
     const doc = documentOf(attachments);
@@ -173,13 +175,13 @@ export class MediaService {
         this.ctx.journal.write('file', { seq, reason: 'removed' });
         return { ok: false, code: 'bad_request', text: 'содержимое удалено по сроку хранения' };
       }
-      return { ok: false, code: 'bad_request', text: `в № ${seq} нет документа: файлом отдаётся документ (PDF, таблица, архив); фото — media, звук и видео приходят расшифровкой` };
+      return { ok: false, code: 'bad_request', text: `в № ${seq} нет файла: файлом отдаётся документ (PDF, таблица, архив), аудиофайл и голосовое; фото — media, видео и кружок приходят расшифровкой` };
     }
     if (doc.size !== null && doc.size > BOT_API_FILE_LIMIT) {
       this.ctx.journal.write('file', { seq, reason: 'too_big', bytes: doc.size });
       return { ok: false, code: 'bad_request', text: `файл ${formatBytes(doc.size)}: больше ${formatBytes(BOT_API_FILE_LIMIT)} бот Telegram не скачивает — попроси владельца прислать его иначе` };
     }
-    const name = safeFileName(doc.name ?? `файл-${seq}`);
+    const name = safeFileName(doc.name ?? (doc.voice ? `голосовое-${seq}.ogg` : `файл-${seq}`));
     const dest = path.join(dir, `${localDate(row.created_at, this.ctx.config.timezone)}_${seq}_${name}`);
     const result = (bytes: number, reused: boolean): FileOutcome => ({ ok: true, result: { seq, path: dest, name, mime: doc.mime, bytes, reused } });
     try {
@@ -191,9 +193,11 @@ export class MediaService {
     } catch {
       // Файла ещё нет — скачиваем.
     }
-    let data: Buffer;
+    // Звук, который шлюз уже скачал для распознавания, берётся из raw/: Telegram второй раз не спрашивается.
+    let data = this.rawCopy(row, doc.size);
+    const from = data ? 'raw' : 'telegram';
     try {
-      data = await this.download(doc.fileId);
+      data ??= await this.download(doc.fileId);
     } catch (err) {
       if (err instanceof TooBigForBot) return { ok: false, code: 'bad_request', text: `файл больше ${formatBytes(BOT_API_FILE_LIMIT)}: бот Telegram такие не скачивает` };
       throw err;
@@ -205,8 +209,19 @@ export class MediaService {
       if (!this.ctx.disk.check(err, 'file', { seq })) this.ctx.journal.write('file_save_failed', { seq, error: (err as Error).message });
       return { ok: false, code: 'unavailable', text: `файл не записался в ${dir}: ${(err as Error).message}` };
     }
-    this.ctx.journal.write('file', { seq, bytes: data.length, path: dest, from: 'telegram' });
+    this.ctx.journal.write('file', { seq, bytes: data.length, path: dest, from });
     return result(data.length, false);
+  }
+
+  /** Копия звука в raw/ того же размера, что в метаданных Telegram (размера нет — любая); нет или не читается — null. */
+  private rawCopy(row: MediaRow, size: number | null): Buffer | null {
+    if (!row.raw_ref) return null;
+    try {
+      const data = fs.readFileSync(path.join(this.ctx.paths.home, row.raw_ref));
+      return size === null || data.length === size ? data : null;
+    } catch {
+      return null;
+    }
   }
 
   private async run(seq: number): Promise<MediaOutcome> {

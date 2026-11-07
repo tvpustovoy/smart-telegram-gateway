@@ -13,7 +13,7 @@ import { CODEX_TOOL_EDITS, TOOLS, toolsFor } from './tools.js';
  * прежнюю версию, шлюз один раз пришлёт событие «правила канала». 0.3.6 — 9470ccc980ca…; с #60 (картинка — фото,
  * send_file as: "file") — 24a2f2e38cce…; с 0.5.1 (документы файлом — file(seq)) — эта.
  */
-const CLAUDE_SHA256 = '0861fc8ee5c9944531aa68ff559e7bcea94f3ba6ec4fa9664cbdc61973cc1134';
+const CLAUDE_SHA256 = '79522569fa62e1bb3dd44aa356ec3c2acc090b68cdabaf186b8e09f681b5cc26';
 
 function occurrences(text: string, part: string): number {
   return text.split(part).length - 1;

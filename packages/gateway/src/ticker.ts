@@ -1,7 +1,7 @@
 // Сроки и сон (TECH-SPEC 5.3 «Сон ноутбука», 5.7; Ш-12, Ш-14). Один таймер часов раз в 15 с:
 // - скачок часов больше 2 минут — запись `wake`; шлюз сначала забирает накопленное, потом проверяет сроки;
 // - пробуждение — в сводку перерыва (breaks.ts): сообщения, которые оно застало открытыми;
-// - раз в минуту — сроки: тишина эпизода (33 минуты), «агент не на связи», сводка после перерыва, чистка updates (и строк реакций и удалений),
+// - раз в минуту — сроки: тишина эпизода (33 минуты), «агент не на связи», срок /stt (stt-off.ts), сводка после перерыва, чистка updates (и строк реакций и удалений),
 //   строки in_progress старше суток, голосовые, ждущие распознавания, срок карточек правил (24 ч) и отставший rules.yaml
 //   (M5), закреплённая строка состояния (отправитель сверяет её текст); раз в сутки — хранение и чистка (5.8,
 //   retention.ts).
@@ -21,6 +21,7 @@ import { REACTIONS_KEEP_MS } from './reactions.js';
 import { deferStaleInProgress } from './recovery.js';
 import type { Retention } from './retention.js';
 import type { Sender } from './sender.js';
+import { expireSttOff } from './stt-off.js';
 
 export const TICK_MS = 15_000;
 export const WAKE_JUMP_MS = 2 * 60_000;
@@ -105,6 +106,7 @@ export class Ticker {
       const closed = this.episodes.closeIdle(now);
       if (closed.length) this.adapter.pump();
       this.checkOffline(now);
+      if (expireSttOff(this.ctx, now)) this.sender.kick();
       checkBreak(this.ctx, now);
       this.purgeUpdates(now);
       this.purgeUi(now);

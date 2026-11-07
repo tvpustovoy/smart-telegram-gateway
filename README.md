@@ -142,7 +142,7 @@ Then finish the setup:
 | `.claude/agent-state.settings.json` | status line command and `PreCompact` / `PostCompact` / `StopFailure` hooks that feed the agent icons in the pinned line | rewritten |
 | `start.sh` | starts Claude Code with the channel and its own `CLAUDE_CONFIG_DIR` (`.claude-config/`) | rewritten |
 | `notes/`, `parcels/` | the agent's notes; files the agent sends with `send_file` | kept |
-| `incoming/` | documents from your messages, put there by `file`; the gateway does not delete them | kept |
+| `incoming/` | documents and audio from your messages, put there by `file`; the gateway does not delete them | kept |
 
 This is not a sandbox: the agent runs as the same macOS user and can read the user's files, including the gateway's.
 See [docs/THREAT-MODEL.md](docs/THREAT-MODEL.md). More about the template:
@@ -202,7 +202,8 @@ message: `node test/e2e/dist/drill-codex.js <run dir>`.
 
 Commands work from the ☰ menu, as slash commands or as plain words (in Russian): 📍 `/where` — where are we,
 🆕 `/new` — new topic, ⏸ `/pause` (`/resume` to continue), ⛔ `/stop` (lifted with the button under the stop line),
-📊 `/status`, ❓ `/help`.
+🔇 `/stt` — do not recognize forwarded audio and audio files for an hour (`/stt off 2h` for two hours, `/stt on` to turn
+it back on; your own voice messages are always recognized), 📊 `/status`, ❓ `/help`.
 
 What you see in the chat:
 
@@ -246,8 +247,9 @@ What you see in the chat:
   gist it already sent.
 
 The agent's tools (MCP for Claude Code, dynamic tools for Codex): `reply`, `done`, `episode`, `episode_summary`, `where`,
-`rule`, `media`, `file`, `send_file`, `relay`, `show`, `agents`. A document you send (PDF, spreadsheet, archive) reaches
-the agent as a file: `file` puts it in the agent's `incoming/` folder and returns the path.
+`rule`, `media`, `file`, `send_file`, `relay`, `show`, `agents`. A document you send (PDF, spreadsheet, archive), an
+audio file or a forwarded voice message reaches the agent as a file: `file` puts it in the agent's `incoming/` folder and
+returns the path.
 
 ## Configuration
 

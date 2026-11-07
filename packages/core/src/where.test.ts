@@ -107,6 +107,8 @@ describe('M2 · строки команд и эпизодов', () => {
     assert.equal(statusLineText({ ...base, agent: 'offline', waiting: 4, mode: 'running' }), '📍 #2 · тема не названа\n⚪ · 📥 4');
     assert.equal(statusLineText({ ...base, episode: { ...ep, topic: 'Задачи' }, agent: 'free', waiting: 0, mode: 'running' }), '📍 #2 · Задачи\n🟢');
     assert.equal(statusLineText({ ...base, agent: 'busy', waiting: 1, mode: 'paused' }), '📍 #2 · тема не названа\n⏸ пауза · 🟡 · 📥 1');
+    // Распознавание пересланного выключено (/stt) — после режима, до кружка агента.
+    assert.equal(statusLineText({ ...base, agent: 'free', waiting: 0, mode: 'paused', sttOffUntil: '01:30' }), '📍 #2 · тема не названа\n⏸ пауза · 🔇 до 01:30 · 🟢');
     // Открытого эпизода нет — последний с пометкой (проверка на реальном боте: «Эпизода нет» рядом с «Эп. 5» в чате — противоречие).
     assert.equal(
       statusLineText({ ...base, episode: { id: 5, topic: 'Отпуск в мае', closed: true }, agent: 'free', waiting: 0, mode: 'running' }),
